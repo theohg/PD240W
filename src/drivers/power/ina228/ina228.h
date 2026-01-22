@@ -90,10 +90,16 @@ class INA228
 {
 public:
   //  address between 0x40 and 0x4F
-//   explicit INA228(const uint8_t address, TwoWire *wire = &Wire);
-  explicit INA228(const uint8_t address, i2c_inst_t *i2c);
+  /**
+   * @brief Constructor with full configuration
+   * @param address I2C address (0x40-0x4F)
+   * @param i2c I2C instance (i2c0 or i2c1)
+   * @param shuntResistor Shunt resistor value in Ohms (e.g., 0.008 for 8mΩ)
+   * @param maxCurrent Maximum expected current in Amps (e.g., 5.0)
+   */
+  INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent);
 
-  bool     begin();
+  bool     init();
   bool     isConnected();
   uint8_t  getAddress();
 

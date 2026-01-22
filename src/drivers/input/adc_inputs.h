@@ -2,8 +2,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
-#include "bsp/pin_map.h"
-#include "config.h"
+#include "board_config.h"
 #include <math.h>
 
 // ADC Input Driver for PD240W

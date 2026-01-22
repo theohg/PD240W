@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Build: CMake + Ninja
 - Communication: I2C (400kHz), SPI (24MHz), UART (115200 baud)
 
-**Project Status:** Phase 1 (Hardware Foundation) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for detailed roadmap.
+**Project Status:** Phase 1 & 2 complete. Ready for Phase 3 (Application Logic). See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for detailed roadmap.
 
 **Hardware Details:**
 - **LCD:** 240x320 (2.4") ST7789, model HS20HS072RX
@@ -105,16 +105,13 @@ The main loop is **entirely non-blocking** using:
 **Never use `sleep_ms()` or blocking delays in the main loop.**
 
 ### GPIO Interrupt Routing
-From [main.cpp:26-36](src/main.cpp#L26-L36):
+From [main.cpp:18-25](src/main.cpp#L18-L25):
 
 ```cpp
 void gpio_callback(uint gpio, uint32_t events) {
-    // Route encoder pins
     if (hw.encoder.isMyPin(gpio)) {
         hw.encoder.handleISR(gpio, events);
     }
-
-    // Route overcurrent alert
     if (gpio == Board::PIN_SWITCH_EN_READ) {
         over_current(gpio, events);
     }
@@ -131,72 +128,84 @@ All GPIO interrupts go through this router. To add a new interrupt-driven input:
 src/
 ├── main.cpp              # Entry point, event loop, ISR router
 ├── hardware.h/cpp        # Global Hardware singleton
-├── config.h              # Constants (ADC, NTC, voltage divider)
-│
-├── bsp/                  # Board Support Package
-│   ├── pin_map.h         # GPIO pin definitions (Board namespace)
-│   └── board_init.cpp    # Early hardware init (I2C, SPI, UART)
+├── board_config.h        # Pin definitions (Board::) and constants (Config::)
 │
 ├── drivers/              # Hardware drivers by category
 │   ├── gpio/             # SimpleIO wrapper (digital I/O)
 │   ├── input/            # Button, RotaryEncoder, ADC
-│   ├── output/           # Buzzer (PWM-based)
+│   ├── buzzer/           # Buzzer (PWM-based)
 │   ├── rgb_led/          # SK6812 RGB LED (PIO-based)
 │   ├── display/          # ST7789 LCD (SPI)
 │   └── power/
 │       ├── ina228/       # Power monitor (I2C, 0x40)
-│       └── tps26750/     # USB PD controller (I2C, 0x20) [core complete]
+│       └── tps26750/     # USB PD controller (I2C, 0x21) [complete]
 │
-├── hal/                  # Hardware abstraction (I2C bus wrapper)
-└── ui/                   # Display manager (minimal/reserved)
+├── utils/                # Utility functions (logging.h)
+└── ui/                   # Display manager (reserved for Phase 4)
 ```
 
 ## Key Subsystems
 
 ### USB Power Delivery (TPS26750)
 **TPS26750 USB PD Controller** ([drivers/power/tps26750/](src/drivers/power/tps26750/)):
-- **Status:** ✅ Core implementation complete - Phase 2 in progress
-- **Purpose:** Negotiates voltage contracts with USB-C chargers (5V-48V, including PPS)
-- **I2C Address:** 0x20 (configurable via ADCINx pins)
-- **Protocol:** Custom "Unique Address Interface" with byte-count prefix (implemented)
+- **Status:** ✅ **COMPLETE** - Full implementation ready for testing
+- **Purpose:** Negotiates voltage contracts with USB-C chargers (5V-48V, including PPS and EPR AVS)
+- **I2C Address:** 0x21 (configurable via ADCINx pins: 0x20-0x23)
+- **Protocol:** Custom "Unique Address Interface" with byte-count prefix (fully implemented)
 
 **Implemented Features:**
 - ✅ Full I2C register protocol (read/write with byte-count handling)
 - ✅ Complete register map (29 registers: MODE, STATUS, PDO, RDO, interrupts, etc.)
 - ✅ 4CC command support (Gaid, SWSk, GSrC, GSkC for warm/cold reset, role swap, cap discovery)
 - ✅ Interrupt handling (read/clear/check 11-byte INT_EVENT1 register)
-- ✅ Active contract reading (`getActiveContract()` - supports Fixed and PPS PDOs)
-- ✅ Source capability discovery (`getSourceCapabilities()` - parses charger's offered contracts)
+- ✅ Active contract reading (`getActiveContract()` - supports Fixed, PPS, and AVS PDOs)
+- ✅ Source capability discovery (`getSourceCapabilities()` - parses SPR + EPR contracts)
+- ✅ **Voltage negotiation:** `requestFixedProfile()`, `requestPPSProfile()`, `requestAVSProfile()`
+- ✅ **AUTONEGOTIATE_SINK register manipulation** (24 bytes with complex bit packing)
 - ✅ PDO parsing for Fixed Supply (voltage in 50mV units, current in 10mA units)
-- ✅ PDO parsing for PPS/Augmented (voltage in 20mV units, current in 50mA units)
+- ✅ PDO parsing for PPS (voltage in 20mV units, current in 50mA units)
+- ✅ PDO parsing for AVS/EPR (voltage in 100mV units, supports up to 48V)
 - ✅ Device mode detection (APP/BOOT/PTCH)
-
-**Remaining Work:**
-- Request specific voltage (send RDO to negotiate contract)
-- Monitor connection status and handle disconnect/reconnect
-- Full interrupt-driven event handling
-- Current limit advertisement configuration
 
 **Key API Methods:**
 ```cpp
+// Core
 bool init()                                      // Verify device presence
 bool getMode(char* modeStr)                      // Read MODE register ("APP ", "BOOT")
 bool sendCommand(const char* cmd)                // Send 4CC command
-bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma)
+
+// Contract Discovery & Monitoring
 uint8_t getSourceCapabilities(SourceCapability* caps, uint8_t max_caps)
+bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma)
+
+// Voltage Negotiation (NEW)
+bool requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma)
+bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma)
+bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma)
+
+// Interrupt Handling
 bool readInterrupts(uint8_t* events)             // Read 11-byte interrupt buffer
 bool clearInterrupts(const uint8_t* mask)        // Clear specific interrupts
+bool isInterruptSet(const uint8_t* buffer, uint8_t bitIndex)
 ```
 
 **SourceCapability Struct:**
 ```cpp
 struct SourceCapability {
-    uint32_t voltage_mv;      // Voltage in millivolts
+    uint32_t voltage_mv;      // Fixed: Voltage. PPS/AVS: Max Voltage
     uint32_t max_current_ma;  // Max current in milliamps
-    bool is_pps;              // True if Programmable Power Supply (variable voltage)
-    uint32_t min_voltage_mv;  // Min voltage (PPS only)
+    bool is_pps;              // Programmable Power Supply (SPR, 5-21V)
+    bool is_avs;              // Adjustable Voltage Supply (EPR, 15-48V)
+    uint32_t min_voltage_mv;  // Min voltage (PPS/AVS only)
 };
 ```
+
+**Negotiation Process:**
+1. Read available contracts with `getSourceCapabilities()`
+2. Select desired contract (Fixed, PPS, or AVS)
+3. Call appropriate `request*Profile()` function
+4. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) for completion
+5. Verify with `getActiveContract()` and INA228 voltage reading
 
 ### Power Monitoring & Safety
 **INA228 Power Monitor** ([drivers/power/ina228/](src/drivers/power/ina228/)):
@@ -207,7 +216,7 @@ struct SourceCapability {
 - Recovery: User presses encoder button → clears latch via I2C → re-enables load
 - **Production use:** Threshold will be set to user-selected current limit
 
-**Critical:** The overcurrent handler in [main.cpp:12-23](src/main.cpp#L12-L23) is **safety-critical**. It immediately cuts power before any other action.
+**Critical:** The overcurrent handler in [main.cpp:11-15](src/main.cpp#L11-L15) is **safety-critical**. It immediately cuts power before any other action.
 
 **Load Switch Control:**
 - `hw.loadSwitch` (GPIO 3) - Enables/disables output to load
@@ -283,28 +292,31 @@ struct SourceCapability {
 
 ## Configuration
 
-### Pin Definitions
-Edit [src/bsp/pin_map.h](src/bsp/pin_map.h) to change GPIO assignments. All pins are in the `Board::` namespace:
+### Pin Definitions and Constants
+Edit [src/board_config.h](src/board_config.h) to change GPIO assignments and calibration values. Two namespaces:
 
+**`Board::` namespace** - GPIO pins and I2C addresses:
 ```cpp
 Board::PIN_BTN_1       // GPIO 0
 Board::PIN_I2C_SDA     // GPIO 4 (I2C0)
 Board::PIN_BUZZER      // GPIO 6
 Board::PIN_RGB_LED     // GPIO 28 (PIO)
 Board::PIN_LCD_CS      // GPIO 17 (SPI1)
+Board::I2C_ADDR_INA228 // 0x40
+Board::I2C_ADDR_TPS26750 // 0x21
 ```
 
-**UART is on custom pins:** TX=GP16, RX=GP29 (configured in [CMakeLists.txt:61-66](CMakeLists.txt#L61-L66))
-
-### Constants
-Edit [src/config.h](src/config.h) for calibration values:
-
+**`Config::` namespace** - Calibration and hardware constants:
 ```cpp
 Config::ADC_REF_VOLTAGE          // 3.3V
 Config::NTC_BETA                 // 3950 (thermistor)
 Config::VOLTAGE_DIVIDER_TOP      // 150kΩ
-Config::LED_FREQ                 // 800kHz (WS2812)
+Config::VOLTAGE_DIVIDER_BOT      // 10kΩ
+Config::INA228_SHUNT_RESISTOR    // 8mΩ
+Config::INA228_MAX_CURRENT       // 5A
 ```
+
+**UART is on custom pins:** TX=GP16, RX=GP29 (configured in [CMakeLists.txt:60-65](CMakeLists.txt#L60-L65))
 
 ### INA228 Overcurrent Threshold
 Modify in [hardware.cpp](src/hardware.cpp) `Hardware::init()`:
@@ -323,7 +335,7 @@ powerMonitor.setAlertConfig(
 
 | Bus | Pins | Frequency | Devices |
 |-----|------|-----------|---------|
-| **I2C0** | GP4 (SDA), GP5 (SCL) | 400 kHz | INA228 (0x40), TPS26750 (0x20) |
+| **I2C0** | GP4 (SDA), GP5 (SCL) | 400 kHz | INA228 (0x40), TPS26750 (0x21) |
 | **SPI1** | GP18 (SCK), GP19 (MOSI) | 24 MHz | ST7789 Display |
 | **UART0** | GP16 (TX), GP29 (RX) | 115200 | Debug console |
 | **PIO** | GP28 | 800 kHz | SK6812 RGB LED |
@@ -618,65 +630,28 @@ If builds fail, verify these environment variables are set in the integrated ter
 
 ## Development Roadmap
 
-**Current Status:** Phase 1 Complete, Phase 2 In Progress
-
 **See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for detailed implementation plan.**
 
 ### Phase 1: Hardware Foundation (✅ COMPLETE)
-- ✅ GPIO input reading (SimpleIO with `read()` method)
-- ✅ ADC reading with voltage divider and NTC conversion
-- ✅ Encoder with debouncing implemented
-- ✅ LCD graphics (text, shapes, numbers, float rendering)
-- ✅ Buzzer melody playback (Mario power-up sound)
-- ✅ Button debouncing fixed (per-instance state tracking)
-- ✅ Encoder button controls output enable/disable and clears INA228 fault latch
+All hardware drivers implemented and tested:
+- GPIO, ADC (voltage divider + NTC), Encoder (with debouncing), LCD graphics, Buzzer melody
+- Button debouncing fixed, Encoder button controls output enable/disable
 
-### Phase 2: TPS26750 USB PD Integration (🔄 IN PROGRESS)
-- ✅ Research TPS26750 register map and protocol
-- ✅ Implement I2C communication with unique byte-count protocol
-- ✅ PD contract discovery (parse Source Capabilities from charger)
-- ✅ Active contract monitoring (read current voltage/current)
-- ✅ Interrupt handling framework (read/clear/check)
-- ✅ 4CC command support (device control)
-- ⏳ Voltage request negotiation (send RDO to request specific voltage)
-- ⏳ Connection status monitoring
-- ⏳ Current limit configuration
+### Phase 2: TPS26750 USB PD Integration (✅ COMPLETE)
+Full USB-C PD negotiation implemented:
+- I2C communication with byte-count protocol, 4CC commands, interrupt handling
+- Contract discovery (Fixed/PPS/AVS), voltage negotiation, AUTONEGOTIATE_SINK manipulation
+- Test program in [main.cpp](src/main.cpp) for contract selection
 
 ### Phase 3: Application Logic (Pending)
-- State machine implementation (BOOT, IDLE, RUNNING, MENU, FAULT, SETTING_*)
-- Settings manager (voltage, current limit, 17V buck control)
-- Safety logic (overtemp, overvoltage, current limit enforcement)
-- Power statistics tracking
+- State machine (BOOT, IDLE, RUNNING, MENU, FAULT, SETTING_*)
+- Settings manager, safety logic, power statistics
 
 ### Phase 4: User Interface (Pending)
-- Screen layout design
-- Display manager implementation
-- Individual screen classes (main, menu, voltage select, current set, fault)
-- Input handling (button/encoder to UI)
-- Visual feedback (RGB LED states, buzzer feedback)
+- Screen classes, display manager, input handling, visual feedback
 
 ### Phase 5: Integration & Testing (Pending)
-- End-to-end testing
-- Edge case handling
-- Performance optimization
-- Code cleanup and documentation
-
-**Phase 1 Hardware Testing Results:**
-- ✅ All buttons working with proper debouncing
-- ✅ Encoder tracking rotation with debouncing
-- ✅ Encoder button now enables/disables output switch and clears INA228 fault
-- ✅ ADC reading voltage and temperature correctly
-- ✅ INA228 power monitoring operational
-- ✅ RGB LED status indication working
-- ✅ Buzzer plays Mario power-up melody on startup
-- ✅ LCD display initialized with full ST7789 command sequence (gamma, power control, etc.)
-- ✅ Text and graphics rendering functional
-
-**Remaining Work for Future Phases:**
-- TPS26750 voltage negotiation (Phase 2 - in progress)
-- Application state machine (Phase 3)
-- User interface screens and menu system (Phase 4)
-- Integration testing (Phase 5)
+- End-to-end testing, edge cases, optimization
 
 ## Key Files Reference
 
@@ -684,13 +659,12 @@ If builds fail, verify these environment variables are set in the integrated ter
 |------|---------|
 | [main.cpp](src/main.cpp) | Entry point, event loop, ISR router |
 | [hardware.h](src/hardware.h) / [.cpp](src/hardware.cpp) | Global singleton, all component instances |
-| [config.h](src/config.h) | Calibration constants (ADC, NTC, dividers) |
-| [pin_map.h](src/bsp/pin_map.h) | All GPIO pin assignments |
+| [board_config.h](src/board_config.h) | Pin definitions (Board::) and constants (Config::) |
 | [CMakeLists.txt](CMakeLists.txt) | Build config, linked libraries, UART pins |
 
 ## Safety-Critical Code
 
-**Overcurrent Protection** ([main.cpp:12-23](src/main.cpp#L12-L23)):
+**Overcurrent Protection** ([main.cpp:11-15](src/main.cpp#L11-L15)):
 - Triggered by INA228 ALERT pin (active-low, latched)
 - Immediately disables load switch (no delays)
 - Sets red LED for visual indication

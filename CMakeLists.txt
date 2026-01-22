@@ -77,7 +77,6 @@ target_link_libraries(PD240W
 target_include_directories(PD240W PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         src
-        src/bsp
         src/drivers
         src/hal
         src/ui

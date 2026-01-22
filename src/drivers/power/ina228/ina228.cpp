@@ -58,23 +58,30 @@
 //
 //  CONSTRUCTOR
 //
-INA228::INA228(const uint8_t address, i2c_inst_t *i2c)
+INA228::INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent)
 {
   _address     = address;
   _i2c         = i2c;
-  //  no calibrated values by default.
-  _shunt       = 0.015;
-  _maxCurrent  = 10.0;
+  _shunt       = shuntResistor;
+  _maxCurrent  = maxCurrent;
   _current_LSB = _maxCurrent * pow(2, -19);
   _error       = 0;
 }
 
 
-bool INA228::begin()
+bool INA228::init()
 {
-  if (! isConnected()) return false;
+  if (!isConnected()) return false;
 
+  // Read current ADC range setting
   getADCRange();
+
+  // Configure shunt calibration with provided values
+  setMaxCurrentShunt(_maxCurrent, _shunt);
+
+  // Set averaging to 16 samples for stable readings
+  setAverage(INA228_16_SAMPLES);
+
   return true;
 }
 

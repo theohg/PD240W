@@ -12,6 +12,9 @@ void RotaryEncoder::init() {
     gpio_init(_pinB);
     gpio_set_dir(_pinB, GPIO_IN);
     gpio_disable_pulls(_pinB);
+
+    // Initialize state from current pin values
+    _lastState = (gpio_get(_pinA) << 1) | gpio_get(_pinB);
 }
 
 bool RotaryEncoder::isMyPin(uint gpio) const {
@@ -32,25 +35,34 @@ void RotaryEncoder::handleISR(uint gpio, uint32_t events) {
     if (current_time_us - _last_change_time_us < DEBOUNCE_TIME_US) {
         return;  // Ignore this transition (too fast, likely bounce)
     }
+    _last_change_time_us = current_time_us;
 
-    // Read current state
-    int MSB = gpio_get(_pinA);
-    int LSB = gpio_get(_pinB);
+    // Read current state of both pins
+    uint8_t currentState = (gpio_get(_pinA) << 1) | gpio_get(_pinB);
 
-    int encoded = (MSB << 1) | LSB;
-    int sum = (_lastEncoded << 2) | encoded;
+    // Skip if state hasn't actually changed (noise)
+    if (currentState == _lastState) {
+        return;
+    }
 
-    // Determine direction based on state transitions
-    // CW (clockwise)
-    if(sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) {
+    // State machine for quadrature decoding
+    // Only count on specific transitions for 1 tick per detent
+    // Gray code sequence: 00 -> 01 -> 11 -> 10 -> 00 (CW)
+    //                     00 -> 10 -> 11 -> 01 -> 00 (CCW)
+
+    // Combine last and current state for transition detection
+    uint8_t transition = (_lastState << 2) | currentState;
+
+    // CW transitions: 00->01, 01->11, 11->10, 10->00
+    // Only count on the 11->10 transition (one tick per detent)
+    if (transition == 0b1110) {  // 11 -> 10
         _ticks++;
-        _last_change_time_us = current_time_us;  // Update debounce time on valid transition
     }
-    // CCW (counter-clockwise)
-    else if(sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {
+    // CCW transitions: 00->10, 10->11, 11->01, 01->00
+    // Only count on the 11->01 transition (one tick per detent)
+    else if (transition == 0b1101) {  // 11 -> 01
         _ticks--;
-        _last_change_time_us = current_time_us;  // Update debounce time on valid transition
     }
 
-    _lastEncoded = encoded;
+    _lastState = currentState;
 }

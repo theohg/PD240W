@@ -3,199 +3,288 @@
 #include "hardware.h"
 #include "utils/logging.h"
 
-// // Global GPIO Interrupt Handler
-// void gpio_callback(uint gpio, uint32_t events) {
-//     if (hw.encoder.isMyPin(gpio)) {
-//         hw.encoder.handleISR(gpio, events);
-//     }
-// }
+// ============================================================================
+// PHASE 2 TEST - TPS26750 USB PD Controller
+// ============================================================================
 
+// Overcurrent interrupt handler
 void over_current(uint gpio, uint32_t events) {
-    // 1. Immediately cut power (Safety Critical)
     hw.loadSwitch.off();
-    
-    // 2. Visual indication
-    hw.rgbLed.setColor(255, 0, 0, 255); // Red full brightness
-    
-    // 3. Optional: Read INA228 Diagnose register to clear the Latch
-    // Note: Doing I2C inside an ISR is generally bad practice because it's slow.
-    // Ideally, set a flag here and handle the I2C clear in the main loop.
-    printf("!! OVERCURRENT DETECTED - LOAD DISABLED !!\n");
+    hw.rgbLed.setColor(255, 0, 0, 255); // Red
+    LOG_ERROR("OVERCURRENT DETECTED - LOAD DISABLED");
 }
 
-// Global GPIO Router
+// GPIO interrupt router
 void gpio_callback(uint gpio, uint32_t events) {
-    // Handle Encoder
     if (hw.encoder.isMyPin(gpio)) {
         hw.encoder.handleISR(gpio, events);
     }
-    
-    // Handle Overcurrent
     if (gpio == Board::PIN_SWITCH_EN_READ) {
         over_current(gpio, events);
     }
 }
 
+// ============================================================================
+// Global State
+// ============================================================================
+
+SourceCapability contracts[13];  // TPS26750 supports up to 13 PDOs (7 SPR + 6 EPR)
+uint8_t num_contracts = 0;
+int8_t selected_contract = 0;    // Currently selected contract index
+bool negotiation_in_progress = false;
+absolute_time_t negotiation_timeout;
+
+// ============================================================================
+// Display Helper Functions
+// ============================================================================
+
+void displayHeader() {
+    hw.display.fillScreen(ST7789::COLOR_BLACK);
+    hw.display.drawString(10, 10, "USB PD Contract Test", ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 2);
+    hw.display.drawLine(10, 40, 230, 40, ST7789::COLOR_GREEN);
+}
+
+void displayContracts() {
+    // Clear contract display area
+    hw.display.fillRect(10, 50, 220, 200, ST7789::COLOR_BLACK);
+
+    if (num_contracts == 0) {
+        hw.display.drawString(10, 50, "No contracts found!", ST7789::COLOR_RED, ST7789::COLOR_BLACK, 1);
+        return;
+    }
+
+    // Display each contract
+    int y = 50;
+    for (uint8_t i = 0; i < num_contracts && i < 10; i++) {
+        // Highlight selected contract
+        uint16_t color = (i == selected_contract) ? ST7789::COLOR_YELLOW : ST7789::COLOR_WHITE;
+        uint16_t bg = (i == selected_contract) ? ST7789::COLOR_BLUE : ST7789::COLOR_BLACK;
+
+        // Format: "5V @ 3A" or "5-21V PPS"
+        char line[32];
+        if (contracts[i].is_pps) {
+            snprintf(line, sizeof(line), "%u-%uV PPS %umA",
+                     (unsigned)(contracts[i].min_voltage_mv / 1000),
+                     (unsigned)(contracts[i].voltage_mv / 1000),
+                     (unsigned)contracts[i].max_current_ma);
+        } else if (contracts[i].is_avs) {
+            snprintf(line, sizeof(line), "%u-%uV AVS %umA",
+                     (unsigned)(contracts[i].min_voltage_mv / 1000),
+                     (unsigned)(contracts[i].voltage_mv / 1000),
+                     (unsigned)contracts[i].max_current_ma);
+        } else {
+            snprintf(line, sizeof(line), "%uV @ %umA",
+                     (unsigned)(contracts[i].voltage_mv / 1000),
+                     (unsigned)contracts[i].max_current_ma);
+        }
+
+        // Draw selection indicator
+        if (i == selected_contract) {
+            hw.display.drawString(5, y, ">", ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
+        }
+
+        hw.display.drawString(20, y, line, color, bg, 1);
+        y += 15;
+    }
+}
+
+void displayActiveContract() {
+    // Display active contract at bottom
+    hw.display.fillRect(10, 260, 220, 50, ST7789::COLOR_BLACK);
+    hw.display.drawString(10, 260, "Active:", ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 1);
+
+    uint32_t voltage_mv, current_ma;
+    if (hw.pdController.getActiveContract(voltage_mv, current_ma)) {
+        char line[32];
+        snprintf(line, sizeof(line), "%.2fV @ %.2fA", voltage_mv / 1000.0f, current_ma / 1000.0f);
+        hw.display.drawString(10, 275, line, ST7789::COLOR_GREEN, ST7789::COLOR_BLACK, 2);
+
+        // Also display on serial
+        LOG_INFO("Active contract: %.2fV @ %.2fA", voltage_mv / 1000.0f, current_ma / 1000.0f);
+    } else {
+        hw.display.drawString(10, 275, "Error reading!", ST7789::COLOR_RED, ST7789::COLOR_BLACK, 1);
+    }
+}
+
+void displayStatus(const char* msg, uint16_t color) {
+    hw.display.fillRect(10, 300, 220, 15, ST7789::COLOR_BLACK);
+    hw.display.drawString(10, 300, msg, color, ST7789::COLOR_BLACK, 1);
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
 int main() {
-    // ========================================
-    // PHASE 1 TEST CODE - Hardware Foundation
-    // ========================================
-
     LOG_SEPARATOR();
-    LOG_INFO("PD240W Phase 1 Hardware Test");
+    LOG_INFO("PD240W Phase 2 - TPS26750 Test");
     LOG_SEPARATOR();
 
-    // 1. Initialize Hardware
+    // Initialize hardware
     hw.init();
 
-    // 2. Setup GPIO Interrupts
+    // Setup interrupts
     gpio_set_irq_enabled_with_callback(Board::PIN_ENC_A, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     gpio_set_irq_enabled(Board::PIN_ENC_B, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
     gpio_set_irq_enabled(Board::PIN_SWITCH_EN_READ, GPIO_IRQ_EDGE_FALL, true);
 
-    LOG_INFO("All interrupts enabled");
+    // Initialize display
+    displayHeader();
+    displayStatus("Initializing...", ST7789::COLOR_YELLOW);
 
-    // 3. Play Mario Power-Up melody to test buzzer
-    LOG_INFO("Playing startup melody...");
-    extern const Note MARIO_POWERUP[];
-    extern const uint8_t MARIO_POWERUP_LENGTH;
-    hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+    // Check TPS26750 mode
+    char mode[5];
+    if (hw.pdController.getMode(mode)) {
+        LOG_INFO("TPS26750 Mode: %s", mode);
+    } else {
+        LOG_ERROR("Failed to read TPS26750 MODE register!");
+        displayStatus("TPS26750 Error!", ST7789::COLOR_RED);
+        while (1) { tight_loop_contents(); }  // Halt on error
+    }
 
-    // 4. Test LCD text rendering
-    hw.display.fillScreen(ST7789::COLOR_BLACK);
-    hw.display.drawString(10, 10, "PD240W Phase 1", ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 2);
-    hw.display.drawString(10, 40, "Hardware Test", ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 2);
-    hw.display.drawLine(10, 70, 230, 70, ST7789::COLOR_GREEN);
+    // Get available contracts
+    LOG_INFO("Reading available contracts...");
+    num_contracts = hw.pdController.getSourceCapabilities(contracts, 13);
+    LOG_INFO("Found %u contracts:", num_contracts);
 
-    LOG_INFO("Display initialized - showing header");
+    for (uint8_t i = 0; i < num_contracts; i++) {
+        if (contracts[i].is_pps) {
+            LOG_INFO("  [%u] %u-%uV PPS @ %umA", i,
+                     contracts[i].min_voltage_mv / 1000,
+                     contracts[i].voltage_mv / 1000,
+                     contracts[i].max_current_ma);
+        } else if (contracts[i].is_avs) {
+            LOG_INFO("  [%u] %u-%uV AVS @ %umA", i,
+                     contracts[i].min_voltage_mv / 1000,
+                     contracts[i].voltage_mv / 1000,
+                     contracts[i].max_current_ma);
+        } else {
+            LOG_INFO("  [%u] %uV @ %umA", i,
+                     contracts[i].voltage_mv / 1000,
+                     contracts[i].max_current_ma);
+        }
+    }
 
-    // Test state tracking
-    static int last_encoder_ticks = 0;
-    static bool melody_test_done = false;
+    // Display contracts on screen
+    displayContracts();
+    displayActiveContract();
+    displayStatus("Use encoder to select", ST7789::COLOR_GREEN);
 
-    // Timers for non-blocking updates
-    absolute_time_t next_sensor_read = make_timeout_time_ms(1000);
-    absolute_time_t next_power_read = make_timeout_time_ms(500);
+    // LED status
+    hw.rgbLed.setColor(0, 255, 0, 50); // Green - ready
 
     LOG_SEPARATOR();
-    LOG_INFO("Entering main loop - press buttons to test!");
-    LOG_INFO("BTN1: Toggle debug LED | BTN2: Test buzzer | ENC BTN: Reset encoder");
+    LOG_INFO("Test Controls:");
+    LOG_INFO("  Encoder: Select contract");
+    LOG_INFO("  BTN1: Request selected contract");
+    LOG_INFO("  Encoder Button: Toggle output switch");
     LOG_SEPARATOR();
 
+    // Encoder tracking
+    int last_encoder_ticks = 0;
+    hw.encoder.reset();
+
+    // Main loop
     while (true) {
-        // ===== Button Tests =====
+        // ===== Encoder: Select Contract =====
+        int current_ticks = hw.encoder.getTicks();
+        if (current_ticks != last_encoder_ticks && !negotiation_in_progress) {
+            int delta = current_ticks - last_encoder_ticks;
+            last_encoder_ticks = current_ticks;
 
-        // BTN1: Toggle debug LED and test SimpleIO read()
-        if (hw.btn1.isClicked()) {
-            hw.debugLed.toggle();
-            bool led_state = hw.debugLed.read();
-            LOG_INFO("BTN1 clicked - Debug LED: %s", led_state ? "ON" : "OFF");
+            selected_contract += delta;
 
-            // Update display
-            hw.display.fillRect(10, 90, 220, 20, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 90, "BTN1: LED ", ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(80, 90, led_state ? "ON" : "OFF", ST7789::COLOR_GREEN, ST7789::COLOR_BLACK, 1);
+            // Wrap around
+            if (selected_contract < 0) selected_contract = num_contracts - 1;
+            if (selected_contract >= num_contracts) selected_contract = 0;
+
+            LOG_DEBUG("Selected contract: %d", selected_contract);
+            displayContracts();
         }
 
-        // BTN2: Play test tone
-        if (hw.btn2.isClicked()) {
-            LOG_INFO("BTN2 clicked - Playing test tone");
-            hw.buzzer.playTone(1000, 200);
+        // ===== BTN1: Request Selected Contract =====
+        if (hw.btn1.isClicked() && !negotiation_in_progress) {
+            LOG_INFO("Requesting contract [%d]...", selected_contract);
+            displayStatus("Negotiating...", ST7789::COLOR_YELLOW);
+            hw.rgbLed.setColor(255, 255, 0, 100); // Yellow - negotiating
 
-            hw.display.fillRect(10, 110, 220, 20, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 110, "BTN2: Buzzer Test", ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
+            bool success = false;
+
+            if (contracts[selected_contract].is_pps) {
+                // Request PPS at minimum voltage (for safety)
+                success = hw.pdController.requestPPSProfile(
+                    contracts[selected_contract].min_voltage_mv,
+                    contracts[selected_contract].max_current_ma
+                );
+            } else if (contracts[selected_contract].is_avs) {
+                // Request AVS at minimum voltage (for safety)
+                success = hw.pdController.requestAVSProfile(
+                    contracts[selected_contract].min_voltage_mv,
+                    contracts[selected_contract].max_current_ma
+                );
+            } else {
+                // Request fixed contract
+                success = hw.pdController.requestFixedProfile(
+                    contracts[selected_contract].voltage_mv,
+                    contracts[selected_contract].max_current_ma
+                );
+            }
+
+            if (success) {
+                negotiation_in_progress = true;
+                negotiation_timeout = make_timeout_time_ms(2000); // 2s timeout
+            } else {
+                LOG_ERROR("Failed to request contract!");
+                displayStatus("Request failed!", ST7789::COLOR_RED);
+                hw.rgbLed.setColor(255, 0, 0, 100); // Red - error
+            }
         }
 
-        // Encoder Button: Toggle output switch and clear INA228 fault if needed
+        // ===== Check Negotiation Status =====
+        if (negotiation_in_progress) {
+            // Check for timeout
+            if (absolute_time_diff_us(get_absolute_time(), negotiation_timeout) < 0) {
+                LOG_WARN("Negotiation timeout!");
+                displayStatus("Timeout!", ST7789::COLOR_RED);
+                negotiation_in_progress = false;
+                hw.rgbLed.setColor(255, 0, 0, 100); // Red
+            } else {
+                // Check for new contract event
+                uint8_t events[11] = {0};
+                if (hw.pdController.readInterrupts(events)) {
+                    if (hw.pdController.isInterruptSet(events, 12)) { // NEW_CONTRACT_AS_SINK
+                        LOG_INFO("New contract negotiated!");
+                        displayStatus("Success!", ST7789::COLOR_GREEN);
+                        displayActiveContract();
+                        negotiation_in_progress = false;
+                        hw.rgbLed.setColor(0, 255, 0, 100); // Green
+
+                        // Clear interrupt
+                        uint8_t clear_mask[11] = {0};
+                        clear_mask[1] = (1 << 4); // Bit 12
+                        hw.pdController.clearInterrupts(clear_mask);
+                    }
+                }
+            }
+        }
+
+        // ===== Encoder Button: Toggle Output Switch =====
         if (hw.btnEnc.isClicked()) {
-            // Clear INA228 latched fault by reading diagnose register
+            // Clear INA228 fault latch
             hw.powerMonitor.getDiagnoseAlert();
 
-            // Toggle load switch
             bool current_state = hw.loadSwitch.read();
             if (current_state) {
                 hw.loadSwitch.off();
-                hw.rgbLed.setColor(255, 255, 0, 100); // Yellow - output disabled
-                LOG_INFO("Encoder button: Output DISABLED");
+                LOG_INFO("Output DISABLED");
             } else {
                 hw.loadSwitch.on();
-                hw.rgbLed.setColor(0, 255, 0, 100); // Green - output enabled
-                LOG_INFO("Encoder button: Output ENABLED");
+                LOG_INFO("Output ENABLED");
             }
-
-            hw.display.fillRect(10, 130, 220, 20, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 130, current_state ? "Output: OFF" : "Output: ON",
-                                  current_state ? ST7789::COLOR_RED : ST7789::COLOR_GREEN,
-                                  ST7789::COLOR_BLACK, 1);
         }
 
-        // ===== Encoder Test (with debouncing) =====
-        int current_ticks = hw.encoder.getTicks();
-        if (current_ticks != last_encoder_ticks) {
-            LOG_DEBUG("Encoder ticks: %d (delta: %+d)", current_ticks, current_ticks - last_encoder_ticks);
-            last_encoder_ticks = current_ticks;
-
-            // Display encoder value
-            hw.display.fillRect(10, 160, 220, 30, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 160, "Encoder:", ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 2);
-            hw.display.drawInt(140, 160, current_ticks, ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 2);
-        }
-
-        // ===== ADC Sensor Readings =====
-        if (absolute_time_diff_us(get_absolute_time(), next_sensor_read) < 0) {
-            float vbus_pre = hw.adc.getVBUS();
-            float temperature = hw.adc.getTemperature();
-
-            LOG_VALUE("VBUS (pre-switch)", vbus_pre, "V");
-            LOG_VALUE("Temperature", temperature, "°C");
-
-            // Display ADC readings
-            hw.display.fillRect(10, 200, 220, 50, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 200, "ADC Readings:", ST7789::COLOR_GREEN, ST7789::COLOR_BLACK, 1);
-
-            hw.display.drawString(10, 220, "VBUS:", ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 1);
-            hw.display.drawFloat(70, 220, vbus_pre, 2, ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(130, 220, "V", ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 1);
-
-            hw.display.drawString(10, 235, "Temp:", ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 1);
-            hw.display.drawFloat(70, 235, temperature, 1, ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(130, 235, "C", ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
-
-            next_sensor_read = make_timeout_time_ms(1000);
-        }
-
-        // ===== INA228 Power Monitor =====
-        if (absolute_time_diff_us(get_absolute_time(), next_power_read) < 0) {
-            float voltage = hw.powerMonitor.getBusVoltage();
-            float current = hw.powerMonitor.getCurrent();
-            float power = hw.powerMonitor.getPower();
-
-            LOG_INFO("INA228 - V: %.3fV | I: %.3fA | P: %.3fW", voltage, current, power);
-
-            // Display power monitoring
-            hw.display.fillRect(10, 260, 220, 50, ST7789::COLOR_BLACK);
-            hw.display.drawString(10, 260, "INA228 (post-sw):", ST7789::COLOR_MAGENTA, ST7789::COLOR_BLACK, 1);
-
-            hw.display.drawFloat(10, 280, voltage, 2, ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(60, 280, "V", ST7789::COLOR_CYAN, ST7789::COLOR_BLACK, 1);
-
-            hw.display.drawFloat(80, 280, current, 3, ST7789::COLOR_GREEN, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(140, 280, "A", ST7789::COLOR_GREEN, ST7789::COLOR_BLACK, 1);
-
-            hw.display.drawFloat(10, 295, power, 2, ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
-            hw.display.drawString(60, 295, "W", ST7789::COLOR_YELLOW, ST7789::COLOR_BLACK, 1);
-
-            next_power_read = make_timeout_time_ms(500);
-        }
-
-        // ===== RGB LED Update =====
+        // ===== Update RGB LED =====
         hw.rgbLed.update();
-
-        // ===== Melody completion test =====
-        if (!melody_test_done && !hw.buzzer.isPlayingMelody()) {
-            melody_test_done = true;
-            LOG_INFO("Startup melody completed successfully");
-        }
     }
 
     return 0;

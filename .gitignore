@@ -50,14 +50,10 @@ Temporary Items
 .apdisk
 
 # ============================================================================
-# VSCode (keep settings, ignore user-specific files)
+# VSCode (Ignore everything except extensions.json)
 # ============================================================================
 .vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
 !.vscode/extensions.json
-!.vscode/c_cpp_properties.json
 *.code-workspace
 .history/
 

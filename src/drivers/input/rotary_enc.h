@@ -6,11 +6,11 @@ class RotaryEncoder {
 private:
     volatile int _ticks = 0;
     uint _pinA, _pinB;
-    volatile int _lastEncoded = 0;
+    volatile uint8_t _lastState = 0;
 
     // Debouncing
     volatile uint64_t _last_change_time_us = 0;
-    static constexpr uint32_t DEBOUNCE_TIME_US = 2000;  // 2ms debounce
+    static constexpr uint32_t DEBOUNCE_TIME_US = 1000;  // 1ms debounce per transition
 
 public:
     RotaryEncoder(uint pinA, uint pinB);
