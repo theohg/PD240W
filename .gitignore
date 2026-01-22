@@ -1,0 +1,126 @@
+# ============================================================================
+# Build outputs (YES, exclude these - they're auto-generated)
+# ============================================================================
+build/
+*.elf
+*.bin
+*.hex
+*.uf2
+*.map
+*.lst
+*.o
+*.a
+*.d
+*.su
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# ============================================================================
+# macOS files
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ============================================================================
+# VSCode (keep settings, ignore user-specific files)
+# ============================================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/c_cpp_properties.json
+*.code-workspace
+.history/
+
+# ============================================================================
+# Editor backup and temp files
+# ============================================================================
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+\#*\#
+.#*
+
+# ============================================================================
+# Debugging and profiling
+# ============================================================================
+*.log
+*.dmp
+core
+vgcore.*
+callgrind.*
+gmon.out
+
+# ============================================================================
+# Python (if using any build scripts)
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+
+# ============================================================================
+# Documentation build outputs
+# ============================================================================
+doc/html/
+doc/latex/
+doxygen_warnings.txt
+
+# ============================================================================
+# IDE specific
+# ============================================================================
+# CLion
+.idea/
+cmake-build-*/
+
+# Eclipse
+.cproject
+.project
+.settings/
+
+# ============================================================================
+# Pico SDK specific
+# ============================================================================
+# Keep pico_sdk_import.cmake if you have it in the repo
+# generated/  # Uncomment if you have auto-generated files
+
+# ============================================================================
+# Custom project files (add as needed)
+# ============================================================================
+# Uncomment if you have private configuration files
+# config_local.h
+# secrets.h
+# credentials.json

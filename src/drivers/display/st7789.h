@@ -1,0 +1,60 @@
+#pragma once
+
+#include <stdint.h>
+#include "pico/stdlib.h"
+#include "hardware/spi.h"
+
+// ST7789 LCD Driver for PD240W
+// Resolution: 240x320 (2.4" display, model HS20HS072RX)
+
+class ST7789 {
+public:
+    // Display dimensions
+    static constexpr uint16_t WIDTH = 240;
+    static constexpr uint16_t HEIGHT = 320;
+
+    // Common RGB565 colors
+    static constexpr uint16_t COLOR_BLACK   = 0x0000;
+    static constexpr uint16_t COLOR_WHITE   = 0xFFFF;
+    static constexpr uint16_t COLOR_RED     = 0xF800;
+    static constexpr uint16_t COLOR_GREEN   = 0x07E0;
+    static constexpr uint16_t COLOR_BLUE    = 0x001F;
+    static constexpr uint16_t COLOR_YELLOW  = 0xFFE0;
+    static constexpr uint16_t COLOR_CYAN    = 0x07FF;
+    static constexpr uint16_t COLOR_MAGENTA = 0xF81F;
+
+    ST7789(spi_inst_t* spi, uint pinCS, uint pinDC, uint pinRST, uint pinBL);
+
+    // Initialization
+    void init();
+
+    // Basic drawing
+    void fillScreen(uint16_t color);
+    void drawPixel(int16_t x, int16_t y, uint16_t color);
+
+    // Shapes
+    void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
+    void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+
+    // Text rendering
+    void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);
+    void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, uint8_t size = 1);
+
+    // Number rendering with formatting
+    void drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size = 1);
+    void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size = 1);
+
+    // Utility
+    static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
+
+private:
+    spi_inst_t* _spi;
+    uint _pinCS, _pinDC, _pinRST, _pinBL;
+
+    // Low-level communication
+    void writeCommand(uint8_t cmd);
+    void writeData(uint8_t data);
+    void writeData16(uint16_t data);
+    void setAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+};
