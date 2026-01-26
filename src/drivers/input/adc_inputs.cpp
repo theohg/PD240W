@@ -8,8 +8,7 @@ bool ADCInputs::init() {
     // Initialize GPIO pins for ADC use
     adc_gpio_init(Board::PIN_ADC_VOLT);  // GP26 - Voltage measurement
     adc_gpio_init(Board::PIN_ADC_TEMP);  // GP27 - Temperature measurement
-
-    LOG_INFO("ADC initialized (GP26=Voltage, GP27=Temperature)");
+    
     return true;
 }
 

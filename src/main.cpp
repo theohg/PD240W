@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "hardware.h"
 #include "interrupts.h"
+#include "eeprom_loader.h"
 #include "utils/logging.h"
 
 // ============================================================================
@@ -106,6 +107,21 @@ int main() {
 
     // Initialize hardware
     hw.init();
+
+    // Attempt to flash the patch if enabled
+    if (flashTps26750Eeprom()) {
+        // Flashing success or disabled
+    } else {
+        // Flashing failed - Handle error (blink LED red?)
+        while(1) {
+            hw.rgbLed.setColor(255, 0, 0, 255);
+            hw.rgbLed.update();
+            sleep_ms(100);
+            hw.rgbLed.setColor(0, 0, 0, 0);
+            hw.rgbLed.update();
+            sleep_ms(100);
+        }
+    }
 
     // Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
     Interrupts::init();

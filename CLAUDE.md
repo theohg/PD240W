@@ -68,6 +68,7 @@ The main loop is **entirely non-blocking** using:
 - Polling for button presses (`isPressed()`, `isClicked()`)
 - Absolute time timers (`absolute_time_t`, `make_timeout_time_ms()`)
 - State machines with internal timers (LED blinking, buzzer tones)
+- **Must call `hw.update()`** each iteration for RGB LED and debug LED blinking to work
 
 **Never use `sleep_ms()` or blocking delays in the main loop.**
 
@@ -106,7 +107,8 @@ src/
 │       ├── ina228/       # Power monitor (I2C, 0x40)
 │       └── tps26750/     # USB PD controller (I2C, 0x21)
 ├── utils/                # Utility functions (logging.h)
-└── ui/                   # Display manager (reserved for Phase 4)
+└── ui/                   # Display manager (Phase 4 in progress)
+    └── display_manager.cpp
 ```
 
 ## Key Subsystems
@@ -159,9 +161,10 @@ struct SourceCapability {
 - On alert: Load switch disabled immediately in ISR
 - Recovery: User clears latch via encoder button
 
-**Load Switch:** `hw.loadSwitch` (GPIO 3) - Enables/disables output
-
-**17V Buck:** `hw.EN_17V` (GPIO 20) - Optional 17V rail
+**Key GPIOs:**
+- `hw.loadSwitch` (GPIO 3) - Enables/disables output
+- `hw.overcurrentAlert` (GPIO 12) - INA228 ALERT pin (active low, latched)
+- `hw.EN_17V` (GPIO 20) - Optional 17V rail
 
 ### Input Handling
 - **Button:** Hardware debouncing (50ms), `isPressed()` / `isClicked()`
@@ -169,7 +172,7 @@ struct SourceCapability {
 - **ADC:** Voltage (GP26) and temperature (GP27) with NTC conversion
 
 ### Display (ST7789)
-- 240x320, SPI @ 24MHz, 180° rotation (MADCTL 0xC0)
+- 240x320, SPI @ 10MHz, 180° rotation (MADCTL 0xC0)
 - Functions: `fillScreen()`, `drawPixel()`, `drawLine()`, `drawRect()`, `fillRect()`
 - Text: `drawChar()`, `drawString()`, `drawInt()`, `drawFloat()` with 5x7 font
 
@@ -189,8 +192,9 @@ struct SourceCapability {
 
 ## Configuration
 
-### Pin Definitions (`Board::` namespace)
-Edit `board_config.h` for GPIO assignments:
+All constants are in the `Board::` namespace in `board_config.h`:
+
+**Pin Definitions:**
 ```cpp
 Board::PIN_BTN_1, PIN_BTN_2, PIN_ENC_BTN
 Board::PIN_I2C_SDA, PIN_I2C_SCL     // I2C0
@@ -200,13 +204,13 @@ Board::I2C_ADDR_INA228              // 0x40
 Board::I2C_ADDR_TPS26750            // 0x21
 ```
 
-### Hardware Constants (`Config::` namespace)
+**Hardware Constants:**
 ```cpp
-Config::ADC_REF_VOLTAGE          // 3.3V
-Config::NTC_BETA                 // 3950
-Config::VOLTAGE_DIVIDER_TOP/BOT  // 150kΩ/10kΩ
-Config::INA228_SHUNT_RESISTOR    // 8mΩ
-Config::INA228_MAX_CURRENT       // 5A
+Board::ADC_REF_VOLTAGE           // 3.3V
+Board::NTC_BETA                  // 3950
+Board::VOLTAGE_DIVIDER_TOP/BOT   // 150kΩ/10kΩ
+Board::INA228_SHUNT_RESISTOR     // 8mΩ
+Board::INA228_MAX_CURRENT        // 5A
 ```
 
 **UART:** TX=GP16, RX=GP29 (configured in CMakeLists.txt)

@@ -37,6 +37,8 @@ pico_sdk_init()
 
 add_executable(PD240W
         src/main.cpp
+        src/eeprom_loader.cpp
+        src/full_flash_c_23.c
         src/hardware.cpp
         src/interrupts.cpp
         src/drivers/buzzer/buzzer.cpp

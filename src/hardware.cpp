@@ -67,7 +67,9 @@ void Hardware::init() {
     // =========================================================================
     // Startup Effects
     // =========================================================================
-    buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+    // buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+    buzzer.playTone(1000, 200);  // Simple beep to indicate ready
+
 }
 
 void Hardware::update() {
