@@ -2,15 +2,13 @@
 #include "drivers/display/font.h"
 #include "hardware/gpio.h"
 #include <stdint.h>
-#include <stdio.h>
+#include <stdio.h>   // For snprintf (number formatting)
 #include <stdlib.h>
 
 ST7789::ST7789(spi_inst_t* spi, uint pinCS, uint pinDC, uint pinRST, uint pinBL)
     : _spi(spi), _pinCS(pinCS), _pinDC(pinDC), _pinRST(pinRST), _pinBL(pinBL) {}
 
-void ST7789::init() {
-    printf("[ST7789] Initializing display (HS20HS072RX Custom Init)...\n");
-
+bool ST7789::init() {
     // Initialize GPIOs
     gpio_init(_pinCS);  gpio_set_dir(_pinCS, GPIO_OUT);  gpio_put(_pinCS, 1);
     gpio_init(_pinDC);  gpio_set_dir(_pinDC, GPIO_OUT);  gpio_put(_pinDC, 1);
@@ -115,16 +113,16 @@ void ST7789::init() {
     // 16. Display Inversion
     // IMPORTANT: Datasheet does not explicitly set INVON (0x21). 
     // If colors look inverted (Black is White), uncomment the line below.
-    // writeCommand(0x21); 
+    writeCommand(0x21); 
 
     // 17. Display ON
     writeCommand(0x29); 
     sleep_ms(20);
 
     // 18. Clear screen to black immediately
-    fillScreen(COLOR_YELLOW);
-    
-    printf("[ST7789] Init complete\n");
+    fillScreen(COLOR_BLACK);
+
+    return true;
 }
 
 // ===== Low-level SPI communication =====

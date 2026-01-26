@@ -60,12 +60,13 @@
 //
 INA228::INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent)
 {
-  _address     = address;
-  _i2c         = i2c;
-  _shunt       = shuntResistor;
-  _maxCurrent  = maxCurrent;
-  _current_LSB = _maxCurrent * pow(2, -19);
-  _error       = 0;
+  _address          = address;
+  _i2c              = i2c;
+  _shunt            = shuntResistor;
+  _maxCurrent       = maxCurrent;
+  _overcurrentLimit = 0.0f;
+  _current_LSB      = _maxCurrent * pow(2, -19);
+  _error            = 0;
 }
 
 
@@ -476,6 +477,65 @@ uint16_t INA228::getDiagnoseAlertBit(uint8_t bit)
 {
   uint16_t value = _readRegister(INA228_DIAG_ALERT, 2);
   return (value >> bit) & 0x01;
+}
+
+
+////////////////////////////////////////////////////////
+//
+//  OVERCURRENT PROTECTION
+//
+bool INA228::setOvercurrentLimit(float current_limit_amps, bool latch)
+{
+  // Validate input
+  if (current_limit_amps <= 0.0f) {
+    disableOvercurrentLimit();
+    return true;
+  }
+  if (current_limit_amps > _maxCurrent) {
+    return false;  // Exceeds configured max current
+  }
+
+  // Calculate shunt voltage threshold: V_shunt = I * R_shunt
+  float v_shunt_threshold = current_limit_amps * _shunt;
+
+  // Get LSB based on ADC range setting
+  // ADCRANGE = 0: ±163.84 mV range, 5.0 µV/LSB
+  // ADCRANGE = 1: ±40.96 mV range, 1.25 µV/LSB
+  float lsb_uv = _ADCRange ? 1.25e-6f : 5.0e-6f;
+
+  // Calculate raw threshold value
+  uint16_t raw_threshold = static_cast<uint16_t>(v_shunt_threshold / lsb_uv);
+
+  // Set the shunt overvoltage threshold
+  setShuntOvervoltageTH(raw_threshold);
+
+  // Configure ALERT pin behavior:
+  // 1. Clear any existing alerts
+  // 2. Enable Shunt Over Limit (SOL) alert
+  // 3. Optionally enable latching
+  setDiagnoseAlert(0x0000);  // Reset alerts
+  setDiagnoseAlertBit(INA228_DIAG_SHUNT_OVER_LIMIT);  // Enable SOL
+
+  if (latch) {
+    setDiagnoseAlertBit(INA228_DIAG_ALERT_LATCH);  // Latch until read
+  }
+
+  // Store the configured limit
+  _overcurrentLimit = current_limit_amps;
+
+  return true;
+}
+
+void INA228::disableOvercurrentLimit()
+{
+  // Clear the SOL alert bit
+  clearDiagnoseAlertBit(INA228_DIAG_SHUNT_OVER_LIMIT);
+  _overcurrentLimit = 0.0f;
+}
+
+float INA228::getOvercurrentLimit()
+{
+  return _overcurrentLimit;
 }
 
 

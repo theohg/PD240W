@@ -40,7 +40,7 @@ float ADCInputs::readVoltage(uint8_t channel) const {
     uint16_t adc_raw = readADCRaw(channel);
 
     // Convert to voltage using ADC reference (3.3V) and 12-bit resolution (4096)
-    float voltage = adc_raw * Config::ADC_CONVERT;
+    float voltage = adc_raw * Board::ADC_CONVERT;
 
     return voltage;
 }
@@ -51,8 +51,8 @@ float ADCInputs::getVBUS() const {
 
     // Compensate for voltage divider (150k / 10k)
     // V_bus = V_adc * (R1 + R2) / R2
-    float voltage_divider_ratio = (Config::VOLTAGE_DIVIDER_TOP + Config::VOLTAGE_DIVIDER_BOT) /
-                                   Config::VOLTAGE_DIVIDER_BOT;
+    float voltage_divider_ratio = (Board::VOLTAGE_DIVIDER_TOP + Board::VOLTAGE_DIVIDER_BOT) /
+                                   Board::VOLTAGE_DIVIDER_BOT;
 
     float v_bus = v_adc * voltage_divider_ratio;
 
@@ -69,14 +69,14 @@ float ADCInputs::getTemperature() const {
     // Solving for R_ntc:
     // R_ntc = R_series * V_ntc / (3.3V - V_ntc)
 
-    float denominator = Config::ADC_REF_VOLTAGE - v_ntc;
+    float denominator = Board::ADC_REF_VOLTAGE - v_ntc;
     if (denominator <= 0.0f) {
         // Prevent division by zero or negative values
         LOG_WARN("Invalid NTC voltage reading: %.3fV", v_ntc);
         return -273.15f;  // Return absolute zero as error indicator
     }
 
-    float r_ntc = Config::NTC_SERIES_RESISTOR * v_ntc / denominator;
+    float r_ntc = Board::NTC_SERIES_RESISTOR * v_ntc / denominator;
 
     // Simplified Steinhart-Hart equation (Beta parameter equation)
     // T = 1 / (1/T0 + (1/Beta) * ln(R/R0))
@@ -86,8 +86,8 @@ float ADCInputs::getTemperature() const {
     //   Beta = NTC Beta coefficient (3950)
     //   R = Measured resistance
 
-    float t0_kelvin = Config::NTC_REF_TEMP_C + 273.15f;  // Convert to Kelvin
-    float inv_t = (1.0f / t0_kelvin) + (1.0f / Config::NTC_BETA) * logf(r_ntc / Config::NTC_REF_RESISTOR);
+    float t0_kelvin = Board::NTC_REF_TEMP_C + 273.15f;  // Convert to Kelvin
+    float inv_t = (1.0f / t0_kelvin) + (1.0f / Board::NTC_BETA) * logf(r_ntc / Board::NTC_REF_RESISTOR);
 
     float t_kelvin = 1.0f / inv_t;
     float t_celsius = t_kelvin - 273.15f;

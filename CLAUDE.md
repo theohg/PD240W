@@ -18,9 +18,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Language: C++17
 - SDK: Raspberry Pi Pico SDK v2.2.0
 - Build: CMake + Ninja
-- Communication: I2C (400kHz), SPI (24MHz), UART (115200 baud)
+- Communication: I2C (400kHz), SPI (10MHz), UART (115200 baud)
 
-**Project Status:** Phase 1 & 2 complete. Ready for Phase 3 (Application Logic). See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for detailed roadmap.
+**Project Status:** Phase 1 & 2 complete. Ready for Phase 3 (Application Logic). See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
 
 **Hardware Details:**
 - **LCD:** 240x320 (2.4") ST7789, model HS20HS072RX
@@ -32,114 +32,79 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-### Initial Setup
 ```bash
-# The Pico SDK and toolchain are managed via VSCode extension
-# Environment variables are set automatically in the terminal
-# Verify environment:
-echo $PICO_SDK_PATH  # Should show ~/.pico-sdk/sdk/2.2.0
-```
+# Build
+cd build && cmake .. && ninja
 
-### Building
-```bash
-cd build
-cmake ..
-make -j4
-# Or using Ninja (default in VSCode):
-ninja
-```
+# Flash: Hold BOOTSEL while connecting USB, drag build/PD240W.uf2 to mounted drive
 
-### Build Outputs
-- `build/PD240W.elf` - ELF executable
-- `build/PD240W.uf2` - Flashable UF2 file (drag to BOOTSEL mount)
-- `build/PD240W.bin` - Raw binary
-- `build/compile_commands.json` - For IDE integration
+# Clean build
+cd build && rm -rf * && cmake .. && ninja
 
-### Flashing
-1. Hold BOOTSEL button on Pico while connecting USB
-2. Drag `build/PD240W.uf2` to the mounted drive
-3. Pico will reboot automatically
-
-### Clean Build
-```bash
-cd build
-rm -rf *
-cmake ..
-make -j4
-```
-
-### Serial Debugging
-```bash
-# UART is on custom pins (TX=GP16, RX=GP29) at 115200 baud
-# Use any serial terminal:
+# Serial debugging (UART on GP16/GP29 @ 115200)
 screen /dev/tty.usbserial-* 115200
-# or
-minicom -D /dev/tty.usbserial-* -b 115200
 ```
+
+**Build Outputs:** `build/PD240W.elf`, `build/PD240W.uf2`, `build/compile_commands.json`
 
 ## Architecture
 
 ### Hardware Singleton Pattern
-All hardware is accessed through a global singleton `hw` defined in [hardware.h](src/hardware.h):
+All hardware is accessed through a global singleton `hw` defined in `hardware.h`:
 
 ```cpp
 extern Hardware hw;  // Global instance
 ```
 
-The `Hardware` struct aggregates all drivers and is initialized once in `main()` via `hw.init()`. All components (buttons, LEDs, sensors, displays) are members of this struct.
+The `Hardware` struct aggregates all drivers and is initialized once in `main()` via `hw.init()`.
 
 ### Initialization Sequence
-From [main.cpp](src/main.cpp):
-
 1. `hw.init()` - Initializes all hardware (I2C, SPI, drivers)
-2. `gpio_set_irq_enabled_with_callback()` - Setup encoder interrupt with router callback
-3. `gpio_set_irq_enabled()` - Enable second encoder pin and overcurrent interrupt
-4. Main loop starts - Non-blocking event polling
+2. `Interrupts::init()` - Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
+3. Main loop starts - Non-blocking event polling
 
 ### Main Event Loop Pattern
 The main loop is **entirely non-blocking** using:
 - Polling for button presses (`isPressed()`, `isClicked()`)
-- Absolute time timers for periodic tasks (`absolute_time_t`, `make_timeout_time_ms()`)
+- Absolute time timers (`absolute_time_t`, `make_timeout_time_ms()`)
 - State machines with internal timers (LED blinking, buzzer tones)
 
 **Never use `sleep_ms()` or blocking delays in the main loop.**
 
-### GPIO Interrupt Routing
-From [main.cpp:18-25](src/main.cpp#L18-L25):
+### Interrupt Architecture
+All GPIO interrupts are centralized in `interrupts.h/cpp`:
 
 ```cpp
-void gpio_callback(uint gpio, uint32_t events) {
-    if (hw.encoder.isMyPin(gpio)) {
-        hw.encoder.handleISR(gpio, events);
-    }
-    if (gpio == Board::PIN_SWITCH_EN_READ) {
-        over_current(gpio, events);
-    }
+namespace Interrupts {
+    void init();                  // Setup all interrupts
+    bool handleOvercurrent();     // Check/clear overcurrent flag
+    bool handlePdInterrupt();     // Check/clear PD interrupt flag
 }
 ```
 
-All GPIO interrupts go through this router. To add a new interrupt-driven input:
-1. Add the handler logic to `gpio_callback()`
-2. Enable the interrupt with `gpio_set_irq_enabled()` in `main()`
+**RP2040 Limitation:** Only ONE gpio callback for ALL pins. The interrupt module provides a single router that dispatches to individual handlers.
+
+**ISR Safety Rules:**
+- NEVER do I2C/SPI inside ISRs (use volatile flags, handle in main loop)
+- Exception: Overcurrent protection cuts power immediately (safety-critical)
 
 ## Directory Structure
 
 ```
 src/
-├── main.cpp              # Entry point, event loop, ISR router
+├── main.cpp              # Entry point, event loop
 ├── hardware.h/cpp        # Global Hardware singleton
+├── interrupts.h/cpp      # GPIO interrupt handling
 ├── board_config.h        # Pin definitions (Board::) and constants (Config::)
-│
-├── drivers/              # Hardware drivers by category
-│   ├── gpio/             # SimpleIO wrapper (digital I/O)
+├── drivers/
+│   ├── gpio/             # SimpleIO wrapper (digital I/O with blink support)
 │   ├── input/            # Button, RotaryEncoder, ADC
 │   ├── buzzer/           # Buzzer (PWM-based)
 │   ├── rgb_led/          # SK6812 RGB LED (PIO-based)
 │   ├── display/          # ST7789 LCD (SPI)
 │   └── power/
 │       ├── ina228/       # Power monitor (I2C, 0x40)
-│       └── tps26750/     # USB PD controller (I2C, 0x21) [complete]
-│
+│       └── tps26750/     # USB PD controller (I2C, 0x21)
 ├── utils/                # Utility functions (logging.h)
 └── ui/                   # Display manager (reserved for Phase 4)
 ```
@@ -147,53 +112,34 @@ src/
 ## Key Subsystems
 
 ### USB Power Delivery (TPS26750)
-**TPS26750 USB PD Controller** ([drivers/power/tps26750/](src/drivers/power/tps26750/)):
-- **Status:** ✅ **COMPLETE** - Full implementation ready for testing
-- **Purpose:** Negotiates voltage contracts with USB-C chargers (5V-48V, including PPS and EPR AVS)
-- **I2C Address:** 0x21 (configurable via ADCINx pins: 0x20-0x23)
-- **Protocol:** Custom "Unique Address Interface" with byte-count prefix (fully implemented)
+**Purpose:** Negotiates voltage contracts with USB-C chargers (5V-48V, including PPS and EPR AVS)
 
-**Implemented Features:**
-- ✅ Full I2C register protocol (read/write with byte-count handling)
-- ✅ Complete register map (29 registers: MODE, STATUS, PDO, RDO, interrupts, etc.)
-- ✅ 4CC command support (Gaid, SWSk, GSrC, GSkC for warm/cold reset, role swap, cap discovery)
-- ✅ Interrupt handling (read/clear/check 11-byte INT_EVENT1 register)
-- ✅ Active contract reading (`getActiveContract()` - supports Fixed, PPS, and AVS PDOs)
-- ✅ Source capability discovery (`getSourceCapabilities()` - parses SPR + EPR contracts)
-- ✅ **Voltage negotiation:** `requestFixedProfile()`, `requestPPSProfile()`, `requestAVSProfile()`
-- ✅ **AUTONEGOTIATE_SINK register manipulation** (24 bytes with complex bit packing)
-- ✅ PDO parsing for Fixed Supply (voltage in 50mV units, current in 10mA units)
-- ✅ PDO parsing for PPS (voltage in 20mV units, current in 50mA units)
-- ✅ PDO parsing for AVS/EPR (voltage in 100mV units, supports up to 48V)
-- ✅ Device mode detection (APP/BOOT/PTCH)
-
-**Key API Methods:**
+**Key API:**
 ```cpp
 // Core
-bool init()                                      // Verify device presence
-bool getMode(char* modeStr)                      // Read MODE register ("APP ", "BOOT")
-bool sendCommand(const char* cmd)                // Send 4CC command
+bool init();
+bool getMode(char* modeStr);              // "APP ", "BOOT", "PTCH"
 
 // Contract Discovery & Monitoring
-uint8_t getSourceCapabilities(SourceCapability* caps, uint8_t max_caps)
-bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma)
+uint8_t getSourceCapabilities(SourceCapability* caps, uint8_t max_caps);
+bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma);
 
-// Voltage Negotiation (NEW)
-bool requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma)
-bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma)
-bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma)
+// Voltage Negotiation
+bool requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma);
+bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma);
+bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma);
 
-// Interrupt Handling
-bool readInterrupts(uint8_t* events)             // Read 11-byte interrupt buffer
-bool clearInterrupts(const uint8_t* mask)        // Clear specific interrupts
-bool isInterruptSet(const uint8_t* buffer, uint8_t bitIndex)
+// Interrupts
+bool readInterrupts(uint8_t* events);
+bool clearInterrupts(const uint8_t* mask);
+bool isInterruptSet(const uint8_t* buffer, uint8_t bitIndex);
 ```
 
 **SourceCapability Struct:**
 ```cpp
 struct SourceCapability {
     uint32_t voltage_mv;      // Fixed: Voltage. PPS/AVS: Max Voltage
-    uint32_t max_current_ma;  // Max current in milliamps
+    uint32_t max_current_ma;
     bool is_pps;              // Programmable Power Supply (SPR, 5-21V)
     bool is_avs;              // Adjustable Voltage Supply (EPR, 15-48V)
     uint32_t min_voltage_mv;  // Min voltage (PPS/AVS only)
@@ -202,472 +148,189 @@ struct SourceCapability {
 
 **Negotiation Process:**
 1. Read available contracts with `getSourceCapabilities()`
-2. Select desired contract (Fixed, PPS, or AVS)
-3. Call appropriate `request*Profile()` function
-4. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) for completion
-5. Verify with `getActiveContract()` and INA228 voltage reading
+2. Call appropriate `request*Profile()` function
+3. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) for completion
+4. Verify with `getActiveContract()`
 
-### Power Monitoring & Safety
-**INA228 Power Monitor** ([drivers/power/ina228/](src/drivers/power/ina228/)):
+### Power Monitoring & Safety (INA228)
 - Measures voltage, current, power, temperature
 - Configured with 8mΩ shunt resistor, 5A max
-- **Overcurrent threshold: Configurable** (currently 40mA for testing) with latched ALERT interrupt
-- On alert: `hw.loadSwitch.off()` called immediately in ISR
-- Recovery: User presses encoder button → clears latch via I2C → re-enables load
-- **Production use:** Threshold will be set to user-selected current limit
+- Overcurrent protection via latched ALERT interrupt
+- On alert: Load switch disabled immediately in ISR
+- Recovery: User clears latch via encoder button
 
-**Critical:** The overcurrent handler in [main.cpp:11-15](src/main.cpp#L11-L15) is **safety-critical**. It immediately cuts power before any other action.
+**Load Switch:** `hw.loadSwitch` (GPIO 3) - Enables/disables output
 
-**Load Switch Control:**
-- `hw.loadSwitch` (GPIO 3) - Enables/disables output to load
-- Status readable via `PIN_SWITCH_EN_READ` (GPIO 12)
-- Controlled by safety logic and user commands
-
-**17V Buck Converter:**
-- `hw.EN_17V` (GPIO 20) - Enables optional 17V rail on PCB
-- Purpose: Powers internal circuitry or provides auxiliary output
-- Can be controlled through user interface or automatically
+**17V Buck:** `hw.EN_17V` (GPIO 20) - Optional 17V rail
 
 ### Input Handling
-**Button** ([drivers/input/button.h](src/drivers/input/button.h)):
-- Hardware debouncing (50ms default)
-- Two modes: `isPressed()` (hold state), `isClicked()` (edge detection)
-- Supports active-high/low and pull-up/down
+- **Button:** Hardware debouncing (50ms), `isPressed()` / `isClicked()`
+- **RotaryEncoder:** ISR-based quadrature decoding, `getTicks()` / `reset()`
+- **ADC:** Voltage (GP26) and temperature (GP27) with NTC conversion
 
-**RotaryEncoder** ([drivers/input/rotary_enc.h](src/drivers/input/rotary_enc.h)):
-- ISR-based quadrature decoding with built-in debouncing
-- Call `handleISR()` from global `gpio_callback()`
-- Read `getTicks()` for cumulative rotation
-- Call `reset()` to zero the count
-- Status: Fully implemented with debouncing
-
-**ADC Inputs** ([drivers/input/adc_inputs.h](src/drivers/input/adc_inputs.h)):
-- GP26 (ADC0) - VBUS voltage measurement via 150kΩ/10kΩ divider (pre-switch)
-- GP27 (ADC1) - Temperature via NTC thermistor (10kΩ @ 25°C, Beta=3950, 4.7kΩ series)
-- Provides redundant voltage measurement (cross-check with INA228) and thermal monitoring
-- Status: Fully implemented with Steinhart-Hart NTC conversion
-
-### Display System & User Interface
-**ST7789 LCD** ([drivers/display/st7789.h](src/drivers/display/st7789.h)):
-- SPI-based communication (24MHz)
-- Control pins: CS, DC (data/command), RST, BL (backlight)
-- Resolution: 240x320 (2.4" display, model HS20HS072RX)
-- Display orientation: 180° rotation configured (MADCTL = 0xC0)
-- Full initialization with gamma correction, power control, and display inversion
-- Implemented functions: `init()`, `fillScreen()`, `drawPixel()`, `drawLine()`, `drawRect()`, `fillRect()`
-- Text rendering: `drawChar()`, `drawString()`, `drawInt()`, `drawFloat()` with 5x7 font
-- Status: Fully functional with complete ST7789 initialization sequence
-
-**User Interface Concept:**
-- **2 Buttons:** Menu navigation (BTN1=enter/back, BTN2=select/enable output)
-- **Rotary Encoder:** Value adjustment and menu scrolling
-- **Encoder Button:** Confirm selections, clear faults
-- **RGB LED:** Status indication (green=OK, yellow=warning, red=fault)
-- **Buzzer:** Button feedback and startup melody
-
-**Note:** [display_manager.cpp](src/ui/display_manager.cpp) and [src/ui/screens/](src/ui/screens/) are reserved for Phase 4 development. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for UI implementation strategy.
+### Display (ST7789)
+- 240x320, SPI @ 24MHz, 180° rotation (MADCTL 0xC0)
+- Functions: `fillScreen()`, `drawPixel()`, `drawLine()`, `drawRect()`, `fillRect()`
+- Text: `drawChar()`, `drawString()`, `drawInt()`, `drawFloat()` with 5x7 font
 
 ### RGB LED (SK6812)
-**PIO-Based Driver** ([drivers/rgb_led/sk6812.h](src/drivers/rgb_led/sk6812.h)):
-- Uses PIO (Programmable I/O) for precise 800kHz timing
-- PIO program defined in [sk6812.pio](src/drivers/rgb_led/sk6812.pio)
-- Non-blocking blink with duration: `startBlink(interval_ms, duration_ms)`
-- Must call `update()` in main loop for timing
-- Color format: GRB order (green, red, blue)
+- PIO-based driver for precise 800kHz timing
+- `setColor(r, g, b, brightness)`, `startBlink(interval_ms, duration_ms)`
+- Must call `update()` in main loop
 
 ### Buzzer
-**PWM-Based Driver** ([drivers/buzzer/buzzer.h](src/drivers/buzzer/buzzer.h)):
-- Frequency range: 100Hz - 10kHz
-- Non-blocking tone playback using timer callbacks
-- Methods: `setFrequency()`, `playTone(freq, duration_ms)`, `playMelody(notes, length)`
-- Melody playback implemented (Mario power-up sound plays on startup)
-- Status: Fully implemented
+- PWM-based, 100Hz-10kHz
+- `playTone(freq, duration_ms)`, `playMelody(notes, length)`
+- Non-blocking via timer callbacks
 
 ### SimpleIO (GPIO Wrapper)
-**SimpleIO Class** ([drivers/gpio/gpio.h](src/drivers/gpio/gpio.h)):
-- Basic digital I/O abstraction
-- Methods: `on()`, `off()`, `toggle()`, `read()`
-- Used for: debug LED, load switch, 17V buck enable
-- Status: Fully implemented
+- `on()`, `off()`, `toggle()`, `read()`
+- `startBlink(interval_ms, duration_ms)`, `stopBlink()`, `update()`
 
 ## Configuration
 
-### Pin Definitions and Constants
-Edit [src/board_config.h](src/board_config.h) to change GPIO assignments and calibration values. Two namespaces:
-
-**`Board::` namespace** - GPIO pins and I2C addresses:
+### Pin Definitions (`Board::` namespace)
+Edit `board_config.h` for GPIO assignments:
 ```cpp
-Board::PIN_BTN_1       // GPIO 0
-Board::PIN_I2C_SDA     // GPIO 4 (I2C0)
-Board::PIN_BUZZER      // GPIO 6
-Board::PIN_RGB_LED     // GPIO 28 (PIO)
-Board::PIN_LCD_CS      // GPIO 17 (SPI1)
-Board::I2C_ADDR_INA228 // 0x40
-Board::I2C_ADDR_TPS26750 // 0x21
+Board::PIN_BTN_1, PIN_BTN_2, PIN_ENC_BTN
+Board::PIN_I2C_SDA, PIN_I2C_SCL     // I2C0
+Board::PIN_LCD_CS, PIN_LCD_DC, etc. // SPI display
+Board::PIN_RGB_LED                  // PIO
+Board::I2C_ADDR_INA228              // 0x40
+Board::I2C_ADDR_TPS26750            // 0x21
 ```
 
-**`Config::` namespace** - Calibration and hardware constants:
+### Hardware Constants (`Config::` namespace)
 ```cpp
 Config::ADC_REF_VOLTAGE          // 3.3V
-Config::NTC_BETA                 // 3950 (thermistor)
-Config::VOLTAGE_DIVIDER_TOP      // 150kΩ
-Config::VOLTAGE_DIVIDER_BOT      // 10kΩ
+Config::NTC_BETA                 // 3950
+Config::VOLTAGE_DIVIDER_TOP/BOT  // 150kΩ/10kΩ
 Config::INA228_SHUNT_RESISTOR    // 8mΩ
 Config::INA228_MAX_CURRENT       // 5A
 ```
 
-**UART is on custom pins:** TX=GP16, RX=GP29 (configured in [CMakeLists.txt:60-65](CMakeLists.txt#L60-L65))
-
-### INA228 Overcurrent Threshold
-Modify in [hardware.cpp](src/hardware.cpp) `Hardware::init()`:
-
-```cpp
-powerMonitor.setAlertConfig(
-    INA228_ALERT_CONV_READY,    // Alert on conversion ready
-    false,                       // Not latched by default
-    true,                        // Active low (for interrupt)
-    INA228_ALERT_THRESHOLD_OVER_CURRENT,
-    40.0f                        // <-- Threshold in mA
-);
-```
+**UART:** TX=GP16, RX=GP29 (configured in CMakeLists.txt)
 
 ## Communication Buses
 
 | Bus | Pins | Frequency | Devices |
 |-----|------|-----------|---------|
-| **I2C0** | GP4 (SDA), GP5 (SCL) | 400 kHz | INA228 (0x40), TPS26750 (0x21) |
-| **SPI1** | GP18 (SCK), GP19 (MOSI) | 24 MHz | ST7789 Display |
-| **UART0** | GP16 (TX), GP29 (RX) | 115200 | Debug console |
-| **PIO** | GP28 | 800 kHz | SK6812 RGB LED |
-| **ADC** | GP26, GP27 | On-demand | Voltage/temperature |
-| **PWM** | GP6 | Variable | Buzzer |
+| I2C0 | GP4, GP5 | 400 kHz | INA228, TPS26750 |
+| SPI0 | GP18, GP19 | 10 MHz | ST7789 Display |
+| UART0 | GP16, GP29 | 115200 | Debug console |
+| PIO | GP28 | 800 kHz | SK6812 RGB LED |
+| ADC | GP26, GP27 | On-demand | Voltage/temperature |
+| PWM | GP6 | Variable | Buzzer |
 
 ## Adding New Components
 
 ### New Input Device
-1. Create driver in `src/drivers/input/yourdevice.h/cpp`
-2. Add member to `Hardware` struct in [hardware.h](src/hardware.h)
-3. Initialize in `Hardware::init()` in [hardware.cpp](src/hardware.cpp)
-4. Poll in main loop or setup ISR in [main.cpp](src/main.cpp)
+1. Create driver in `src/drivers/input/`
+2. Add member to `Hardware` struct
+3. Initialize in `Hardware::init()`
+4. Poll in main loop or add ISR handler in `interrupts.cpp`
 
 ### New I2C Peripheral
 1. Create driver with `i2c_inst_t *_i2c` member
-2. Pass `i2c0` from `Hardware::init()`
-3. Use `i2c_read_blocking()` / `i2c_write_blocking()`
-4. **Never do I2C inside ISRs** - set flags and handle in main loop
+2. Use `i2c_read_blocking()` / `i2c_write_blocking()`
+3. **Never do I2C inside ISRs** - set flags, handle in main loop
 
 ### New PIO-Based Driver
 1. Write PIO assembly in `.pio` file
-2. Add to `CMakeLists.txt`: `pico_generate_pio_header(PD240W ${CMAKE_CURRENT_LIST_DIR}/src/your.pio)`
-3. Load program in driver: `pio_add_program(pio, &program)`
-4. Claim state machine: `pio_claim_unused_sm(pio, true)`
+2. Add to CMakeLists.txt: `pico_generate_pio_header()`
+3. Load program and claim state machine in driver
 
 ## Important Patterns
 
 ### Non-Blocking Timing
-Always use absolute time for periodic tasks:
-
 ```cpp
 static absolute_time_t next_event = make_timeout_time_ms(1000);
 if (absolute_time_diff_us(get_absolute_time(), next_event) < 0) {
-    // Time to execute
-    next_event = make_timeout_time_ms(1000);  // Schedule next
+    // Execute
+    next_event = make_timeout_time_ms(1000);
 }
 ```
 
 ### Static Wrappers for C Callbacks
-When using C++ methods with C-style callbacks (timers, repeating timers):
-
 ```cpp
 class Buzzer {
     static void stopToneCallback(void *param) {
-        Buzzer *self = static_cast<Buzzer*>(param);
-        self->stopTone();
+        static_cast<Buzzer*>(param)->stopTone();
     }
 };
 ```
 
-### Active-Low Logic
-Many peripherals use active-low signals (buttons, interrupts). The Button driver handles this with `_active_high` flag. Check polarity when debugging unexpected behavior.
+## Best Practices
 
-## Best Practices & Code Principles
+### Mandatory Rules
+1. **No Global Variables** - Use `hw` singleton only
+2. **No Blocking Delays** in main loop
+3. **Keep Drivers Hardware-Focused** - No business logic
+4. **YAGNI** - Implement only what's needed now
 
-### Mandatory Practices ⚠️
-These rules MUST be followed in all code:
+### Error Handling
+- Driver functions should return `bool` status
+- Use `LOG_HW_INIT()` macro for init functions
+- Use logging macros: `LOG_INFO`, `LOG_WARN`, `LOG_ERROR`, `LOG_DEBUG`
 
-1. **No Global Variables** - All hardware access through `hw` singleton only
-   - ❌ `int global_counter;` outside functions
-   - ✅ Add members to `Hardware` struct if needed
-
-2. **No Blocking Delays** - Main loop must remain non-blocking
-   - ❌ `sleep_ms(1000);` in main loop
-   - ✅ Use `absolute_time_t` and `make_timeout_time_ms()`
-
-3. **Keep Drivers Hardware-Focused** - No business logic in drivers
-   - ❌ Button driver checking "if voltage > 20V then..."
-   - ✅ Button driver only handles debouncing and state
-
-4. **Don't Over-Engineer** - YAGNI (You Aren't Gonna Need It)
-   - ❌ Adding configuration for every possible future use case
-   - ✅ Implement exactly what's needed now, refactor later if needed
-
-### Error Handling Standards
-
-**All driver functions should return status:**
-```cpp
-// Good - Returns success/failure
-bool init() {
-    if (hardware_init_failed()) return false;
-    return true;
-}
-
-// Acceptable for simple setters
-void setColor(uint8_t r, uint8_t g, uint8_t b) {
-    // No failure modes
-}
-
-// Bad - Silent failure
-void init() {
-    if (hardware_init_failed()) {
-        // Fails silently, caller doesn't know
-    }
-}
-```
-
-**Use logging for debugging:**
-```cpp
-if (!sensor.init()) {
-    LOG_ERROR("INA228 initialization failed");
-    return false;
-}
-```
-
-### Logging System
-
-Use the logging macros defined in `src/utils/logging.h`:
-
-```cpp
-LOG_INFO("System started");              // Always shown
-LOG_WARN("Temperature high: %.1f°C", t); // Warnings
-LOG_ERROR("I2C timeout on address 0x%02X", addr); // Errors
-LOG_DEBUG("Raw ADC: %d", adc_val);       // Debug builds only
-```
-
-**Guidelines:**
-- Use `LOG_INFO` for significant events (startup, state changes)
-- Use `LOG_WARN` for concerning but non-fatal issues
-- Use `LOG_ERROR` for failures that affect functionality
-- Use `LOG_DEBUG` for verbose debugging (disabled in production)
-- Include relevant values in messages (voltages, addresses, counts)
-
-### Configuration Validation
-
-**Use static_assert for compile-time checks:**
-```cpp
-static_assert(Config::NTC_BETA > 0, "NTC Beta must be positive");
-static_assert(Config::VOLTAGE_DIVIDER_TOP > Config::VOLTAGE_DIVIDER_BOT,
-              "Voltage divider ratios incorrect");
-```
-
-**Use runtime checks in init():**
-```cpp
-bool Hardware::init() {
-    if (Config::ADC_REF_VOLTAGE <= 0) {
-        LOG_ERROR("Invalid ADC reference voltage");
-        return false;
-    }
-    // ... rest of init
-}
-```
-
-### Code Style Guidelines
-
-**Naming Conventions:**
-- Classes/Structs: `PascalCase` (e.g., `INA228`, `Hardware`)
-- Functions/Methods: `camelCase` (e.g., `getBusVoltage()`, `init()`)
-- Variables: `snake_case` (e.g., `last_tick`, `adc_value`)
-- Constants: `UPPER_SNAKE_CASE` (e.g., `PIN_BTN_1`, `MAX_VOLTAGE`)
-- Private members: `_leading_underscore` (e.g., `_i2c`, `_pin`)
-
-**Comments:**
-- Comment WHY, not WHAT (code should be self-documenting)
-- Complex algorithms need explanation (e.g., NTC temperature conversion)
-- Safety-critical code needs warnings
-- TODOs should include reason: `// TODO: Add timeout handling - current impl blocks`
-
-**Example - Good vs Bad:**
-```cpp
-// ❌ Bad - Comments obvious code
-// Set the pin to high
-gpio_put(pin, 1);
-
-// ✅ Good - Explains WHY
-// Enable load switch after fault is cleared
-hw.loadSwitch.on();
-
-// ✅ Good - Complex algorithm explained
-// Steinhart-Hart equation for NTC thermistor
-// T = 1 / (A + B*ln(R) + C*ln(R)^3)
-// Simplified Beta parameter equation used here
-float temp = 1.0 / (1.0/T0 + (1.0/Beta) * log(R_ntc / R0)) - 273.15;
-```
+### Naming Conventions
+- Classes: `PascalCase`
+- Functions: `camelCase`
+- Variables: `snake_case`
+- Constants: `UPPER_SNAKE_CASE`
+- Private members: `_leading_underscore`
 
 ### Driver Independence
-
-Each driver should:
-- ✅ Be testable in isolation
-- ✅ Have no dependencies on other drivers (except HAL)
-- ✅ Not access global state (except `hw` singleton)
-- ✅ Handle its own error conditions
-- ✅ Provide clear API with minimal assumptions
-
-### Safety-Critical Code Markers
-
-Mark safety-critical sections clearly:
-```cpp
-// SAFETY-CRITICAL: Overcurrent protection - must execute immediately
-void over_current(uint gpio, uint32_t events) {
-    hw.loadSwitch.off();  // Cut power FIRST
-    hw.rgbLed.setColor(255, 0, 0, 255);
-    LOG_ERROR("OVERCURRENT DETECTED - LOAD DISABLED");
-}
-```
-
-### Testing Approach
-
-During Phase 1, test each component independently:
-1. Write test code in `main()` - clearly commented
-2. Test one feature at a time
-3. Verify with serial output (logging)
-4. Keep test code organized and easy to remove later
-
-Example organization in main():
-```cpp
-// ========== HARDWARE TESTS (Phase 1) ==========
-// Remove this section when moving to Phase 3
-
-void test_gpio() {
-    // GPIO input test code
-}
-
-void test_adc() {
-    // ADC test code
-}
-
-// Call in main loop:
-if (PHASE1_TESTING) {
-    test_gpio();
-    test_adc();
-}
-```
-
-## Critical Bugs Fixed in Phase 1
-
-### Button Debouncing Bug (CRITICAL)
-**Problem:** All three buttons shared a single `static bool was_pressed` variable in `Button::isClicked()`, causing:
-- Button presses to trigger 5-15 times per click
-- Cross-talk between different button instances
-- Unreliable input detection
-
-**Root Cause:** Static variable in [button.cpp:58](src/drivers/input/button.cpp#L58) was shared across all Button instances.
-
-**Fix:** Added per-instance state tracking:
-- Added `bool was_pressed_for_click` member variable to Button class
-- Each button now maintains its own edge detection state
-- Debouncing now works correctly for all buttons independently
-
-**Lesson:** Never use static variables for instance-specific state in C++ classes.
-
-### LCD Display Not Working (FIXED)
-**Problem:** Display backlight turned on but no content was visible (blank white/black screen).
-
-**Root Cause:** Minimal ST7789 initialization sequence was missing critical configuration:
-- No memory access control (MADCTL) setup
-- Missing gamma correction tables
-- No power control configuration
-- Missing display inversion command
-
-**Fix:** Implemented complete ST7789 initialization sequence in [st7789.cpp:11-127](src/drivers/display/st7789.cpp#L11-L127):
-- Added software reset (SWRESET)
-- Configured MADCTL for proper orientation (0xC0 for 180° rotation)
-- Added porch, gate, and VCOM settings
-- Programmed positive/negative gamma curves
-- Enabled display inversion (INVON)
-- Added proper timing delays between commands
-
-**Lesson:** Always use complete initialization sequences from datasheets for complex peripherals like display controllers.
-
-**Status:** ✅ FULLY WORKING - Display shows graphics and text correctly with proper orientation
-
-### Output Enable Control
-**Enhancement:** Encoder button now controls the load switch output:
-- Press encoder button → toggles output on/off
-- Automatically clears INA228 latched fault when pressed
-- RGB LED changes color to indicate state (green=on, yellow=off, red=fault)
-- Enables testing of the power path and overcurrent protection
+- Testable in isolation
+- No dependencies on other drivers
+- No project-specific includes (like logging) in drivers
+- Handle own error conditions
 
 ## Debugging
 
-### Serial Output
-- `printf()` goes to UART0 (GP16/GP29 @ 115200 baud)
-- Main loop prints power stats every 500ms
-- Overcurrent events log immediately
-
 ### Common Issues
-1. **I2C not responding**: Check pull-ups (usually 4.7kΩ to 3.3V)
+1. **I2C not responding**: Check pull-ups (4.7kΩ to 3.3V)
 2. **Display not updating**: Verify SPI pins and CS/DC/RST signals
-3. **Encoder not counting**: Check interrupt routing in `gpio_callback()`
-4. **LED wrong colors**: Verify GRB vs RGB order in driver
-5. **Overcurrent false triggers**: Adjust threshold or check shunt resistor value
+3. **Encoder not counting**: Check ISR routing in `interrupts.cpp`
+4. **LED wrong colors**: Verify GRB order
+5. **Overcurrent false triggers**: Adjust threshold or check shunt value
 
 ### VSCode Environment
-The Pico SDK extension automatically sets:
-- `PICO_SDK_PATH` → `~/.pico-sdk/sdk/2.2.0`
-- `PICO_TOOLCHAIN_PATH` → `~/.pico-sdk/toolchain/14_2_Rel1`
-- CMake, Ninja, Picotool in PATH
-
-If builds fail, verify these environment variables are set in the integrated terminal.
+Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, Picotool
 
 ## Development Roadmap
 
-**See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for detailed implementation plan.**
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1. Hardware Foundation | ✅ Complete | All drivers working |
+| 2. TPS26750 USB PD | ✅ Complete | Full PD negotiation |
+| 3. Application Logic | Pending | State machine, settings, safety |
+| 4. User Interface | Pending | LCD menu, input handling |
+| 5. Integration & Testing | Pending | End-to-end testing |
 
-### Phase 1: Hardware Foundation (✅ COMPLETE)
-All hardware drivers implemented and tested:
-- GPIO, ADC (voltage divider + NTC), Encoder (with debouncing), LCD graphics, Buzzer melody
-- Button debouncing fixed, Encoder button controls output enable/disable
-
-### Phase 2: TPS26750 USB PD Integration (✅ COMPLETE)
-Full USB-C PD negotiation implemented:
-- I2C communication with byte-count protocol, 4CC commands, interrupt handling
-- Contract discovery (Fixed/PPS/AVS), voltage negotiation, AUTONEGOTIATE_SINK manipulation
-- Test program in [main.cpp](src/main.cpp) for contract selection
-
-### Phase 3: Application Logic (Pending)
-- State machine (BOOT, IDLE, RUNNING, MENU, FAULT, SETTING_*)
-- Settings manager, safety logic, power statistics
-
-### Phase 4: User Interface (Pending)
-- Screen classes, display manager, input handling, visual feedback
-
-### Phase 5: Integration & Testing (Pending)
-- End-to-end testing, edge cases, optimization
-
-## Key Files Reference
+## Key Files
 
 | File | Purpose |
 |------|---------|
-| [main.cpp](src/main.cpp) | Entry point, event loop, ISR router |
-| [hardware.h](src/hardware.h) / [.cpp](src/hardware.cpp) | Global singleton, all component instances |
-| [board_config.h](src/board_config.h) | Pin definitions (Board::) and constants (Config::) |
-| [CMakeLists.txt](CMakeLists.txt) | Build config, linked libraries, UART pins |
+| main.cpp | Entry point, event loop |
+| hardware.h/cpp | Global singleton, component instances |
+| interrupts.h/cpp | GPIO interrupt handling |
+| board_config.h | Pin definitions and constants |
 
 ## Safety-Critical Code
 
-**Overcurrent Protection** ([main.cpp:11-15](src/main.cpp#L11-L15)):
+**Overcurrent Protection** (in `interrupts.cpp`):
 - Triggered by INA228 ALERT pin (active-low, latched)
 - Immediately disables load switch (no delays)
 - Sets red LED for visual indication
 - Must clear latch via `getDiagnoseAlert()` before re-enable
 
-**Do not modify** this handler without understanding the electrical safety implications. The load switch must be disabled as quickly as possible to prevent component damage.
+**Do not modify** without understanding electrical safety implications.
+
+## Historical Bug Fixes
+
+**Button Debouncing:** Static variable was shared across instances, causing multi-triggers. Fixed with per-instance `was_pressed_for_click` member.
+
+**LCD Display:** Minimal init sequence missing MADCTL, gamma, power control. Fixed with complete ST7789 initialization.
+
+**Lesson:** Never use static variables for instance state. Always use complete init sequences from datasheets.

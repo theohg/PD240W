@@ -17,6 +17,7 @@ namespace Board {
     constexpr int PIN_BTN_2          = 2;
     constexpr int PIN_ENC_A          = 7;
     constexpr int PIN_ENC_BTN        = 8;
+    constexpr int PIN_USB_PD_IRQ     = 9;
     constexpr int PIN_SWITCH_EN_READ = 12;
     constexpr int PIN_ENC_B          = 13;
 
@@ -24,7 +25,7 @@ namespace Board {
     constexpr int PIN_I2C_SDA   = 4;
     constexpr int PIN_I2C_SCL   = 5;
 
-    // SPI (SPI1 for Display)
+    // SPI (SPI0 for Display)
     constexpr int PIN_LCD_CS    = 17;
     constexpr int PIN_LCD_SCK   = 18;
     constexpr int PIN_LCD_MOSI  = 19;
@@ -45,14 +46,24 @@ namespace Board {
     constexpr int ADC_CH_VOLTAGE = 0;
     constexpr int ADC_CH_TEMP    = 1;
 
-    // -------------------------------------------------------------------------
-    // I2C Device Addresses
-    // -------------------------------------------------------------------------
-    constexpr uint8_t I2C_ADDR_INA228   = 0x40;
-    constexpr uint8_t I2C_ADDR_TPS26750 = 0x21;
-}
+    // Extra GPIOs routed to solder pads for user access
+    constexpr int PIN_GPIO_14    = 14;
+    constexpr int PIN_GPIO_15    = 15;
+    constexpr int PIN_GPIO_16    = 16;
+    constexpr int PIN_GPIO_29    = 29;
 
-namespace Config {
+    // -------------------------------------------------------------------------
+    // I2C Parameters
+    // -------------------------------------------------------------------------
+    constexpr uint8_t I2C_ADDR_INA228   = 0x40;  // 7-bit address for INA228
+    constexpr uint8_t I2C_ADDR_TPS26750 = 0x21;  // 7-bit address for TPS26750
+    constexpr uint32_t I2C_SPEED_HZ    = 400000; // 400kHz Fast Mode
+
+    // -------------------------------------------------------------------------
+    // SPI Parameters
+    // -------------------------------------------------------------------------
+    constexpr uint32_t SPI_SPEED_HZ = 10000000; // 10MHz
+
     // -------------------------------------------------------------------------
     // ADC Settings
     // -------------------------------------------------------------------------

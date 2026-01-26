@@ -38,6 +38,7 @@ pico_sdk_init()
 add_executable(PD240W
         src/main.cpp
         src/hardware.cpp
+        src/interrupts.cpp
         src/drivers/buzzer/buzzer.cpp
         src/drivers/display/st7789.cpp
         src/drivers/power/tps26750/tps26750.cpp

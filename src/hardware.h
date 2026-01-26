@@ -18,7 +18,8 @@ struct Hardware {
     Button btn1;
     Button btn2;
     Button btnEnc;
-    SimpleIO over_current;
+    SimpleIO overcurrentAlert;  // INA228 ALERT pin (active low)
+    SimpleIO pdInterrupt;       // TPS26750 INT pin (active low)
     RotaryEncoder encoder;
     ADCInputs adc;
 

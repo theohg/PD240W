@@ -1,28 +1,12 @@
 #include "pico/stdlib.h"
 #include <stdio.h>
 #include "hardware.h"
+#include "interrupts.h"
 #include "utils/logging.h"
 
 // ============================================================================
 // PHASE 2 TEST - TPS26750 USB PD Controller
 // ============================================================================
-
-// Overcurrent interrupt handler
-void over_current(uint gpio, uint32_t events) {
-    hw.loadSwitch.off();
-    hw.rgbLed.setColor(255, 0, 0, 255); // Red
-    LOG_ERROR("OVERCURRENT DETECTED - LOAD DISABLED");
-}
-
-// GPIO interrupt router
-void gpio_callback(uint gpio, uint32_t events) {
-    if (hw.encoder.isMyPin(gpio)) {
-        hw.encoder.handleISR(gpio, events);
-    }
-    if (gpio == Board::PIN_SWITCH_EN_READ) {
-        over_current(gpio, events);
-    }
-}
 
 // ============================================================================
 // Global State
@@ -123,23 +107,48 @@ int main() {
     // Initialize hardware
     hw.init();
 
-    // Setup interrupts
-    gpio_set_irq_enabled_with_callback(Board::PIN_ENC_A, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
-    gpio_set_irq_enabled(Board::PIN_ENC_B, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true);
-    gpio_set_irq_enabled(Board::PIN_SWITCH_EN_READ, GPIO_IRQ_EDGE_FALL, true);
+    // Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
+    Interrupts::init();
 
     // Initialize display
     displayHeader();
     displayStatus("Initializing...", ST7789::COLOR_YELLOW);
 
-    // Check TPS26750 mode
+    // Wait for TPS26750 to enter APP mode (may take time after power-up)
     char mode[5];
-    if (hw.pdController.getMode(mode)) {
-        LOG_INFO("TPS26750 Mode: %s", mode);
+    const int MAX_MODE_RETRIES = 50;  // 50 * 100ms = 5 seconds max
+    bool in_app_mode = false;
+
+    for (int i = 0; i < MAX_MODE_RETRIES; i++) {
+        if (hw.pdController.getMode(mode)) {
+            LOG_INFO("TPS26750 Mode: %s (attempt %d)", mode, i + 1);
+
+            // Check if in APP mode (mode string starts with "APP")
+            if (mode[0] == 'A' && mode[1] == 'P' && mode[2] == 'P') {
+                in_app_mode = true;
+                break;
+            }
+
+            // Still booting (PTCH/BOOT mode) - wait and retry
+            char statusMsg[32];
+            snprintf(statusMsg, sizeof(statusMsg), "Waiting for PD... (%d)", i + 1);
+            displayStatus(statusMsg, ST7789::COLOR_YELLOW);
+            sleep_ms(100);
+        } else {
+            LOG_ERROR("Failed to read TPS26750 MODE register!");
+            displayStatus("TPS26750 Error!", ST7789::COLOR_RED);
+            while (1) { tight_loop_contents(); }  // Halt on error
+        }
+    }
+
+    if (!in_app_mode) {
+        LOG_ERROR("TPS26750 failed to enter APP mode (stuck in %s)", mode);
+        displayStatus("PD Not Ready!", ST7789::COLOR_RED);
+        // Continue anyway - user can see the issue
     } else {
-        LOG_ERROR("Failed to read TPS26750 MODE register!");
-        displayStatus("TPS26750 Error!", ST7789::COLOR_RED);
-        while (1) { tight_loop_contents(); }  // Halt on error
+        // Give time for initial PD negotiation with charger
+        displayStatus("Negotiating PD...", ST7789::COLOR_YELLOW);
+        sleep_ms(500);
     }
 
     // Get available contracts
@@ -283,8 +292,39 @@ int main() {
             }
         }
 
-        // ===== Update RGB LED =====
-        hw.rgbLed.update();
+        // ===== Handle Overcurrent Flag (deferred logging/UI) =====
+        if (Interrupts::handleOvercurrent()) {
+            hw.rgbLed.setColor(255, 0, 0, 255);  // Red
+            LOG_ERROR("OVERCURRENT DETECTED - LOAD DISABLED");
+            displayStatus("OVERCURRENT!", ST7789::COLOR_RED);
+        }
+
+        // ===== Handle USB-PD Interrupt Flag =====
+        if (Interrupts::handlePdInterrupt()) {
+            // Read interrupt events from TPS26750 (safe here - main loop context)
+            uint8_t events[11] = {0};
+            if (hw.pdController.readInterrupts(events)) {
+                LOG_DEBUG("PD Interrupt received, events[0]=0x%02X events[1]=0x%02X", events[0], events[1]);
+
+                // Check for relevant events and handle them
+                // Bit 12: NEW_CONTRACT_AS_SINK
+                if (hw.pdController.isInterruptSet(events, 12)) {
+                    LOG_INFO("PD: New contract negotiated (interrupt)");
+                    displayActiveContract();
+
+                    // Clear the interrupt
+                    uint8_t clear_mask[11] = {0};
+                    clear_mask[1] = (1 << 4);  // Bit 12
+                    hw.pdController.clearInterrupts(clear_mask);
+                }
+
+                // TODO: Handle other TPS26750 interrupt events as needed
+                // See TPS26750 datasheet INT_EVENT1 register for full list
+            }
+        }
+
+        // ===== Update hardware (RGB LED, debug LED, etc.) =====
+        hw.update();
     }
 
     return 0;

@@ -25,8 +25,8 @@ public:
 
     ST7789(spi_inst_t* spi, uint pinCS, uint pinDC, uint pinRST, uint pinBL);
 
-    // Initialization
-    void init();
+    // Initialization (returns true on success)
+    bool init();
 
     // Basic drawing
     void fillScreen(uint16_t color);

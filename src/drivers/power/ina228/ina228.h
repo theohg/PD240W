@@ -224,10 +224,31 @@ public:
 
 
   //
+  //  OVERCURRENT PROTECTION
+  //  High-level API for setting current limits with automatic ALERT pin configuration
+  //
+  /**
+   * Configure overcurrent protection with automatic ALERT pin setup
+   * @param current_limit_amps Current threshold in Amps (e.g., 2.5 for 2.5A)
+   * @param latch If true, alert stays latched until cleared with getDiagnoseAlert()
+   * @return true if successful, false if current exceeds max or is invalid
+   */
+  bool     setOvercurrentLimit(float current_limit_amps, bool latch = true);
+
+  /**
+   * Disable overcurrent protection (clears SOL alert bit)
+   */
+  void     disableOvercurrentLimit();
+
+  /**
+   * Get the currently configured overcurrent limit
+   * @return Current limit in Amps, or 0.0 if not configured
+   */
+  float    getOvercurrentLimit();
+
+  //
   //  THRESHOLD AND LIMIT REGISTERS 12-17
   //  read datasheet for details, section 7.3.7, page 16++
-  //
-  //  TODO - design and implement better API?
   //
   void     setShuntOvervoltageTH(uint16_t threshold);
   uint16_t getShuntOvervoltageTH();
@@ -266,6 +287,7 @@ private:
   float    _current_LSB;
   float    _shunt;
   float    _maxCurrent;
+  float    _overcurrentLimit;  // Configured overcurrent limit in Amps (0 = disabled)
   bool     _ADCRange;
 
   uint8_t   _address;
