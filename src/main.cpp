@@ -100,10 +100,50 @@ void displayStatus(const char* msg, uint16_t color) {
 // Main
 // ============================================================================
 
+void debugTPS26750Status() {
+    char modeStr[5];
+    if (hw.pdController.getMode(modeStr)) {
+        LOG_INFO("TPS Mode: %s", modeStr);
+        //print on display as well
+        hw.display.drawString(10, 280, modeStr, ST7789::COLOR_WHITE, ST7789::COLOR_BLACK, 1);
+    } else {
+        LOG_ERROR("Failed to read Mode!");
+    }
+
+    uint8_t bootFlags[5];
+    if (hw.pdController.readRegister(0x2D, bootFlags, 5)) {
+        // Boot flags is 5 bytes (40 bits)
+        // Bit 29-31 is Patch Config Source (Byte 3, upper bits)
+        uint8_t configSource = (bootFlags[3] >> 5) & 0x07;
+        LOG_INFO("Boot Config Source: %d (5=EEPROM)", configSource);
+        
+        if (bootFlags[0] & (1 << 2)) LOG_WARN("Flag: Dead Battery");
+        if (bootFlags[1] & (1 << 2)) LOG_ERROR("Flag: Patch Download Error"); // Bit 10
+    }
+
+    uint8_t portConfig[4]; // Register is actually larger, but first 4 bytes contain critical bits
+    if (hw.pdController.readRegister(0x28, portConfig, 4)) {
+        uint32_t pc = portConfig[0] | (portConfig[1] << 8);
+        
+        uint8_t stateMachine = pc & 0x03;
+        bool pdDisabled = (pc & (1 << 10));
+        
+        LOG_INFO("Port Config: Machine=%d (0=Snk, 2=DRP), PD_Disabled=%d", stateMachine, pdDisabled);
+    }
+
+    if (hw.pdController.readRegister(0x2D, bootFlags, 5)) {
+        // Byte 0 contains critical error flags
+        if (bootFlags[0] & 0x01) LOG_ERROR("Patch Header Error");      // Bit 0 
+        if (bootFlags[0] & 0x40) LOG_ERROR("Region 0 Invalid");        // Bit 6 
+        if (bootFlags[0] & 0x80) LOG_ERROR("Region 1 Invalid");        // Bit 7 
+        
+        // Byte 1
+        if (bootFlags[1] & 0x01) LOG_ERROR("Region 0 EEPROM Error");   // Bit 8 
+        if (bootFlags[1] & 0x04) LOG_ERROR("Patch Download Error");    // Bit 10 
+    }
+}
+
 int main() {
-    LOG_SEPARATOR();
-    LOG_INFO("PD240W Phase 2 - TPS26750 Test");
-    LOG_SEPARATOR();
 
     // Initialize hardware
     hw.init();
@@ -112,14 +152,9 @@ int main() {
     if (flashTps26750Eeprom()) {
         // Flashing success or disabled
     } else {
-        // Flashing failed - Handle error (blink LED red?)
-        while(1) {
-            hw.rgbLed.setColor(255, 0, 0, 255);
-            hw.rgbLed.update();
-            sleep_ms(100);
-            hw.rgbLed.setColor(0, 0, 0, 0);
-            hw.rgbLed.update();
-            sleep_ms(100);
+        LOG_ERROR("EEPROM flashing failed! Halting.");
+        while (true) {
+            sleep_ms(1000);
         }
     }
 
@@ -130,42 +165,7 @@ int main() {
     displayHeader();
     displayStatus("Initializing...", ST7789::COLOR_YELLOW);
 
-    // Wait for TPS26750 to enter APP mode (may take time after power-up)
-    char mode[5];
-    const int MAX_MODE_RETRIES = 50;  // 50 * 100ms = 5 seconds max
-    bool in_app_mode = false;
-
-    for (int i = 0; i < MAX_MODE_RETRIES; i++) {
-        if (hw.pdController.getMode(mode)) {
-            LOG_INFO("TPS26750 Mode: %s (attempt %d)", mode, i + 1);
-
-            // Check if in APP mode (mode string starts with "APP")
-            if (mode[0] == 'A' && mode[1] == 'P' && mode[2] == 'P') {
-                in_app_mode = true;
-                break;
-            }
-
-            // Still booting (PTCH/BOOT mode) - wait and retry
-            char statusMsg[32];
-            snprintf(statusMsg, sizeof(statusMsg), "Waiting for PD... (%d)", i + 1);
-            displayStatus(statusMsg, ST7789::COLOR_YELLOW);
-            sleep_ms(100);
-        } else {
-            LOG_ERROR("Failed to read TPS26750 MODE register!");
-            displayStatus("TPS26750 Error!", ST7789::COLOR_RED);
-            while (1) { tight_loop_contents(); }  // Halt on error
-        }
-    }
-
-    if (!in_app_mode) {
-        LOG_ERROR("TPS26750 failed to enter APP mode (stuck in %s)", mode);
-        displayStatus("PD Not Ready!", ST7789::COLOR_RED);
-        // Continue anyway - user can see the issue
-    } else {
-        // Give time for initial PD negotiation with charger
-        displayStatus("Negotiating PD...", ST7789::COLOR_YELLOW);
-        sleep_ms(500);
-    }
+    debugTPS26750Status();
 
     // Get available contracts
     LOG_INFO("Reading available contracts...");

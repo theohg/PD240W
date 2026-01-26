@@ -23,7 +23,7 @@
  * WARNING: Only enable when you need to update the TPS26750 patch.
  * After successful flash, set back to 0 and rebuild.
  */
-#define ENABLE_EEPROM_FLASHING 1
+#define ENABLE_EEPROM_FLASHING 0
 
 // =============================================================================
 // EEPROM I2C Configuration (I2C1 on GPIO 14/15)

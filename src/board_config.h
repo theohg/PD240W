@@ -49,8 +49,8 @@ namespace Board {
     // Extra GPIOs routed to solder pads for user access
     constexpr int PIN_GPIO_14    = 14;
     constexpr int PIN_GPIO_15    = 15;
-    constexpr int PIN_GPIO_16    = 16;
-    constexpr int PIN_GPIO_29    = 29;
+    constexpr int PIN_GPIO_16    = 16;  // Also used for UART TX
+    constexpr int PIN_GPIO_29    = 29;  // Also used for UART RX
 
     // -------------------------------------------------------------------------
     // I2C Parameters

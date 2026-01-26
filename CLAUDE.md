@@ -43,6 +43,12 @@ cd build && rm -rf * && cmake .. && ninja
 
 # Serial debugging (UART on GP16/GP29 @ 115200)
 screen /dev/tty.usbserial-* 115200
+
+# EEPROM flashing (TPS26750 config update)
+# 1. Set ENABLE_EEPROM_FLASHING to 1 in src/eeprom_loader.h
+# 2. Rebuild and flash
+# 3. Power cycle TPS26750 after successful flash
+# 4. Set ENABLE_EEPROM_FLASHING back to 0 and rebuild
 ```
 
 **Build Outputs:** `build/PD240W.elf`, `build/PD240W.uf2`, `build/compile_commands.json`
@@ -96,7 +102,8 @@ src/
 ├── main.cpp              # Entry point, event loop
 ├── hardware.h/cpp        # Global Hardware singleton
 ├── interrupts.h/cpp      # GPIO interrupt handling
-├── board_config.h        # Pin definitions (Board::) and constants (Config::)
+├── board_config.h        # Pin definitions and constants (Board:: namespace)
+├── eeprom_loader.h/cpp   # TPS26750 EEPROM flashing utility (I2C1)
 ├── drivers/
 │   ├── gpio/             # SimpleIO wrapper (digital I/O with blink support)
 │   ├── input/            # Button, RotaryEncoder, ADC
@@ -153,6 +160,17 @@ struct SourceCapability {
 2. Call appropriate `request*Profile()` function
 3. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) for completion
 4. Verify with `getActiveContract()`
+
+### TPS26750 EEPROM Flashing
+**Purpose:** Program TPS26750 configuration patch to external EEPROM (CAT24C512) via I2C1
+
+The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program this EEPROM directly:
+- **I2C1:** GP14 (SDA), GP15 (SCL) at 400kHz
+- **EEPROM:** CAT24C512 (64KB, 128-byte pages) at address 0x50
+- **Binary:** `full_flash_c_26_11.c` contains the TPS26750 configuration array
+- **Enable:** Set `ENABLE_EEPROM_FLASHING` to 1 in `eeprom_loader.h`
+
+**Important:** Flashing is disabled by default. Only enable when updating TPS26750 config.
 
 ### Power Monitoring & Safety (INA228)
 - Measures voltage, current, power, temperature
@@ -220,6 +238,7 @@ Board::INA228_MAX_CURRENT        // 5A
 | Bus | Pins | Frequency | Devices |
 |-----|------|-----------|---------|
 | I2C0 | GP4, GP5 | 400 kHz | INA228, TPS26750 |
+| I2C1 | GP14, GP15 | 400 kHz | CAT24C512 EEPROM (TPS26750 config) |
 | SPI0 | GP18, GP19 | 10 MHz | ST7789 Display |
 | UART0 | GP16, GP29 | 115200 | Debug console |
 | PIO | GP28 | 800 kHz | SK6812 RGB LED |
@@ -320,6 +339,7 @@ Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, P
 | hardware.h/cpp | Global singleton, component instances |
 | interrupts.h/cpp | GPIO interrupt handling |
 | board_config.h | Pin definitions and constants |
+| eeprom_loader.h/cpp | TPS26750 EEPROM flashing (enable via `ENABLE_EEPROM_FLASHING`) |
 
 ## Safety-Critical Code
 
