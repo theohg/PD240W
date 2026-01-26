@@ -37,8 +37,8 @@ pico_sdk_init()
 
 add_executable(PD240W
         src/main.cpp
-        src/eeprom_loader.cpp
-        src/full_flash_c_26_11.c
+        src/utils/eeprom_loader.cpp
+        src/utils/tps26750_patch.c
         src/hardware.cpp
         src/interrupts.cpp
         src/drivers/buzzer/buzzer.cpp
@@ -80,8 +80,10 @@ target_link_libraries(PD240W
 target_include_directories(PD240W PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         src
+        src/config
         src/drivers
-        src/hal
+        src/logic
+        src/utils
         src/ui
 )
 

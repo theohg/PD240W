@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-Create an adjustable power supply (0-48V, 0-5A, up to 240W) using USB-C Power Delivery negotiation. The user navigates a menu on an LCD screen using 2 buttons and a rotary encoder to:
+Create an adjustable power supply (0-48V, 0-5A, up to 240W) using USB-C Power Delivery negotiation. The user navigates a menu on an LCD screen using a Prusa-style rotary encoder:
 1. Select voltage from available PD contracts
 2. Set current limit (monitored by INA228)
 3. Enable optional 17V buck converter
@@ -19,10 +19,22 @@ Create an adjustable power supply (0-48V, 0-5A, up to 240W) using USB-C Power De
 | **Current Sensing** | INA228 with 8mΩ shunt, 5A max, target 0.001A resolution |
 | **ADC Voltage** | Pre-switch VBUS (redundant to INA228 post-switch) |
 | **ADC Temp** | Onboard NTC (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series) |
-| **Startup** | Output disabled by default, user enables via button |
+| **Startup** | Output disabled by default, user enables via BTN1 |
 | **Overcurrent** | Load switch off, clear INA228 fault latch to recover |
 | **Safety** | Overvoltage, overtemperature, power limit enforcement |
 | **Startup Sound** | Mario power-up melody |
+
+---
+
+## Input Mapping (Prusa-Style)
+
+| Control | Action |
+|---------|--------|
+| **Encoder Rotate** | Navigate menu / Adjust values |
+| **Encoder Click** | Confirm / Select |
+| **Encoder Long Press (800ms)** | Go Back / Exit current screen |
+| **BTN1** | Toggle Load Switch (main output) - works in ANY state |
+| **BTN2** | Toggle 17V Buck - works in ANY state (only if VBUS > 18V) |
 
 ---
 
@@ -58,51 +70,71 @@ Full USB Power Delivery negotiation implemented:
 
 ---
 
-### Phase 3: Application Logic & State Machine (Pending)
+### Phase 3: Application Logic & State Machine 🔄 IN PROGRESS
 
 **Goal:** Implement control logic and user interaction
 
-#### 3.1 Define Application States
-```
-BOOT         - Initialization, startup melody
-IDLE         - Main screen, output disabled
-RUNNING      - Output enabled, monitoring
-MENU         - User navigating menu
-FAULT        - Protection active (overcurrent/overvoltage/overtemp)
-SETTING_*    - User adjusting voltage/current
+#### 3.0 Project Reorganization ✅ COMPLETE
+- Created `src/config/` with `board_config.h`, `app_config.h`, and `version.h`
+- Moved EEPROM files to `src/utils/` (`eeprom_loader.h/cpp`, `tps26750_patch.c`)
+- Updated CMakeLists.txt with new paths
+- Updated documentation (CLAUDE.md, DEVELOPMENT_PLAN.md)
+
+#### 3.1 Application States
+```cpp
+enum class AppState {
+    BOOT,      // Startup: logo, version, melody (3s)
+    MAIN,      // Real-time monitoring display
+    MENU,      // PDO selection / settings navigation
+    ADJUST,    // Adjusting a value (voltage/current)
+    FAULT      // Error display, needs acknowledgment
+};
 ```
 
-#### 3.2 Implement State Transitions
-Transitions based on:
-- Button presses
-- Encoder rotation
-- Safety conditions
-- Timeouts (menu → main screen)
+#### 3.2 State Transitions
+```
+BOOT ──(3s timeout)──> MAIN
 
-#### 3.3 Create Settings Manager
+MAIN <──(long press)──> MENU
+     <──(fault)───────> FAULT
+
+MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
+     <──(long press)──> MAIN
+     <──(30s timeout)──> MAIN
+
+FAULT ──(click acknowledge)──> MAIN
+```
+
+#### 3.3 Boot Sequence (3 seconds)
+| Time | Event |
+|------|-------|
+| 0ms | Display Synapticon logo (centered) |
+| 100ms | Show "PD240W Power Supply" |
+| 200ms | Show firmware version |
+| 300ms | Start Mario power-up melody |
+| 500ms | Show "Reading USB-PD..." |
+| 800ms | Read source capabilities |
+| 1500ms | Show contract summary |
+| 3000ms | Transition to MAIN state |
+
+#### 3.4 Settings Manager
 - Target voltage (from available contracts)
-- Current limit
+- Current limit (100mA - 5000mA, 100mA steps)
 - 17V buck enable/disable
 - Output enable/disable
 
-#### 3.4 Implement Safety Logic
-- Temperature threshold monitoring
-- Voltage deviation from target
-- Current vs limit monitoring
-- Fault state transitions
-- Fault recovery (user acknowledgment)
+#### 3.5 Safety Logic
+| Condition | Warning | Fault | Action |
+|-----------|---------|-------|--------|
+| Overcurrent | - | INA228 ALERT | ISR disables load immediately |
+| Temperature | 60C | 80C | Disable load, show fault |
+| PD Disconnect | - | No VBUS | Disable load, show fault |
 
-#### 3.5 Add Power Statistics
-- Real-time power calculation (V × I)
-- Energy accumulation (INA228 energy register)
-- Uptime counter
-- Min/max tracking
-
-#### 3.6 Integration
-- Refactor `main.cpp` to use state machine
-- Remove test code
-
-**Files to create:** `src/logic/state_machine.h/cpp`, `settings.h/cpp`, `safety.h/cpp`, `statistics.h/cpp`
+#### 3.6 Files to Create
+- `src/logic/state_machine.h/cpp` - Main state controller
+- `src/logic/settings.h/cpp` - User settings management
+- `src/logic/safety.h/cpp` - Safety monitoring
+- `src/logic/pd_manager.h/cpp` - PD contract management
 
 ---
 
@@ -110,34 +142,55 @@ Transitions based on:
 
 **Goal:** Create intuitive LCD menu and displays
 
-#### 4.1 Design Screen Layouts
-- Main screen: V, I, P, Temp display
-- Menu screen: List of options
-- Setting screens: Voltage selection, current adjustment
-- Fault screen: Error message, recovery instructions
+#### 4.1 Screen Layouts
 
-#### 4.2 Implement Display Manager
-- Screen rendering and transitions
-- Layout helpers (draw value with label, draw menu item)
+**Main Screen (MAIN state):**
+- Active contract (voltage @ current)
+- Measured V, I, P from INA228
+- Temperature
+- Output status (Load: ON/OFF, 17V: ON/OFF)
 
-#### 4.3 Implement Screens
-- `MainScreen` - Real-time monitoring
-- `MenuScreen` - Scrollable menu
-- `VoltageSelectScreen` - List of available PD voltages
-- `CurrentSetScreen` - Current adjustment with encoder
-- `FaultScreen` - Error display with recovery prompt
+**Menu Screen (MENU state):**
+```
+> Select Voltage      (enter PDO list)
+  Current Limit       (enter adjustment)
+  About               (show version, uptime)
+```
 
-#### 4.4 Input Handling
-- Button 1: Menu/Back
-- Button 2: Select/Enable Output
-- Encoder: Navigate/Adjust values
-- Encoder button: Confirm/Reset fault
+**PDO Selection (ADJUST state):**
+```
+  5V @ 3000mA
+> 9V @ 3000mA        (highlighted)
+  15V @ 3000mA
+  20V @ 5000mA
+  [PPS] 3.3-21V
+```
 
-#### 4.5 Visual Feedback
-- RGB LED: green=OK, yellow=warning, red=fault
-- Buzzer beeps for button presses
+**Current Limit (ADJUST state):**
+```
+Current Limit: 2.50 A
+       [====----]
+       Min      Max
+```
 
-**Files to create:** `src/ui/display_manager.h/cpp`, `src/ui/screens/*.h/cpp`
+**Fault Screen:**
+```
+     ⚠ OVERCURRENT ⚠
+
+   Measured: 5.23A
+   Limit: 5.00A
+
+   Load switch disabled
+
+   [Click to acknowledge]
+```
+
+#### 4.2 Files to Create
+- `src/ui/display_manager.h/cpp` - Screen rendering coordinator
+- `src/ui/screens/screen_boot.h/cpp` - Boot splash screen
+- `src/ui/screens/screen_main.h/cpp` - Real-time monitoring
+- `src/ui/screens/screen_menu.h/cpp` - Menu navigation
+- `src/ui/screens/screen_fault.h/cpp` - Fault display
 
 ---
 
@@ -170,29 +223,44 @@ Transitions based on:
 
 ---
 
-## File Structure (Target)
+## File Structure (Current)
 
 ```
 src/
-├── main.cpp
-├── hardware.h/cpp
-├── interrupts.h/cpp
-├── board_config.h
-├── drivers/           # ✅ Complete
-├── logic/             # Phase 3
+├── main.cpp                 # Entry point, state machine driver
+├── hardware.h/cpp           # Global Hardware singleton
+├── interrupts.h/cpp         # GPIO interrupt handling
+├── config/                  # ✅ All configuration files
+│   ├── board_config.h       # Pin definitions (Board:: namespace)
+│   ├── app_config.h         # Timeouts, thresholds, constants
+│   └── version.h            # Firmware version string
+├── drivers/                 # ✅ Complete - all hardware drivers
+│   ├── gpio/
+│   ├── input/
+│   ├── buzzer/
+│   ├── rgb_led/
+│   ├── display/
+│   └── power/
+│       ├── ina228/
+│       └── tps26750/
+├── logic/                   # Phase 3 - to implement
 │   ├── state_machine.h/cpp
 │   ├── settings.h/cpp
 │   ├── safety.h/cpp
-│   └── statistics.h/cpp
-├── ui/                # Phase 4
-│   ├── display_manager.h/cpp
-│   └── screens/
-│       ├── main_screen.h/cpp
-│       ├── menu_screen.h/cpp
-│       ├── voltage_select_screen.h/cpp
-│       ├── current_set_screen.h/cpp
-│       └── fault_screen.h/cpp
-└── utils/
+│   └── pd_manager.h/cpp
+├── utils/
+│   ├── logging.h            # LOG_INFO, LOG_ERROR, etc.
+│   ├── eeprom_loader.h/cpp  # ✅ TPS26750 EEPROM flashing
+│   └── tps26750_patch.c     # ✅ TPS26750 configuration binary
+└── ui/                      # Phase 4 - to implement
+    ├── display_manager.h/cpp
+    ├── screens/
+    │   ├── screen_boot.h/cpp
+    │   ├── screen_main.h/cpp
+    │   ├── screen_menu.h/cpp
+    │   └── screen_fault.h/cpp
+    └── assets/
+        └── synapticon_logo.h
 ```
 
 ---
@@ -201,15 +269,15 @@ src/
 
 ### Keep These Patterns ✅
 - Hardware Singleton (`extern Hardware hw`)
-- Namespace Organization (`Board::`, `Config::`)
+- Namespace Organization (`Board::`, `AppConfig::`, `Version::`)
 - Separate driver layer
 - Non-blocking timers (`absolute_time_t`)
 
 ### Patterns for New Code
-- **State Machine:** Explicit state enum with switch/case or state classes
+- **State Machine:** Simple enum with switch/case (no class inheritance)
 - **Error Handling:** `bool` or `ErrorCode` returns
 - **Logging:** Use `LOG_*` macros in application code, not in drivers
-- **Configuration Validation:** `static_assert` for compile-time checks
+- **Configuration:** Use `AppConfig::` namespace for app constants
 
 ---
 
@@ -231,3 +299,4 @@ src/
 - Phases can partially overlap
 - Testing should happen continuously
 - Safety features must be tested with real fault conditions
+- Prusa-style input mapping provides intuitive single-control navigation

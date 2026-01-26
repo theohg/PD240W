@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include "hardware.h"
 #include "interrupts.h"
-#include "eeprom_loader.h"
+#include "utils/eeprom_loader.h"
 #include "utils/logging.h"
 
 // ============================================================================

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **User-adjustable voltage selection** from available USB-C PD contracts (up to 48V)
 - **User-adjustable current limiting** (0-5A, monitored by INA228)
-- **LCD menu interface** with 2 buttons + rotary encoder navigation
+- **LCD menu interface** with Prusa-style rotary encoder navigation
 - **Real-time power monitoring** (voltage, current, power, temperature)
 - **Safety features:** Overcurrent protection, optional overtemperature protection
 - **Optional 17V buck converter** control (GPIO-enabled on PCB)
@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Build: CMake + Ninja
 - Communication: I2C (400kHz), SPI (10MHz), UART (115200 baud)
 
-**Project Status:** Phase 1 & 2 complete. Ready for Phase 3 (Application Logic). See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
+**Project Status:** Phase 1 & 2 complete. Phase 3 (Application Logic) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
 
 **Hardware Details:**
 - **LCD:** 240x320 (2.4") ST7789, model HS20HS072RX
@@ -28,24 +28,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **ADC Voltage:** Pre-switch VBUS measurement (150kΩ/10kΩ divider), redundant to INA228 post-switch
 - **ADC Temp:** Onboard NTC thermistor (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series resistor)
 - **Current Resolution:** Target 1mA (0.001A) precision for user adjustment
-- **Startup Behavior:** Output disabled by default, user must enable via button
+- **Startup Behavior:** Output disabled by default, user must enable via BTN1
 
 ## Build Commands
 
 ```bash
-# Build
-cd build && cmake .. && ninja
+# Build (use -G Ninja explicitly)
+cd build && cmake -G Ninja .. && ninja
 
 # Flash: Hold BOOTSEL while connecting USB, drag build/PD240W.uf2 to mounted drive
 
 # Clean build
-cd build && rm -rf * && cmake .. && ninja
+cd build && rm -rf * && cmake -G Ninja .. && ninja
 
 # Serial debugging (UART on GP16/GP29 @ 115200)
 screen /dev/tty.usbserial-* 115200
 
 # EEPROM flashing (TPS26750 config update)
-# 1. Set ENABLE_EEPROM_FLASHING to 1 in src/eeprom_loader.h
+# 1. Set ENABLE_EEPROM_FLASHING to 1 in src/utils/eeprom_loader.h
 # 2. Rebuild and flash
 # 3. Power cycle TPS26750 after successful flash
 # 4. Set ENABLE_EEPROM_FLASHING back to 0 and rebuild
@@ -65,9 +65,10 @@ extern Hardware hw;  // Global instance
 The `Hardware` struct aggregates all drivers and is initialized once in `main()` via `hw.init()`.
 
 ### Initialization Sequence
-1. `hw.init()` - Initializes all hardware (I2C, SPI, drivers)
-2. `Interrupts::init()` - Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
-3. Main loop starts - Non-blocking event polling
+1. `flashTps26750Eeprom()` - Optional EEPROM update (before hw.init)
+2. `hw.init()` - Initializes all hardware (I2C, SPI, drivers)
+3. `Interrupts::init()` - Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
+4. State machine starts - Non-blocking event loop
 
 ### Main Event Loop Pattern
 The main loop is **entirely non-blocking** using:
@@ -99,24 +100,88 @@ namespace Interrupts {
 
 ```
 src/
-├── main.cpp              # Entry point, event loop
-├── hardware.h/cpp        # Global Hardware singleton
-├── interrupts.h/cpp      # GPIO interrupt handling
-├── board_config.h        # Pin definitions and constants (Board:: namespace)
-├── eeprom_loader.h/cpp   # TPS26750 EEPROM flashing utility (I2C1)
-├── drivers/
-│   ├── gpio/             # SimpleIO wrapper (digital I/O with blink support)
-│   ├── input/            # Button, RotaryEncoder, ADC
-│   ├── buzzer/           # Buzzer (PWM-based)
-│   ├── rgb_led/          # SK6812 RGB LED (PIO-based)
-│   ├── display/          # ST7789 LCD (SPI)
+├── main.cpp                 # Entry point, state machine driver
+├── hardware.h/cpp           # Global Hardware singleton
+├── interrupts.h/cpp         # GPIO interrupt handling
+├── config/                  # All configuration files
+│   ├── board_config.h       # Pin definitions (Board:: namespace)
+│   ├── app_config.h         # Timeouts, thresholds, constants
+│   └── version.h            # Firmware version string
+├── drivers/                 # Low-level hardware drivers
+│   ├── gpio/                # SimpleIO (digital I/O with blink)
+│   ├── input/               # Button, RotaryEncoder, ADC
+│   ├── buzzer/              # Buzzer (PWM-based)
+│   ├── rgb_led/             # SK6812 RGB LED (PIO-based)
+│   ├── display/             # ST7789 LCD (SPI)
 │   └── power/
-│       ├── ina228/       # Power monitor (I2C, 0x40)
-│       └── tps26750/     # USB PD controller (I2C, 0x21)
-├── utils/                # Utility functions (logging.h)
-└── ui/                   # Display manager (Phase 4 in progress)
-    └── display_manager.cpp
+│       ├── ina228/          # Power monitor (I2C, 0x40)
+│       └── tps26750/        # USB PD controller (I2C, 0x21)
+├── logic/                   # Application logic (Phase 3)
+│   ├── state_machine.h/cpp  # Main state controller
+│   ├── settings.h/cpp       # User settings management
+│   ├── safety.h/cpp         # Safety monitoring
+│   └── pd_manager.h/cpp     # PD contract management
+├── utils/
+│   ├── logging.h            # LOG_INFO, LOG_ERROR, etc.
+│   ├── eeprom_loader.h/cpp  # TPS26750 EEPROM flashing
+│   └── tps26750_patch.c     # TPS26750 configuration binary
+└── ui/                      # User interface (Phase 4)
+    ├── display_manager.h/cpp
+    ├── screens/             # Individual screen implementations
+    └── assets/
+        └── synapticon_logo.h
 ```
+
+## Input Mapping (Prusa-Style)
+
+The encoder is the primary navigation control:
+
+| Control | Action |
+|---------|--------|
+| **Encoder Rotate** | Navigate menu / Adjust values |
+| **Encoder Click** | Confirm / Select |
+| **Encoder Long Press** | Go Back / Exit current screen |
+| **BTN1** | Toggle Load Switch (main output) |
+| **BTN2** | Toggle 17V Buck |
+
+**Notes:**
+- BTN1/BTN2 work in ANY state (direct hardware control)
+- BTN2 only enables 17V if VBUS > 18V (hardware requirement)
+- Long press threshold: 800ms (configurable in `app_config.h`)
+
+## State Machine Design
+
+### Application States
+```cpp
+enum class AppState {
+    BOOT,      // Startup: logo, version, melody (3s)
+    MAIN,      // Real-time monitoring display
+    MENU,      // PDO selection / settings
+    ADJUST,    // Adjusting a value (voltage/current)
+    FAULT      // Error display, needs acknowledgment
+};
+```
+
+### State Transitions
+```
+BOOT ──(3s timeout)──> MAIN
+
+MAIN <──(long press)──> MENU
+     <──(fault)───────> FAULT
+
+MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
+     <──(long press)──> MAIN
+
+FAULT ──(click acknowledge)──> MAIN
+```
+
+### Boot Sequence (3 seconds)
+1. Display Synapticon logo
+2. Show "PD240W Power Supply"
+3. Show firmware version
+4. Play Mario power-up melody
+5. Read USB-PD source capabilities
+6. Transition to MAIN state
 
 ## Key Subsystems
 
@@ -167,8 +232,8 @@ struct SourceCapability {
 The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program this EEPROM directly:
 - **I2C1:** GP14 (SDA), GP15 (SCL) at 400kHz
 - **EEPROM:** CAT24C512 (64KB, 128-byte pages) at address 0x50
-- **Binary:** `full_flash_c_26_11.c` contains the TPS26750 configuration array
-- **Enable:** Set `ENABLE_EEPROM_FLASHING` to 1 in `eeprom_loader.h`
+- **Binary:** `src/utils/tps26750_patch.c` contains the configuration array
+- **Enable:** Set `ENABLE_EEPROM_FLASHING` to 1 in `src/utils/eeprom_loader.h`
 
 **Important:** Flashing is disabled by default. Only enable when updating TPS26750 config.
 
@@ -177,7 +242,7 @@ The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program
 - Configured with 8mΩ shunt resistor, 5A max
 - Overcurrent protection via latched ALERT interrupt
 - On alert: Load switch disabled immediately in ISR
-- Recovery: User clears latch via encoder button
+- Recovery: User acknowledges fault with encoder click
 
 **Key GPIOs:**
 - `hw.loadSwitch` (GPIO 3) - Enables/disables output
@@ -203,6 +268,7 @@ The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program
 - PWM-based, 100Hz-10kHz
 - `playTone(freq, duration_ms)`, `playMelody(notes, length)`
 - Non-blocking via timer callbacks
+- Pre-defined: `MARIO_POWERUP` melody for boot sequence
 
 ### SimpleIO (GPIO Wrapper)
 - `on()`, `off()`, `toggle()`, `read()`
@@ -210,9 +276,17 @@ The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program
 
 ## Configuration
 
-All constants are in the `Board::` namespace in `board_config.h`:
+### Application Config (`src/config/app_config.h`)
+```cpp
+AppConfig::BOOT_DURATION_MS          // 3000ms boot screen
+AppConfig::MENU_TIMEOUT_MS           // 30000ms auto-return
+AppConfig::ENCODER_LONG_PRESS_MS     // 800ms long press threshold
+AppConfig::TEMP_WARNING_C            // 60C warning
+AppConfig::TEMP_SHUTDOWN_C           // 80C shutdown
+AppConfig::CURRENT_LIMIT_DEFAULT_MA  // 1000mA default
+```
 
-**Pin Definitions:**
+### Board Config (`src/config/board_config.h`)
 ```cpp
 Board::PIN_BTN_1, PIN_BTN_2, PIN_ENC_BTN
 Board::PIN_I2C_SDA, PIN_I2C_SCL     // I2C0
@@ -222,13 +296,10 @@ Board::I2C_ADDR_INA228              // 0x40
 Board::I2C_ADDR_TPS26750            // 0x21
 ```
 
-**Hardware Constants:**
+### Version Info (`src/config/version.h`)
 ```cpp
-Board::ADC_REF_VOLTAGE           // 3.3V
-Board::NTC_BETA                  // 3950
-Board::VOLTAGE_DIVIDER_TOP/BOT   // 150kΩ/10kΩ
-Board::INA228_SHUNT_RESISTOR     // 8mΩ
-Board::INA228_MAX_CURRENT        // 5A
+Version::FIRMWARE_VERSION    // "v1.0.0"
+Version::PRODUCT_NAME        // "PD240W"
 ```
 
 **UART:** TX=GP16, RX=GP29 (configured in CMakeLists.txt)
@@ -294,7 +365,7 @@ class Buzzer {
 ### Error Handling
 - Driver functions should return `bool` status
 - Use `LOG_HW_INIT()` macro for init functions
-- Use logging macros: `LOG_INFO`, `LOG_WARN`, `LOG_ERROR`, `LOG_DEBUG`
+- Use logging macros: `LOG_INFO`, `LOG_WARN`, `LOG_ERROR`, `LOG_DEBUG`, `LOG_CRITICAL`
 
 ### Naming Conventions
 - Classes: `PascalCase`
@@ -327,19 +398,22 @@ Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, P
 |-------|--------|-------------|
 | 1. Hardware Foundation | ✅ Complete | All drivers working |
 | 2. TPS26750 USB PD | ✅ Complete | Full PD negotiation |
-| 3. Application Logic | Pending | State machine, settings, safety |
-| 4. User Interface | Pending | LCD menu, input handling |
+| 3. Application Logic | 🔄 In Progress | State machine, settings, safety |
+| 4. User Interface | Pending | LCD menu, screen system |
 | 5. Integration & Testing | Pending | End-to-end testing |
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| main.cpp | Entry point, event loop |
-| hardware.h/cpp | Global singleton, component instances |
-| interrupts.h/cpp | GPIO interrupt handling |
-| board_config.h | Pin definitions and constants |
-| eeprom_loader.h/cpp | TPS26750 EEPROM flashing (enable via `ENABLE_EEPROM_FLASHING`) |
+| `main.cpp` | Entry point, state machine driver |
+| `hardware.h/cpp` | Global singleton, component instances |
+| `interrupts.h/cpp` | GPIO interrupt handling |
+| `config/board_config.h` | Pin definitions and constants |
+| `config/app_config.h` | Timeouts, thresholds, constants |
+| `config/version.h` | Firmware version string |
+| `utils/eeprom_loader.h/cpp` | TPS26750 EEPROM flashing |
+| `logic/state_machine.h/cpp` | Application state management |
 
 ## Safety-Critical Code
 
