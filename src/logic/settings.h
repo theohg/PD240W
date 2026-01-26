@@ -1,0 +1,65 @@
+#pragma once
+
+#include <cstdint>
+
+// ============================================================================
+// User Settings Manager
+// ============================================================================
+// Manages user-configurable settings for the power supply.
+// Settings are stored in RAM and can be persisted to flash if needed.
+// ============================================================================
+
+struct UserSettings {
+    // Current limit (mA)
+    uint32_t current_limit_ma;
+
+    // Last selected PDO index
+    int8_t last_pdo_index;
+
+    // Output states (for restoration after power cycle - future use)
+    bool load_switch_enabled;
+    bool buck_17v_enabled;
+
+    // Display settings
+    uint8_t lcd_brightness;
+
+    // Reserved for future use
+    uint8_t reserved[16];
+};
+
+class Settings {
+public:
+    Settings();
+
+    // Initialize settings (load defaults or from flash)
+    void init();
+
+    // Get current settings (read-only)
+    const UserSettings& get() const { return _settings; }
+
+    // Modify settings
+    void setCurrentLimit(uint32_t limit_ma);
+    void setLastPdoIndex(int8_t index);
+    void setLoadSwitchEnabled(bool enabled);
+    void setBuck17vEnabled(bool enabled);
+    void setLcdBrightness(uint8_t brightness);
+
+    // Accessors
+    uint32_t getCurrentLimit() const { return _settings.current_limit_ma; }
+    int8_t getLastPdoIndex() const { return _settings.last_pdo_index; }
+    bool isLoadSwitchEnabled() const { return _settings.load_switch_enabled; }
+    bool isBuck17vEnabled() const { return _settings.buck_17v_enabled; }
+    uint8_t getLcdBrightness() const { return _settings.lcd_brightness; }
+
+    // Persistence (future implementation)
+    bool saveToFlash();
+    bool loadFromFlash();
+    void resetToDefaults();
+
+private:
+    UserSettings _settings;
+    bool _dirty;  // True if settings changed since last save
+};
+
+// Global instance
+extern Settings settings;

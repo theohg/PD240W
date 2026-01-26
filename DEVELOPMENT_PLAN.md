@@ -70,7 +70,7 @@ Full USB Power Delivery negotiation implemented:
 
 ---
 
-### Phase 3: Application Logic & State Machine 🔄 IN PROGRESS
+### Phase 3: Application Logic & State Machine ✅ COMPLETE
 
 **Goal:** Implement control logic and user interaction
 
@@ -80,7 +80,7 @@ Full USB Power Delivery negotiation implemented:
 - Updated CMakeLists.txt with new paths
 - Updated documentation (CLAUDE.md, DEVELOPMENT_PLAN.md)
 
-#### 3.1 Application States
+#### 3.1 Application States ✅ IMPLEMENTED
 ```cpp
 enum class AppState {
     BOOT,      // Startup: logo, version, melody (3s)
@@ -91,7 +91,7 @@ enum class AppState {
 };
 ```
 
-#### 3.2 State Transitions
+#### 3.2 State Transitions ✅ IMPLEMENTED
 ```
 BOOT ──(3s timeout)──> MAIN
 
@@ -105,7 +105,7 @@ MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
 FAULT ──(click acknowledge)──> MAIN
 ```
 
-#### 3.3 Boot Sequence (3 seconds)
+#### 3.3 Boot Sequence (3 seconds) ✅ IMPLEMENTED
 | Time | Event |
 |------|-------|
 | 0ms | Display Synapticon logo (centered) |
@@ -117,28 +117,34 @@ FAULT ──(click acknowledge)──> MAIN
 | 1500ms | Show contract summary |
 | 3000ms | Transition to MAIN state |
 
-#### 3.4 Settings Manager
+#### 3.4 Settings Manager ✅ IMPLEMENTED
 - Target voltage (from available contracts)
 - Current limit (100mA - 5000mA, 100mA steps)
 - 17V buck enable/disable
 - Output enable/disable
 
-#### 3.5 Safety Logic
+#### 3.5 Safety Logic ✅ IMPLEMENTED
 | Condition | Warning | Fault | Action |
 |-----------|---------|-------|--------|
 | Overcurrent | - | INA228 ALERT | ISR disables load immediately |
 | Temperature | 60C | 80C | Disable load, show fault |
 | PD Disconnect | - | No VBUS | Disable load, show fault |
 
-#### 3.6 Files to Create
+**Implementation Notes:**
+- VBUS measured via ADC pre-switch (not INA228 post-switch) for reliable PD detection
+- Overcurrent ISR only triggers when load switch is enabled (PIN_SWITCH_EN high)
+- Safety faults skipped during BOOT state to allow boot sequence to complete
+
+#### 3.6 Files Created ✅ COMPLETE
 - `src/logic/state_machine.h/cpp` - Main state controller
 - `src/logic/settings.h/cpp` - User settings management
 - `src/logic/safety.h/cpp` - Safety monitoring
 - `src/logic/pd_manager.h/cpp` - PD contract management
+- `src/ui/display_manager.h/cpp` - State-based screen rendering
 
 ---
 
-### Phase 4: User Interface (Pending)
+### Phase 4: User Interface 🔄 IN PROGRESS
 
 **Goal:** Create intuitive LCD menu and displays
 
@@ -243,18 +249,18 @@ src/
 │   └── power/
 │       ├── ina228/
 │       └── tps26750/
-├── logic/                   # Phase 3 - to implement
-│   ├── state_machine.h/cpp
-│   ├── settings.h/cpp
-│   ├── safety.h/cpp
-│   └── pd_manager.h/cpp
+├── logic/                   # ✅ Phase 3 - complete
+│   ├── state_machine.h/cpp  # ✅ Main state controller
+│   ├── settings.h/cpp       # ✅ User settings management
+│   ├── safety.h/cpp         # ✅ Safety monitoring
+│   └── pd_manager.h/cpp     # ✅ PD contract management
 ├── utils/
 │   ├── logging.h            # LOG_INFO, LOG_ERROR, etc.
 │   ├── eeprom_loader.h/cpp  # ✅ TPS26750 EEPROM flashing
 │   └── tps26750_patch.c     # ✅ TPS26750 configuration binary
-└── ui/                      # Phase 4 - to implement
-    ├── display_manager.h/cpp
-    ├── screens/
+└── ui/                      # Phase 4 - in progress
+    ├── display_manager.h/cpp # ✅ State-based screen rendering
+    ├── screens/              # To implement (optional refinement)
     │   ├── screen_boot.h/cpp
     │   ├── screen_main.h/cpp
     │   ├── screen_menu.h/cpp
@@ -287,7 +293,7 @@ src/
 |-------|-----------------|
 | Phase 1 | ✅ Each driver tested independently |
 | Phase 2 | ✅ TPS26750 tested with USB-C charger, verified with INA228 |
-| Phase 3 | Test state transitions manually |
+| Phase 3 | ✅ State transitions tested, safety bugs fixed |
 | Phase 4 | Test all menu navigation paths |
 | Phase 5 | Full integration testing |
 

@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Build: CMake + Ninja
 - Communication: I2C (400kHz), SPI (10MHz), UART (115200 baud)
 
-**Project Status:** Phase 1 & 2 complete. Phase 3 (Application Logic) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
+**Project Status:** Phase 1, 2 & 3 complete. Phase 4 (User Interface refinement) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
 
 **Hardware Details:**
 - **LCD:** 240x320 (2.4") ST7789, model HS20HS072RX
@@ -398,8 +398,8 @@ Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, P
 |-------|--------|-------------|
 | 1. Hardware Foundation | ✅ Complete | All drivers working |
 | 2. TPS26750 USB PD | ✅ Complete | Full PD negotiation |
-| 3. Application Logic | 🔄 In Progress | State machine, settings, safety |
-| 4. User Interface | Pending | LCD menu, screen system |
+| 3. Application Logic | ✅ Complete | State machine, settings, safety, pd_manager |
+| 4. User Interface | 🔄 In Progress | LCD menu refinement, screen system |
 | 5. Integration & Testing | Pending | End-to-end testing |
 
 ## Key Files
@@ -431,4 +431,12 @@ Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, P
 
 **LCD Display:** Minimal init sequence missing MADCTL, gamma, power control. Fixed with complete ST7789 initialization.
 
-**Lesson:** Never use static variables for instance state. Always use complete init sequences from datasheets.
+**VBUS Measurement (Phase 3):** Initial safety module read voltage from INA228 (post-switch), showing 0V when load switch was off. Fixed by using ADC pre-switch measurement (`hw.adc.getVBUS()`) for PD connection detection.
+
+**Overcurrent False Triggers (Phase 3):** The INA228 ALERT pin (PIN_SWITCH_EN_READ) goes low when the load switch is disabled, not just on overcurrent. Fixed by checking `gpio_get(Board::PIN_SWITCH_EN)` in the ISR before triggering overcurrent - only trigger if switch was supposed to be ON.
+
+**Boot Sequence Protection (Phase 3):** Safety faults triggered during BOOT state caused immediate transition to FAULT before boot screen was visible. Fixed by skipping fault transitions while in BOOT state.
+
+**Display Flickering (Phase 3):** Clearing screen areas every frame caused visible flicker. Fixed by using fixed-width format strings (`%6.2f`) to overwrite previous values without clearing, and only performing full redraws on state change.
+
+**Lesson:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw.

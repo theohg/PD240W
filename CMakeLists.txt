@@ -36,11 +36,16 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(PD240W
+        # Core
         src/main.cpp
-        src/utils/eeprom_loader.cpp
-        src/utils/tps26750_patch.c
         src/hardware.cpp
         src/interrupts.cpp
+
+        # Utils
+        src/utils/eeprom_loader.cpp
+        src/utils/tps26750_patch.c
+
+        # Drivers
         src/drivers/buzzer/buzzer.cpp
         src/drivers/display/st7789.cpp
         src/drivers/power/tps26750/tps26750.cpp
@@ -50,7 +55,16 @@ add_executable(PD240W
         src/drivers/input/adc_inputs.cpp
         src/drivers/gpio/gpio.cpp
         src/drivers/input/button.cpp
-        src/ui/display_manager.cpp )
+
+        # Logic (Phase 3)
+        src/logic/state_machine.cpp
+        src/logic/settings.cpp
+        src/logic/safety.cpp
+        src/logic/pd_manager.cpp
+
+        # UI
+        src/ui/display_manager.cpp
+)
 
 pico_set_program_name(PD240W "PD240W")
 pico_set_program_version(PD240W "0.1")

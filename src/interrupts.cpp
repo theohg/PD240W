@@ -17,9 +17,17 @@ volatile bool pdInterruptPending = false;
 // SAFETY-CRITICAL: Overcurrent protection - executes immediately
 // This is an exception to the "no hardware ops in ISR" rule because
 // cutting power cannot wait for main loop (component damage risk)
+//
+// IMPORTANT: The alert pin goes low when the switch is disabled (no current flow).
+// We must only trigger overcurrent if the switch was supposed to be ON.
 static void isrOvercurrent(uint gpio, uint32_t events) {
-    hw.loadSwitch.off();           // Cut power FIRST - safety critical
-    overcurrentTriggered = true;   // Signal main loop for logging/UI
+    // Only trigger if switch is currently enabled (or was just enabled)
+    // Reading GPIO directly is safe in ISR
+    if (gpio_get(Board::PIN_SWITCH_EN)) {
+        hw.loadSwitch.off();           // Cut power FIRST - safety critical
+        overcurrentTriggered = true;   // Signal main loop for logging/UI
+    }
+    // If switch is off, ignore the alert - it's just the switch being disabled
 }
 
 // USB-PD interrupt handler (TPS26750 INT pin)

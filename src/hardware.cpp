@@ -22,11 +22,7 @@ Hardware::Hardware() :
 
 void Hardware::init() {
     // Sleep to let time to the TPS26750 to negotiate power:
-    sleep_ms(1000);
-
-    // gpio_init(29);  // UART RX
-    // gpio_pull_up(29);
-
+    sleep_ms(250);
     stdio_init_all();
 
     // =========================================================================
@@ -67,15 +63,7 @@ void Hardware::init() {
     // Initial Output States
     // =========================================================================
     loadSwitch.off();
-    debugLed.startBlink(500, 0);     // Blink infinitely (500ms interval)
     rgbLed.setColor(0, 255, 0, 50);  // Green = ready
-
-    // =========================================================================
-    // Startup Effects
-    // =========================================================================
-    // buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
-    buzzer.playTone(1000, 100);  // Simple beep to indicate ready
-
 }
 
 void Hardware::update() {
