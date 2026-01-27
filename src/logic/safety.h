@@ -25,11 +25,13 @@ enum class SafetyStatus {
 
 struct SafetyState {
     // Temperature
-    float temperature_c;
+    float temperature_c;        // NTC thermistor (board temperature)
+    float ina_temperature_c;    // INA228 die temperature
     SafetyStatus temp_status;
 
     // Voltage (VBUS)
     float vbus_voltage_v;
+    float ina_voltage_v;
     bool pd_connected;
 
     // Current

@@ -4,31 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**PD240W** is an **adjustable power supply for motor drives** using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. The firmware runs on a Raspberry Pi Pico (RP2040) and provides:
+**PD240W** is an adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to 240W at 48V 5A. Firmware runs on a Raspberry Pi Pico (RP2040).
 
-- **User-adjustable voltage selection** from available USB-C PD contracts (up to 48V)
-- **User-adjustable current limiting** (0-5A, monitored by INA228)
-- **LCD menu interface** with Prusa-style rotary encoder navigation
-- **Real-time power monitoring** (voltage, current, power, temperature)
-- **Safety features:** Overcurrent protection, optional overtemperature protection
-- **Optional 17V buck converter** control (GPIO-enabled on PCB)
-
-**Tech Stack:**
-- Target: Raspberry Pi Pico (RP2040 microcontroller)
-- Language: C++17
-- SDK: Raspberry Pi Pico SDK v2.2.0
-- Build: CMake + Ninja
-- Communication: I2C (400kHz), SPI (10MHz), UART (115200 baud)
-
-**Project Status:** Phase 1, 2 & 3 complete. Phase 4 (User Interface refinement) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
-
-**Hardware Details:**
-- **LCD:** 240x320 (2.4") ST7789, model HS20HS072RX
-- **17V Buck:** Provides STO/SBC voltage for motor drive safety (200mA fused), enable only when VBUS > 18V
-- **ADC Voltage:** Pre-switch VBUS measurement (150kΩ/10kΩ divider), redundant to INA228 post-switch
-- **ADC Temp:** Onboard NTC thermistor (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series resistor)
-- **Current Resolution:** Target 1mA (0.001A) precision for user adjustment
-- **Startup Behavior:** Output disabled by default, user must enable via BTN1
+- **Target:** RP2040 (Raspberry Pi Pico), C++17, Pico SDK v2.2.0
+- **Build:** CMake + Ninja
+- **Status:** Phase 4 (UI refinement) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
+- **Key features:** Voltage selection from PD contracts (up to 48V), adjustable current limiting (0-5A via INA228), LCD menu with Prusa-style encoder navigation, overcurrent/overtemperature protection, optional 17V buck converter
 
 ## Build Commands
 
@@ -36,407 +17,234 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build (use -G Ninja explicitly)
 cd build && cmake -G Ninja .. && ninja
 
-# Flash: Hold BOOTSEL while connecting USB, drag build/PD240W.uf2 to mounted drive
-
 # Clean build
 cd build && rm -rf * && cmake -G Ninja .. && ninja
 
+# Flash: Hold BOOTSEL while connecting USB, drag build/PD240W.uf2 to mounted drive
+
 # Serial debugging (UART on GP16/GP29 @ 115200)
 screen /dev/tty.usbserial-* 115200
-
-# EEPROM flashing (TPS26750 config update)
-# 1. Set ENABLE_EEPROM_FLASHING to 1 in src/utils/eeprom_loader.h
-# 2. Rebuild and flash
-# 3. Power cycle TPS26750 after successful flash
-# 4. Set ENABLE_EEPROM_FLASHING back to 0 and rebuild
 ```
 
-**Build Outputs:** `build/PD240W.elf`, `build/PD240W.uf2`, `build/compile_commands.json`
+**Build outputs:** `build/PD240W.uf2` (flash image), `build/PD240W.elf`, `build/compile_commands.json` (for IDE support)
+
+**Build environment:** VSCode Pico SDK extension sets `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, Picotool. No test infrastructure exists.
 
 ## Architecture
 
-### Hardware Singleton Pattern
-All hardware is accessed through a global singleton `hw` defined in `hardware.h`:
+### Global Singletons
+
+Six global instances coordinate the application. All are defined as `extern` in their respective headers:
 
 ```cpp
-extern Hardware hw;  // Global instance
+extern Hardware hw;                // hardware.h - All hardware drivers
+extern StateMachine stateMachine;  // logic/state_machine.h - Application state
+extern Safety safety;              // logic/safety.h - Safety monitoring
+extern PdManager pdManager;        // logic/pd_manager.h - PD negotiation
+extern DisplayManager displayManager; // ui/display_manager.h - Screen rendering
+extern Settings settings;          // logic/settings.h - User settings
 ```
 
-The `Hardware` struct aggregates all drivers and is initialized once in `main()` via `hw.init()`.
+### Initialization Sequence (in main.cpp)
 
-### Initialization Sequence
-1. `flashTps26750Eeprom()` - Optional EEPROM update (before hw.init)
-2. `hw.init()` - Initializes all hardware (I2C, SPI, drivers)
-3. `Interrupts::init()` - Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
-4. State machine starts - Non-blocking event loop
+1. `hw.init()` - I2C, SPI, all drivers (includes optional EEPROM flash)
+2. `Interrupts::init()` - GPIO interrupts (encoder, overcurrent, USB-PD)
+3. `settings.init()` / `safety.init()` / `pdManager.init()` / `displayManager.init()` / `stateMachine.init()`
 
-### Main Event Loop Pattern
-The main loop is **entirely non-blocking** using:
-- Polling for button presses (`isPressed()`, `isClicked()`)
-- Absolute time timers (`absolute_time_t`, `make_timeout_time_ms()`)
-- State machines with internal timers (LED blinking, buzzer tones)
-- **Must call `hw.update()`** each iteration for RGB LED and debug LED blinking to work
-
-**Never use `sleep_ms()` or blocking delays in the main loop.**
-
-### Interrupt Architecture
-All GPIO interrupts are centralized in `interrupts.h/cpp`:
+### Main Event Loop (non-blocking, 5 steps)
 
 ```cpp
-namespace Interrupts {
-    void init();                  // Setup all interrupts
-    bool handleOvercurrent();     // Check/clear overcurrent flag
-    bool handlePdInterrupt();     // Check/clear PD interrupt flag
+while (true) {
+    bool needs_display_update = stateMachine.update();  // 1. Encoder, buttons, state transitions
+    SafetyStatus status = safety.update();               // 2. Temp, voltage, current monitoring
+    pdManager.update();                                  // 3. USB-PD interrupt processing
+    if (needs_display_update || timer_elapsed)
+        displayManager.render();                         // 4. Screen rendering (100ms or on change)
+    hw.update();                                         // 5. RGB LED blink timing
 }
 ```
 
-**RP2040 Limitation:** Only ONE gpio callback for ALL pins. The interrupt module provides a single router that dispatches to individual handlers.
+**Never use `sleep_ms()` or blocking delays in the main loop.**
 
-**ISR Safety Rules:**
-- NEVER do I2C/SPI inside ISRs (use volatile flags, handle in main loop)
+### Interrupt Architecture (interrupts.h/cpp)
+
+All GPIO interrupts are centralized in a single router (RP2040 limitation: one gpio callback for ALL pins).
+
+```cpp
+namespace Interrupts {
+    void init();
+    bool handleOvercurrent();   // Check/clear volatile flag
+    bool handlePdInterrupt();   // Check/clear volatile flag
+}
+```
+
+**ISR safety rules:**
+- NEVER do I2C/SPI inside ISRs - set volatile flags, handle in main loop
 - Exception: Overcurrent protection cuts power immediately (safety-critical)
+
+### State Machine
+
+```
+BOOT ──(3s timeout)──> MAIN
+MAIN <──(long press)──> MENU     MAIN <──(fault)──> FAULT
+MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
+FAULT ──(click acknowledge)──> MAIN
+```
+
+States: `BOOT`, `MAIN`, `MENU`, `ADJUST`, `FAULT` (see `AppState` enum in `state_machine.h`)
+
+### Input Mapping (Prusa-Style)
+
+| Control | Action |
+|---------|--------|
+| Encoder Rotate | Navigate menu / Adjust values |
+| Encoder Click | Confirm / Select |
+| Encoder Long Press (800ms) | Go Back / Exit current screen |
+| BTN1 | Toggle Load Switch (works in ANY state) |
+| BTN2 | Toggle 17V Buck (works in ANY state, only if VBUS > 18V) |
 
 ## Directory Structure
 
 ```
 src/
-├── main.cpp                 # Entry point, state machine driver
-├── hardware.h/cpp           # Global Hardware singleton
-├── interrupts.h/cpp         # GPIO interrupt handling
-├── config/                  # All configuration files
+├── main.cpp                 # Entry point, main event loop
+├── hardware.h/cpp           # Hardware singleton (all drivers)
+├── interrupts.h/cpp         # Centralized GPIO interrupt routing
+├── config/
 │   ├── board_config.h       # Pin definitions (Board:: namespace)
-│   ├── app_config.h         # Timeouts, thresholds, constants
-│   └── version.h            # Firmware version string
-├── drivers/                 # Low-level hardware drivers
-│   ├── gpio/                # SimpleIO (digital I/O with blink)
-│   ├── input/               # Button, RotaryEncoder, ADC
-│   ├── buzzer/              # Buzzer (PWM-based)
-│   ├── rgb_led/             # SK6812 RGB LED (PIO-based)
-│   ├── display/             # ST7789 LCD (SPI)
+│   ├── app_config.h         # Timeouts, thresholds (AppConfig:: namespace)
+│   └── version.h            # Firmware version (Version:: namespace)
+├── drivers/                 # Low-level hardware drivers (no business logic)
+│   ├── gpio/                # SimpleIO (digital I/O with non-blocking blink)
+│   ├── input/               # Button, RotaryEncoder, ADCInputs
+│   ├── buzzer/              # PWM-based melody playback
+│   ├── rgb_led/             # SK6812 via PIO
+│   ├── display/             # ST7789 LCD (SPI, 240x320)
 │   └── power/
-│       ├── ina228/          # Power monitor (I2C, 0x40)
-│       └── tps26750/        # USB PD controller (I2C, 0x21)
-├── logic/                   # Application logic (Phase 3)
-│   ├── state_machine.h/cpp  # Main state controller
-│   ├── settings.h/cpp       # User settings management
-│   ├── safety.h/cpp         # Safety monitoring
-│   └── pd_manager.h/cpp     # PD contract management
+│       ├── ina228/          # Power monitor (I2C 0x40, 8mΩ shunt)
+│       └── tps26750/        # USB PD controller (I2C 0x21)
+├── logic/                   # Application logic
+│   ├── state_machine.h/cpp  # AppState transitions, encoder/button handling
+│   ├── settings.h/cpp       # User settings (current limit, PDO, output states)
+│   ├── safety.h/cpp         # Safety monitoring (temp, voltage, overcurrent)
+│   └── pd_manager.h/cpp     # PD contract caching and negotiation state machine
 ├── utils/
-│   ├── logging.h            # LOG_INFO, LOG_ERROR, etc.
-│   ├── eeprom_loader.h/cpp  # TPS26750 EEPROM flashing
-│   └── tps26750_patch.c     # TPS26750 configuration binary
-└── ui/                      # User interface (Phase 4)
-    ├── display_manager.h/cpp
-    ├── screens/             # Individual screen implementations
+│   ├── logging.h            # LOG_INFO, LOG_WARN, LOG_ERROR, LOG_DEBUG, LOG_CRITICAL
+│   ├── eeprom_loader.h/cpp  # TPS26750 EEPROM flashing (disabled by default)
+│   └── tps26750_patch.c     # TPS26750 binary configuration
+└── ui/
+    ├── display_manager.h/cpp  # All screen rendering (monolithic, no separate screen files)
     └── assets/
         └── synapticon_logo.h
 ```
 
-## Input Mapping (Prusa-Style)
-
-The encoder is the primary navigation control:
-
-| Control | Action |
-|---------|--------|
-| **Encoder Rotate** | Navigate menu / Adjust values |
-| **Encoder Click** | Confirm / Select |
-| **Encoder Long Press** | Go Back / Exit current screen |
-| **BTN1** | Toggle Load Switch (main output) |
-| **BTN2** | Toggle 17V Buck |
-
-**Notes:**
-- BTN1/BTN2 work in ANY state (direct hardware control)
-- BTN2 only enables 17V if VBUS > 18V (hardware requirement)
-- Long press threshold: 800ms (configurable in `app_config.h`)
-
-## State Machine Design
-
-### Application States
-```cpp
-enum class AppState {
-    BOOT,      // Startup: logo, version, melody (3s)
-    MAIN,      // Real-time monitoring display
-    MENU,      // PDO selection / settings
-    ADJUST,    // Adjusting a value (voltage/current)
-    FAULT      // Error display, needs acknowledgment
-};
-```
-
-### State Transitions
-```
-BOOT ──(3s timeout)──> MAIN
-
-MAIN <──(long press)──> MENU
-     <──(fault)───────> FAULT
-
-MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
-     <──(long press)──> MAIN
-
-FAULT ──(click acknowledge)──> MAIN
-```
-
-### Boot Sequence (3 seconds)
-1. Display Synapticon logo
-2. Show "PD240W Power Supply"
-3. Show firmware version
-4. Play Mario power-up melody
-5. Read USB-PD source capabilities
-6. Transition to MAIN state
-
 ## Key Subsystems
 
 ### USB Power Delivery (TPS26750)
-**Purpose:** Negotiates voltage contracts with USB-C chargers (5V-48V, including PPS and EPR AVS)
 
-**Key API:**
-```cpp
-// Core
-bool init();
-bool getMode(char* modeStr);              // "APP ", "BOOT", "PTCH"
+Negotiates voltage contracts with USB-C chargers. Supports Fixed, PPS (5-21V programmable), and AVS (15-48V EPR) profiles. Key flow:
 
-// Contract Discovery & Monitoring
-uint8_t getSourceCapabilities(SourceCapability* caps, uint8_t max_caps);
-bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma);
+1. `getSourceCapabilities()` → discover available contracts
+2. `requestFixedProfile()` / `requestPPSProfile()` / `requestAVSProfile()` → negotiate
+3. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) via interrupt flag
+4. `getActiveContract()` → verify negotiated voltage/current
 
-// Voltage Negotiation
-bool requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma);
-bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma);
-bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma);
+The `PdManager` wraps this with caching and a negotiation state machine (`IDLE` → `REQUESTING` → `SUCCESS`/`FAILED`/`TIMEOUT`).
 
-// Interrupts
-bool readInterrupts(uint8_t* events);
-bool clearInterrupts(const uint8_t* mask);
-bool isInterruptSet(const uint8_t* buffer, uint8_t bitIndex);
-```
+### Power Monitoring & Safety (INA228 + Safety Module)
 
-**SourceCapability Struct:**
-```cpp
-struct SourceCapability {
-    uint32_t voltage_mv;      // Fixed: Voltage. PPS/AVS: Max Voltage
-    uint32_t max_current_ma;
-    bool is_pps;              // Programmable Power Supply (SPR, 5-21V)
-    bool is_avs;              // Adjustable Voltage Supply (EPR, 15-48V)
-    uint32_t min_voltage_mv;  // Min voltage (PPS/AVS only)
-};
-```
+- INA228: Measures voltage, current, power, die temperature via I2C. Configured with 8mΩ shunt, 5A max.
+- Overcurrent: Hardware ALERT pin (active-low, latched) triggers ISR that immediately disables load switch.
+- `SafetyState` includes both NTC board temperature (`temperature_c`) and INA228 die temperature (`ina_temperature_c`).
+- VBUS detection uses **ADC pre-switch measurement** (`hw.adc.getVBUS()`), not INA228 post-switch (which reads 0V when load switch is off).
 
-**Negotiation Process:**
-1. Read available contracts with `getSourceCapabilities()`
-2. Call appropriate `request*Profile()` function
-3. Monitor `INT_EVENT1` bit 12 (NEW_CONTRACT_AS_SINK) for completion
-4. Verify with `getActiveContract()`
+### Display Rendering (DisplayManager)
 
-### TPS26750 EEPROM Flashing
-**Purpose:** Program TPS26750 configuration patch to external EEPROM (CAT24C512) via I2C1
+All rendering is in `display_manager.cpp` (monolithic - no separate screen files despite the plan mentioning them). Screens: `renderBootScreen()`, `renderMainScreen()`, `renderMenuScreen()`, `renderAdjustScreen()`, `renderFaultScreen()`.
 
-The TPS26750 loads its configuration from EEPROM at boot. The RP2040 can program this EEPROM directly:
-- **I2C1:** GP14 (SDA), GP15 (SCL) at 400kHz
-- **EEPROM:** CAT24C512 (64KB, 128-byte pages) at address 0x50
-- **Binary:** `src/utils/tps26750_patch.c` contains the configuration array
-- **Enable:** Set `ENABLE_EEPROM_FLASHING` to 1 in `src/utils/eeprom_loader.h`
+**Flicker-free rendering pattern:** Use fixed-width format strings (`%6.2f`) to overwrite previous values without clearing. Track previous values (`_last_menu_selection`, `_last_pdo_selection`, `_last_adjust_value`) and only redraw changed items. Full redraws only on state change via `_needs_full_redraw` flag.
 
-**Important:** Flashing is disabled by default. Only enable when updating TPS26750 config.
+### EEPROM Flashing (TPS26750 Config)
 
-### Power Monitoring & Safety (INA228)
-- Measures voltage, current, power, temperature
-- Configured with 8mΩ shunt resistor, 5A max
-- Overcurrent protection via latched ALERT interrupt
-- On alert: Load switch disabled immediately in ISR
-- Recovery: User acknowledges fault with encoder click
-
-**Key GPIOs:**
-- `hw.loadSwitch` (GPIO 3) - Enables/disables output
-- `hw.overcurrentAlert` (GPIO 12) - INA228 ALERT pin (active low, latched)
-- `hw.EN_17V` (GPIO 20) - Optional 17V rail
-
-### Input Handling
-- **Button:** Hardware debouncing (50ms), `isPressed()` / `isClicked()`
-- **RotaryEncoder:** ISR-based quadrature decoding, `getTicks()` / `reset()`
-- **ADC:** Voltage (GP26) and temperature (GP27) with NTC conversion
-
-### Display (ST7789)
-- 240x320, SPI @ 10MHz, 180° rotation (MADCTL 0xC0)
-- Functions: `fillScreen()`, `drawPixel()`, `drawLine()`, `drawRect()`, `fillRect()`
-- Text: `drawChar()`, `drawString()`, `drawInt()`, `drawFloat()` with 5x7 font
-
-### RGB LED (SK6812)
-- PIO-based driver for precise 800kHz timing
-- `setColor(r, g, b, brightness)`, `startBlink(interval_ms, duration_ms)`
-- Must call `update()` in main loop
-
-### Buzzer
-- PWM-based, 100Hz-10kHz
-- `playTone(freq, duration_ms)`, `playMelody(notes, length)`
-- Non-blocking via timer callbacks
-- Pre-defined: `MARIO_POWERUP` melody for boot sequence
-
-### SimpleIO (GPIO Wrapper)
-- `on()`, `off()`, `toggle()`, `read()`
-- `startBlink(interval_ms, duration_ms)`, `stopBlink()`, `update()`
-
-## Configuration
-
-### Application Config (`src/config/app_config.h`)
-```cpp
-AppConfig::BOOT_DURATION_MS          // 3000ms boot screen
-AppConfig::MENU_TIMEOUT_MS           // 30000ms auto-return
-AppConfig::ENCODER_LONG_PRESS_MS     // 800ms long press threshold
-AppConfig::TEMP_WARNING_C            // 60C warning
-AppConfig::TEMP_SHUTDOWN_C           // 80C shutdown
-AppConfig::CURRENT_LIMIT_DEFAULT_MA  // 1000mA default
-```
-
-### Board Config (`src/config/board_config.h`)
-```cpp
-Board::PIN_BTN_1, PIN_BTN_2, PIN_ENC_BTN
-Board::PIN_I2C_SDA, PIN_I2C_SCL     // I2C0
-Board::PIN_LCD_CS, PIN_LCD_DC, etc. // SPI display
-Board::PIN_RGB_LED                  // PIO
-Board::I2C_ADDR_INA228              // 0x40
-Board::I2C_ADDR_TPS26750            // 0x21
-```
-
-### Version Info (`src/config/version.h`)
-```cpp
-Version::FIRMWARE_VERSION    // "v1.0.0"
-Version::PRODUCT_NAME        // "PD240W"
-```
-
-**UART:** TX=GP16, RX=GP29 (configured in CMakeLists.txt)
-
-## Communication Buses
-
-| Bus | Pins | Frequency | Devices |
-|-----|------|-----------|---------|
-| I2C0 | GP4, GP5 | 400 kHz | INA228, TPS26750 |
-| I2C1 | GP14, GP15 | 400 kHz | CAT24C512 EEPROM (TPS26750 config) |
-| SPI0 | GP18, GP19 | 10 MHz | ST7789 Display |
-| UART0 | GP16, GP29 | 115200 | Debug console |
-| PIO | GP28 | 800 kHz | SK6812 RGB LED |
-| ADC | GP26, GP27 | On-demand | Voltage/temperature |
-| PWM | GP6 | Variable | Buzzer |
-
-## Adding New Components
-
-### New Input Device
-1. Create driver in `src/drivers/input/`
-2. Add member to `Hardware` struct
-3. Initialize in `Hardware::init()`
-4. Poll in main loop or add ISR handler in `interrupts.cpp`
-
-### New I2C Peripheral
-1. Create driver with `i2c_inst_t *_i2c` member
-2. Use `i2c_read_blocking()` / `i2c_write_blocking()`
-3. **Never do I2C inside ISRs** - set flags, handle in main loop
-
-### New PIO-Based Driver
-1. Write PIO assembly in `.pio` file
-2. Add to CMakeLists.txt: `pico_generate_pio_header()`
-3. Load program and claim state machine in driver
+Disabled by default. To flash: set `ENABLE_EEPROM_FLASHING` to 1 in `src/utils/eeprom_loader.h`, rebuild, flash, power cycle TPS26750, then set back to 0.
 
 ## Important Patterns
 
 ### Non-Blocking Timing
 ```cpp
 static absolute_time_t next_event = make_timeout_time_ms(1000);
-if (absolute_time_diff_us(get_absolute_time(), next_event) < 0) {
-    // Execute
+if (absolute_time_diff_us(next_event, get_absolute_time()) >= 0) {
+    // Time elapsed - execute
     next_event = make_timeout_time_ms(1000);
 }
 ```
 
 ### Static Wrappers for C Callbacks
 ```cpp
-class Buzzer {
-    static void stopToneCallback(void *param) {
-        static_cast<Buzzer*>(param)->stopTone();
-    }
-};
+static void stopToneCallback(void *param) {
+    static_cast<Buzzer*>(param)->stopTone();
+}
 ```
 
-## Best Practices
+### Hardware Key GPIOs
+- `hw.loadSwitch` (GPIO 3) - Main output enable/disable
+- `hw.overcurrentAlert` (GPIO 12) - INA228 ALERT pin (active low, latched)
+- `hw.EN_17V` (GPIO 20) - 17V buck enable (only when VBUS > 18V)
 
-### Mandatory Rules
-1. **No Global Variables** - Use `hw` singleton only
-2. **No Blocking Delays** in main loop
-3. **Keep Drivers Hardware-Focused** - No business logic
-4. **YAGNI** - Implement only what's needed now
+## Naming Conventions
 
-### Error Handling
-- Driver functions should return `bool` status
-- Use `LOG_HW_INIT()` macro for init functions
-- Use logging macros: `LOG_INFO`, `LOG_WARN`, `LOG_ERROR`, `LOG_DEBUG`, `LOG_CRITICAL`
-
-### Naming Conventions
 - Classes: `PascalCase`
 - Functions: `camelCase`
 - Variables: `snake_case`
 - Constants: `UPPER_SNAKE_CASE`
 - Private members: `_leading_underscore`
 
-### Driver Independence
-- Testable in isolation
-- No dependencies on other drivers
-- No project-specific includes (like logging) in drivers
-- Handle own error conditions
+## Mandatory Rules
 
-## Debugging
-
-### Common Issues
-1. **I2C not responding**: Check pull-ups (4.7kΩ to 3.3V)
-2. **Display not updating**: Verify SPI pins and CS/DC/RST signals
-3. **Encoder not counting**: Check ISR routing in `interrupts.cpp`
-4. **LED wrong colors**: Verify GRB order
-5. **Overcurrent false triggers**: Adjust threshold or check shunt value
-
-### VSCode Environment
-Pico SDK extension sets: `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, Picotool
-
-## Development Roadmap
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1. Hardware Foundation | ✅ Complete | All drivers working |
-| 2. TPS26750 USB PD | ✅ Complete | Full PD negotiation |
-| 3. Application Logic | ✅ Complete | State machine, settings, safety, pd_manager |
-| 4. User Interface | 🔄 In Progress | LCD menu refinement, screen system |
-| 5. Integration & Testing | Pending | End-to-end testing |
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `main.cpp` | Entry point, state machine driver |
-| `hardware.h/cpp` | Global singleton, component instances |
-| `interrupts.h/cpp` | GPIO interrupt handling |
-| `config/board_config.h` | Pin definitions and constants |
-| `config/app_config.h` | Timeouts, thresholds, constants |
-| `config/version.h` | Firmware version string |
-| `utils/eeprom_loader.h/cpp` | TPS26750 EEPROM flashing |
-| `logic/state_machine.h/cpp` | Application state management |
+1. **No global variables** outside the six singletons (`hw`, `stateMachine`, `safety`, `pdManager`, `displayManager`, `settings`)
+2. **No blocking delays** in main loop
+3. **No I2C/SPI in ISRs** (except overcurrent safety cutoff)
+4. **Drivers are hardware-focused** - no business logic, no cross-driver dependencies, no project-specific includes (like logging)
+5. **YAGNI** - implement only what's needed now
+6. **Driver functions return `bool` status** for error handling
+7. **Use logging macros** in application code: `LOG_INFO`, `LOG_WARN`, `LOG_ERROR`, `LOG_DEBUG`, `LOG_CRITICAL`, `LOG_HW_INIT()`
 
 ## Safety-Critical Code
 
 **Overcurrent Protection** (in `interrupts.cpp`):
 - Triggered by INA228 ALERT pin (active-low, latched)
-- Immediately disables load switch (no delays)
+- Immediately disables load switch in ISR (no delays)
 - Sets red LED for visual indication
 - Must clear latch via `getDiagnoseAlert()` before re-enable
+- ISR only triggers when `PIN_SWITCH_EN` is HIGH (avoids false triggers when switch is off)
 
 **Do not modify** without understanding electrical safety implications.
 
 ## Historical Bug Fixes
 
+These document non-obvious gotchas. Read before modifying related code.
+
 **Button Debouncing:** Static variable was shared across instances, causing multi-triggers. Fixed with per-instance `was_pressed_for_click` member.
 
-**LCD Display:** Minimal init sequence missing MADCTL, gamma, power control. Fixed with complete ST7789 initialization.
+**VBUS Measurement:** INA228 (post-switch) shows 0V when load switch is off. Fixed by using ADC pre-switch measurement (`hw.adc.getVBUS()`) for PD connection detection.
 
-**VBUS Measurement (Phase 3):** Initial safety module read voltage from INA228 (post-switch), showing 0V when load switch was off. Fixed by using ADC pre-switch measurement (`hw.adc.getVBUS()`) for PD connection detection.
+**Overcurrent False Triggers:** INA228 ALERT pin goes low when load switch is disabled, not just on overcurrent. Fixed by checking `gpio_get(Board::PIN_SWITCH_EN)` in ISR - only trigger if switch was supposed to be ON.
 
-**Overcurrent False Triggers (Phase 3):** The INA228 ALERT pin (PIN_SWITCH_EN_READ) goes low when the load switch is disabled, not just on overcurrent. Fixed by checking `gpio_get(Board::PIN_SWITCH_EN)` in the ISR before triggering overcurrent - only trigger if switch was supposed to be ON.
+**Boot Sequence Protection:** Safety faults during BOOT state caused transition to FAULT before boot screen was visible. Fixed by skipping fault transitions while in BOOT state.
 
-**Boot Sequence Protection (Phase 3):** Safety faults triggered during BOOT state caused immediate transition to FAULT before boot screen was visible. Fixed by skipping fault transitions while in BOOT state.
-
-**Display Flickering (Phase 3):** Clearing screen areas every frame caused visible flicker. Fixed by using fixed-width format strings (`%6.2f`) to overwrite previous values without clearing, and only performing full redraws on state change.
+**Display Flickering:** Clearing screen areas every frame caused visible flicker. Fixed by using fixed-width format strings to overwrite previous values, and only performing full redraws on state change.
 
 **Lesson:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw.
+
+## Hardware Details
+
+- **LCD:** 240x320 (2.4") ST7789, SPI @ 10MHz, 180° rotation (MADCTL 0xC0)
+- **17V Buck:** STO/SBC voltage for motor drive safety (200mA fused), enable only when VBUS > 18V
+- **ADC Voltage:** Pre-switch VBUS (150kΩ/10kΩ divider), redundant to INA228 post-switch
+- **ADC Temp:** NTC thermistor (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series resistor)
+- **Current Resolution:** Target 1mA precision for user adjustment
+- **Startup:** Output disabled by default, user enables via BTN1
+- **UART:** TX=GP16, RX=GP29 @ 115200 (configured in CMakeLists.txt)
+- **I2C0:** GP4/GP5 @ 400kHz (INA228 0x40, TPS26750 0x21)
+- **I2C1:** GP14/GP15 @ 400kHz (CAT24C512 EEPROM 0x50, for TPS26750 config)
+- **RGB LED:** SK6812 on GP28 via PIO (GRB color order)

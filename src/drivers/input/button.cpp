@@ -30,25 +30,50 @@ Button::Button(uint p, ButtonPull pull_config, uint32_t debounce_ms, bool active
     was_pressed_for_click = false;  // Initialize click detection state
 }
 
-bool Button::isPressed() {
-    // 1. Read the physical pin
-    bool raw_read = gpio_get(pin);
+// bool Button::isPressed() {
+//     // 1. Read the physical pin
+//     bool raw_read = gpio_get(pin);
     
-    // 2. Normalize logic (so true = pressed, regardless of wiring)
+//     // 2. Normalize logic (so true = pressed, regardless of wiring)
+//     bool current_state = active_low ? !raw_read : raw_read;
+
+//     // 3. Check if the physical state has changed since last poll
+//     if (current_state != last_flickerable_state) {
+//         // Reset the debounce timer
+//         last_debounce_time = get_absolute_time();
+//         last_flickerable_state = current_state;
+//     }
+
+//     // 4. Check if enough time has passed to consider this stable
+//     if (absolute_time_diff_us(last_debounce_time, get_absolute_time()) > debounce_delay_ms * 1000) {
+//         // If the state has indeed changed, update our steady state
+//         if (last_steady_state != current_state) {
+//             last_steady_state = current_state;
+//         }
+//     }
+
+//     return last_steady_state;
+// }
+
+// In button.h, add a new member variable to track when we last changed state
+// uint64_t last_state_change_time; 
+
+// In button.cpp
+
+bool Button::isPressed() {
+    bool raw_read = gpio_get(pin);
     bool current_state = active_low ? !raw_read : raw_read;
+    uint64_t now = get_absolute_time();
 
-    // 3. Check if the physical state has changed since last poll
-    if (current_state != last_flickerable_state) {
-        // Reset the debounce timer
-        last_debounce_time = get_absolute_time();
-        last_flickerable_state = current_state;
-    }
-
-    // 4. Check if enough time has passed to consider this stable
-    if (absolute_time_diff_us(last_debounce_time, get_absolute_time()) > debounce_delay_ms * 1000) {
-        // If the state has indeed changed, update our steady state
-        if (last_steady_state != current_state) {
+    // Check if the physical state is different from what we think the steady state is
+    if (current_state != last_steady_state) {
+        
+        // Only accept this change if enough time has passed since the LAST change
+        // This effectively "locks out" the noise after a valid transition.
+        if (absolute_time_diff_us(last_debounce_time, now) > debounce_delay_ms * 1000) {
+            
             last_steady_state = current_state;
+            last_debounce_time = now; // Record the time of this valid change
         }
     }
 

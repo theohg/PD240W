@@ -87,6 +87,12 @@ private:
     // Helper functions
     void clearScreen();
     void drawCenteredString(int y, const char* text, uint16_t color, uint8_t size);
+
+    // Tracking for flicker reduction (skip redraw when unchanged)
+    int8_t _last_menu_selection;
+    int8_t _last_pdo_selection;
+    uint32_t _last_adjust_value;
+    const char* _last_boot_message;
 };
 
 // Global instance

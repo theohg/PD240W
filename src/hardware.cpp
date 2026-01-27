@@ -1,11 +1,13 @@
 #include "hardware.h"
 #include "utils/logging.h"
+#include "config/version.h"
+#include "utils/eeprom_loader.h"
 
 Hardware hw;
 
 Hardware::Hardware() :
-    btn1(Board::PIN_BTN_1, ButtonPull::PULL_NONE, 50, true),
-    btn2(Board::PIN_BTN_2, ButtonPull::PULL_NONE, 50, true),
+    btn1(Board::PIN_BTN_1, ButtonPull::PULL_NONE, 10, true),
+    btn2(Board::PIN_BTN_2, ButtonPull::PULL_NONE, 10, true),
     btnEnc(Board::PIN_ENC_BTN, ButtonPull::PULL_NONE, 50, true),
     overcurrentAlert(Board::PIN_SWITCH_EN_READ, IOMode::INPUT),
     pdInterrupt(Board::PIN_USB_PD_IRQ, IOMode::INPUT),
@@ -24,6 +26,10 @@ void Hardware::init() {
     // Sleep to let time to the TPS26750 to negotiate power:
     sleep_ms(250);
     stdio_init_all();
+
+    LOG_SEPARATOR();
+    LOG_INFO("%s %s - %s", Version::PRODUCT_NAME, Version::PRODUCT_SUBTITLE, Version::FIRMWARE_VERSION);
+    LOG_SEPARATOR();
 
     // =========================================================================
     // Communication Bus Init
@@ -64,6 +70,20 @@ void Hardware::init() {
     // =========================================================================
     loadSwitch.off();
     rgbLed.setColor(0, 255, 0, 50);  // Green = ready
+
+    // =========================================================================
+    // EEPROM Flashing (TPS26750 config update)
+    // =========================================================================
+    // Uses I2C1 (GP14/GP15) which is independent of I2C0.
+    if (!flashTps26750Eeprom()) {
+        LOG_ERROR("EEPROM flashing failed! Halting.");
+        while (true) {
+            rgbLed.setColor(255, 0, 0, 255);
+            sleep_ms(500);
+            rgbLed.setColor(0, 0, 0, 0);
+            sleep_ms(500);
+        }
+    }
 }
 
 void Hardware::update() {

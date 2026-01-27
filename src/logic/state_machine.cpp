@@ -4,6 +4,7 @@
 #include "app_config.h"
 #include "utils/logging.h"
 #include "drivers/buzzer/buzzer.h"
+#include "pd_manager.h"
 
 // Global instance
 StateMachine stateMachine;
@@ -30,7 +31,7 @@ static const uint32_t BOOT_STAGE_TIMES[] = {
     300,    // 3: Start melody
     500,    // 4: Reading PD
     1500,   // 5: Show contracts
-    3000    // 6: Complete -> transition to MAIN
+    2000    // 6: Complete -> transition to MAIN
 };
 
 // ============================================================================
@@ -77,8 +78,11 @@ void StateMachine::init() {
 bool StateMachine::update() {
     bool needs_refresh = false;
 
-    // Always handle output buttons (BTN1, BTN2) regardless of state
-    handleOutputButtons();
+    // Handle output buttons (BTN1, BTN2) in all states except BOOT
+    // Output must remain disabled during boot-up for safety
+    if (_state != AppState::BOOT) {
+        handleOutputButtons();
+    }
 
     // Check for overcurrent (handled immediately by ISR, but we need to update state)
     if (Interrupts::handleOvercurrent()) {
@@ -300,6 +304,7 @@ void StateMachine::transitionTo(AppState new_state) {
 
         case AppState::MAIN:
             _adjust_mode = AdjustMode::NONE;
+            pdManager.refreshActiveContract();  // Ensure fresh contract data for display
             hw.rgbLed.setColor(0, 255, 0, 50);  // Green = ready
             break;
 
@@ -363,7 +368,8 @@ EncoderEvent StateMachine::readEncoderEvent() {
 
 void StateMachine::handleOutputButtons() {
     // BTN1: Toggle load switch
-    if (hw.btn1.isClicked()) {
+    // Use ISR-based detection for reliable quick press capture
+    if (Interrupts::checkBtn1Clicked()) {
         // Clear INA228 fault latch before enabling
         hw.powerMonitor.getDiagnoseAlert();
 
@@ -378,7 +384,8 @@ void StateMachine::handleOutputButtons() {
     }
 
     // BTN2: Toggle 17V buck (only if VBUS > 18V)
-    if (hw.btn2.isClicked()) {
+    // Use ISR-based detection for reliable quick press capture
+    if (Interrupts::checkBtn2Clicked()) {
         // Check VBUS voltage via INA228
         float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
 
@@ -447,18 +454,12 @@ void StateMachine::advanceBootStage() {
     switch (_boot_stage) {
         case 3:
             // Start Mario power-up melody
-            hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
-            LOG_INFO("Boot: Playing startup melody");
+            //hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
             break;
 
         case 4:
             // Read USB-PD source capabilities
-            LOG_INFO("Boot: Reading USB-PD capabilities");
             loadPdoList();
-            break;
-
-        case 5:
-            LOG_INFO("Boot: Found %d PDOs", _num_pdos);
             break;
 
         default:
@@ -502,28 +503,13 @@ void StateMachine::requestSelectedPdo() {
     }
 
     SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
-    bool success = false;
 
     LOG_INFO("Requesting PDO[%d]: %umV @ %umA (PPS=%d, AVS=%d)",
              _selected_pdo_index, pdo.voltage_mv, pdo.max_current_ma,
              pdo.is_pps, pdo.is_avs);
 
-    if (pdo.is_pps) {
-        success = hw.pdController.requestPPSProfile(
-            pdo.min_voltage_mv,
-            pdo.max_current_ma
-        );
-    } else if (pdo.is_avs) {
-        success = hw.pdController.requestAVSProfile(
-            pdo.min_voltage_mv,
-            pdo.max_current_ma
-        );
-    } else {
-        success = hw.pdController.requestFixedProfile(
-            pdo.voltage_mv,
-            pdo.max_current_ma
-        );
-    }
+    // Route through PD manager for proper negotiation tracking
+    bool success = pdManager.requestContract(pdo);
 
     if (success) {
         LOG_INFO("PDO request sent successfully");

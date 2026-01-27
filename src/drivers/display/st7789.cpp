@@ -13,7 +13,7 @@ bool ST7789::init() {
     gpio_init(_pinCS);  gpio_set_dir(_pinCS, GPIO_OUT);  gpio_put(_pinCS, 1);
     gpio_init(_pinDC);  gpio_set_dir(_pinDC, GPIO_OUT);  gpio_put(_pinDC, 1);
     gpio_init(_pinRST); gpio_set_dir(_pinRST, GPIO_OUT); gpio_put(_pinRST, 1);
-    gpio_init(_pinBL);  gpio_set_dir(_pinBL, GPIO_OUT);  gpio_put(_pinBL, 1);
+    gpio_init(_pinBL);  gpio_set_dir(_pinBL, GPIO_OUT);  gpio_put(_pinBL, 0);  // Start OFF to hide ghost image
 
     // 1. Hardware Reset Sequence (LCD.pdf Page 19 recommends ~100ms+ delays)
     gpio_put(_pinRST, 1); sleep_ms(100);
@@ -121,6 +121,9 @@ bool ST7789::init() {
 
     // 18. Clear screen to black immediately
     fillScreen(COLOR_BLACK);
+
+    // 19. Turn on backlight now that screen is cleared (prevents ghost image from previous session)
+    gpio_put(_pinBL, 1);
 
     return true;
 }
@@ -305,6 +308,44 @@ void ST7789::drawString(int16_t x, int16_t y, const char* str, uint16_t color, u
     }
 }
 
+void ST7789::drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const FontDef* font) {
+    // 1. Basic Bounds Check
+    if (c < font->first_char || c > font->last_char) return;
+
+    // 2. Get the offset
+    int index = c - font->first_char;
+    // Each char has 'width' columns
+    const uint16_t* char_data = &font->data[index * font->width];
+
+    // 3. Draw
+    for (uint8_t col = 0; col < font->width; col++) {
+        uint16_t column_bits = char_data[col]; // 16 bits of vertical info
+
+        for (uint8_t row = 0; row < font->height; row++) {
+            // Check specific bit (LSB is top pixel in this format)
+            bool pixel_on = column_bits & (1 << row);
+
+            // Draw pixel (no scaling needed for native fonts!)
+            drawPixel(x + col, y + row, pixel_on ? color : bg);
+        }
+    }
+}
+
+void ST7789::drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const FontDef* font) {
+    int16_t cursor_x = x;
+    
+    while (*str) {
+        if (*str == '\n') {
+            cursor_x = x;
+            y += font->height + 2; // Line spacing
+        } else {
+            drawChar(cursor_x, y, *str, color, bg, font);
+            cursor_x += font->width; // Move cursor
+        }
+        str++;
+    }
+}
+
 // ===== Number rendering =====
 
 void ST7789::drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size) {
@@ -322,6 +363,17 @@ void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint
     snprintf(buffer, sizeof(buffer), format, value);
 
     drawString(x, y, buffer, color, bg, size);
+}
+
+void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, const FontDef* font) {
+    char buffer[20];
+    char format[10];
+    
+    // Create format string, e.g., "%.2f"
+    snprintf(format, sizeof(format), "%%.%df", decimals);
+    snprintf(buffer, sizeof(buffer), format, value);
+    
+    drawString(x, y, buffer, color, bg, font);
 }
 
 // ===== Utility =====

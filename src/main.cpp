@@ -2,9 +2,7 @@
 #include <stdio.h>
 #include "hardware.h"
 #include "interrupts.h"
-#include "utils/eeprom_loader.h"
 #include "utils/logging.h"
-#include "config/version.h"
 #include "config/app_config.h"
 #include "logic/state_machine.h"
 #include "logic/settings.h"
@@ -29,28 +27,12 @@
 static absolute_time_t next_display_update;
 
 int main() {
-
-    LOG_SEPARATOR();
-    LOG_INFO("%s %s - %s", Version::PRODUCT_NAME, Version::PRODUCT_SUBTITLE, Version::FIRMWARE_VERSION);
-    LOG_SEPARATOR();
-
     // =========================================================================
     // Phase 1: Hardware Initialization
     // =========================================================================
 
-    // Initialize hardware (I2C, SPI, all drivers)
+    // Initialize hardware (I2C, SPI, all drivers, EEPROM flash)
     hw.init();
-
-    // Attempt to flash TPS26750 EEPROM if enabled
-    if (!flashTps26750Eeprom()) {
-        LOG_ERROR("EEPROM flashing failed! Halting.");
-        while (true) {
-            hw.rgbLed.setColor(255, 0, 0, 255);
-            sleep_ms(500);
-            hw.rgbLed.setColor(0, 0, 0, 0);
-            sleep_ms(500);
-        }
-    }
 
     // Setup all GPIO interrupts (encoder, overcurrent, USB-PD)
     Interrupts::init();

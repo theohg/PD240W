@@ -58,7 +58,11 @@ bool handleOvercurrent();
 /**
  * Check and handle USB-PD interrupt flag.
  * @return true if PD interrupt was pending (flag is auto-cleared)
- */
+ */  
 bool handlePdInterrupt();
+
+bool checkBtn1Clicked();
+bool checkBtn2Clicked();
+bool checkBtnEncClicked();
 
 } // namespace Interrupts

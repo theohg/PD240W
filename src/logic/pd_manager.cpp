@@ -50,7 +50,7 @@ void PdManager::init() {
         LOG_INFO("Found %d PDOs from charger", _pdo_count);
         _charger_connected = true;
     } else {
-        LOG_WARN("No PDOs found - charger may not be connected");
+        LOG_WARN("No PDOs found - EEPROM might not have been read correctly");
     }
 
     // Read current active contract

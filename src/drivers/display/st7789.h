@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
+#include "src/drivers/display/fonts_data.h"
 
 // ST7789 LCD Driver for PD240W
 // Resolution: 240x320 (2.4" display, model HS20HS072RX)
@@ -40,10 +41,13 @@ public:
     // Text rendering
     void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, uint8_t size = 1);
+    void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const FontDef* font);
+    void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const FontDef* font);
 
     // Number rendering with formatting
     void drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size = 1);
+    void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, const FontDef* font);
 
     // Utility
     static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);

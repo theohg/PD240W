@@ -25,6 +25,7 @@ Safety::Safety()
     , _temp_fault_active(false)
 {
     _state.temperature_c = 25.0f;
+    _state.ina_temperature_c = 25.0f;
     _state.temp_status = SafetyStatus::OK;
     _state.vbus_voltage_v = 0.0f;
     _state.pd_connected = false;
@@ -86,6 +87,7 @@ SafetyStatus Safety::update() {
 
 void Safety::updateTemperature() {
     _state.temperature_c = hw.adc.getTemperature();
+    _state.ina_temperature_c = hw.powerMonitor.getTemperature();
 
     float warning_threshold = static_cast<float>(AppConfig::TEMP_WARNING_C);
     float shutdown_threshold = static_cast<float>(AppConfig::TEMP_SHUTDOWN_C);
@@ -131,6 +133,9 @@ void Safety::updateVoltage() {
     // Read VBUS from ADC (PRE-switch voltage measurement)
     // This is the actual input voltage regardless of switch state
     _state.vbus_voltage_v = hw.adc.getVBUS();
+
+    // Read VBUS from INA228 (post-switch voltage measurement)
+    _state.ina_voltage_v = hw.powerMonitor.getBusVoltage();
 
     // Check PD connection status
     // Consider disconnected if VBUS < 4V (below USB minimum)

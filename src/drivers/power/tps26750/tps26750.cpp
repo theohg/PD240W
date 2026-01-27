@@ -181,9 +181,12 @@ bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
         // For Fixed: Voltage is in PDO bits 19:10 (10 bits), unit 50mV
         voltage_mv = ((pdo >> 10) & 0x3FF) * 50;
 
-        // Operating Current is in RDO bits 19:10 (10 bits), unit 10mA
-        // (Bits 9:0 are Min/Max current, 19:10 is Operating)
-        current_ma = ((rdo >> 10) & 0x3FF) * 10;
+        // Max Current from PDO bits 9:0 (10 bits), unit 10mA
+        // NOTE: Using PDO max current, NOT RDO operating current.
+        // The RDO operating current (bits 19:10) reflects what the TPS26750
+        // auto-negotiated internally, which can be much lower than the PDO max.
+        // The PDO max is what the contract actually allows.
+        current_ma = (pdo & 0x3FF) * 10;
     }
 
     return true;
