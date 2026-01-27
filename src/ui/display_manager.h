@@ -22,7 +22,7 @@ namespace UIColors {
     constexpr uint16_t ERROR = 0xF800;           // Red
     constexpr uint16_t HIGHLIGHT_BG = 0x001F;    // Blue
     constexpr uint16_t HIGHLIGHT_FG = 0xFFE0;    // Yellow
-    constexpr uint16_t HEADER_LINE = 0x07E0;     // Green
+    constexpr uint16_t HEADER_LINE = 0xE00F;     // Synapticon Pink
     constexpr uint16_t MUTED = 0x7BEF;           // Dark gray
     constexpr uint16_t SYNAPTICON_PINK = 0xE00F; // Brand Magenta
 }
@@ -79,6 +79,9 @@ private:
     void drawMenuItem(int y, const char* text, bool selected);
     void drawPdoList();
     void drawCurrentLimitAdjust();
+
+    // About screen elements
+    void drawAboutScreen();
 
     // Fault screen elements
     void drawFaultIcon();

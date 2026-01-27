@@ -11,9 +11,9 @@ namespace AppConfig {
     // Timing Constants
     // -------------------------------------------------------------------------
     constexpr uint32_t BOOT_DURATION_MS = 2000;        // Boot screen duration [ms]
-    constexpr uint32_t MENU_TIMEOUT_MS = 20000;        // Auto-return from menu [ms]
+    constexpr uint32_t MENU_TIMEOUT_MS = 10000;        // Auto-return from menu [ms]
     constexpr uint32_t DISPLAY_UPDATE_MS = 100;        // Main screen refresh rate [ms]
-    constexpr uint32_t ENCODER_LONG_PRESS_MS = 800;    // Long press threshold [ms]
+    constexpr uint32_t ENCODER_LONG_PRESS_MS = 700;    // Long press threshold [ms]
 
     // -------------------------------------------------------------------------
     // Safety Thresholds

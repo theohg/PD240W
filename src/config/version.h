@@ -8,6 +8,7 @@ namespace Version {
     constexpr const char* FIRMWARE_VERSION = "v1.0.0";
     constexpr const char* PRODUCT_NAME = "PD240W";
     constexpr const char* PRODUCT_SUBTITLE = "Power Supply";
+    constexpr const char* AUTHOR = "Theo Heng";
 
     // Build info (can be overridden by build system)
     #ifndef BUILD_DATE

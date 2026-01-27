@@ -35,7 +35,8 @@ enum class MenuItem {
 enum class AdjustMode {
     NONE,
     PDO_SELECT,     // Selecting a PDO from the list
-    CURRENT_LIMIT   // Adjusting current limit value
+    CURRENT_LIMIT,  // Adjusting current limit value
+    ABOUT           // Displaying about screen (read-only)
 };
 
 // Fault types
@@ -87,6 +88,12 @@ public:
     // Get adjust mode
     AdjustMode getAdjustMode() const { return _adjust_mode; }
 
+    // Get encoder delta (number of ticks since last read, for acceleration)
+    int getEncoderDelta() const { return _encoder_delta; }
+
+    // Get the effective max current limit (capped by active contract)
+    uint32_t getEffectiveMaxCurrentMa() const;
+
     // Get boot progress (0-100%)
     uint8_t getBootProgress() const;
 
@@ -124,6 +131,7 @@ private:
 
     // Encoder tracking
     int _last_encoder_ticks;
+    int _encoder_delta;     // Accumulated ticks since last read (for acceleration)
 
     // State handlers
     void handleBootState();

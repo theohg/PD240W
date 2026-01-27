@@ -56,6 +56,7 @@ StateMachine::StateMachine()
     , _fault_measured_value(0.0f)
     , _fault_limit_value(0.0f)
     , _last_encoder_ticks(0)
+    , _encoder_delta(0)
 {
 }
 
@@ -196,13 +197,20 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 
                 case MenuItem::CURRENT_LIMIT:
                     _adjust_original_value = _current_limit_ma;
+                    // Clamp current value to effective max (contract may have changed)
+                    {
+                        uint32_t max_ma = getEffectiveMaxCurrentMa();
+                        if (_current_limit_ma > max_ma) {
+                            _current_limit_ma = max_ma;
+                        }
+                    }
                     _adjust_mode = AdjustMode::CURRENT_LIMIT;
                     transitionTo(AppState::ADJUST);
                     break;
 
                 case MenuItem::ABOUT:
-                    // TODO: Show about screen
-                    LOG_INFO("About selected");
+                    _adjust_mode = AdjustMode::ABOUT;
+                    transitionTo(AppState::ADJUST);
                     break;
 
                 default:
@@ -222,6 +230,14 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 }
 
 void StateMachine::handleAdjustState(EncoderEvent event) {
+    // About screen: any click or long press returns to menu
+    if (_adjust_mode == AdjustMode::ABOUT) {
+        if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
+            transitionTo(AppState::MENU);
+        }
+        return;
+    }
+
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
@@ -229,8 +245,14 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index++;
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                if (_current_limit_ma < AppConfig::CURRENT_LIMIT_MAX_MA) {
-                    _current_limit_ma += AppConfig::CURRENT_LIMIT_STEP_MA;
+                // Acceleration: multiply step by number of accumulated ticks
+                uint32_t abs_delta = (_encoder_delta > 0) ? _encoder_delta : 1;
+                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * abs_delta;
+                uint32_t max_ma = getEffectiveMaxCurrentMa();
+                if (_current_limit_ma + step <= max_ma) {
+                    _current_limit_ma += step;
+                } else {
+                    _current_limit_ma = max_ma;
                 }
             }
             _last_activity_time = get_absolute_time();
@@ -242,8 +264,13 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index--;
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                if (_current_limit_ma > AppConfig::CURRENT_LIMIT_MIN_MA) {
-                    _current_limit_ma -= AppConfig::CURRENT_LIMIT_STEP_MA;
+                // Acceleration: multiply step by number of accumulated ticks
+                uint32_t abs_delta = (_encoder_delta < 0) ? -_encoder_delta : 1;
+                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * abs_delta;
+                if (_current_limit_ma > AppConfig::CURRENT_LIMIT_MIN_MA + step) {
+                    _current_limit_ma -= step;
+                } else {
+                    _current_limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
                 }
             }
             _last_activity_time = get_absolute_time();
@@ -306,6 +333,11 @@ void StateMachine::transitionTo(AppState new_state) {
             _adjust_mode = AdjustMode::NONE;
             pdManager.refreshActiveContract();  // Ensure fresh contract data for display
             hw.rgbLed.setColor(0, 255, 0, 50);  // Green = ready
+            // Drain any button presses that occurred during BOOT
+            if (_previous_state == AppState::BOOT) {
+                Interrupts::checkBtn1Clicked();
+                Interrupts::checkBtn2Clicked();
+            }
             break;
 
         case AppState::MENU:
@@ -334,6 +366,7 @@ EncoderEvent StateMachine::readEncoderEvent() {
     // Check encoder rotation
     int current_ticks = hw.encoder.getTicks();
     int delta = current_ticks - _last_encoder_ticks;
+    _encoder_delta = delta;  // Store for acceleration (used by current limit adjust)
 
     if (delta > 0) {
         event = EncoderEvent::ROTATE_CW;
@@ -531,6 +564,18 @@ void StateMachine::applyCurrentLimit() {
     // For now, just store the value - it will be checked in safety module
 
     hw.buzzer.playTone(1000, 50);  // Confirmation beep
+}
+
+uint32_t StateMachine::getEffectiveMaxCurrentMa() const {
+    const ActiveContract& contract = pdManager.getActiveContract();
+    if (contract.valid && contract.current_ma > 0) {
+        // Cap to the lesser of hardware max and contract max
+        return (contract.current_ma < AppConfig::CURRENT_LIMIT_MAX_MA)
+               ? contract.current_ma
+               : AppConfig::CURRENT_LIMIT_MAX_MA;
+    }
+    // No valid contract - use hardware max
+    return AppConfig::CURRENT_LIMIT_MAX_MA;
 }
 
 // Expose PDO list for display manager

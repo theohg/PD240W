@@ -173,6 +173,11 @@ void DisplayManager::renderAdjustScreen() {
             drawHeader("Current Limit");
         }
         drawCurrentLimitAdjust();
+    } else if (mode == AdjustMode::ABOUT) {
+        if (_needs_full_redraw) {
+            drawHeader("About");
+            drawAboutScreen();
+        }
     }
 }
 
@@ -275,13 +280,14 @@ void DisplayManager::drawActiveContract() {
 
     // Use fixed-width format to avoid clearing
     char line1[32];
-    if (contract.valid) {
+    if (contract.valid && contract.voltage_mv > 0) {
         snprintf(line1, sizeof(line1), "%5.1fV @ %5.2fA  ",
                  contract.voltage_mv / 1000.0f,
                  contract.current_ma / 1000.0f);
         hw.display.drawString(MARGIN, y + 15, line1, UIColors::ACCENT, UIColors::BACKGROUND, 2);
     } else {
-        hw.display.drawString(MARGIN, y + 15, "No contract       ", UIColors::WARNING, UIColors::BACKGROUND, 2);
+        // Non-PD charger or no contract: show USB default
+        hw.display.drawString(MARGIN, y + 15, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, 2);
     }
 }
 
@@ -438,6 +444,20 @@ void DisplayManager::drawPdoList() {
     SourceCapability pdos[13];
     uint8_t count = pdManager.getSourceCapabilities(pdos, 13);
 
+    // No contracts found - show informational message
+    if (count == 0) {
+        drawCenteredString(y + 30, "No PD contracts", UIColors::WARNING, 2);
+        drawCenteredString(y + 70, "The connected charger may", UIColors::TEXT_SECONDARY, 1);
+        drawCenteredString(y + 85, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, 1);
+        drawCenteredString(y + 110, "Try a USB-C PD charger.", UIColors::MUTED, 1);
+
+        if (_needs_full_redraw) {
+            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
+                                  "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        }
+        return;
+    }
+
     // Draw visible PDOs (max 8 visible at once)
     int start_idx = 0;
     if (selected_idx > 5 && count > 8) {
@@ -498,6 +518,7 @@ void DisplayManager::drawPdoList() {
 
 void DisplayManager::drawCurrentLimitAdjust() {
     uint32_t current_ma = stateMachine.getCurrentLimitMa();
+    uint32_t max_ma = stateMachine.getEffectiveMaxCurrentMa();
 
     // Skip redraw if value hasn't changed
     if (!_needs_full_redraw && current_ma == _last_adjust_value) {
@@ -517,10 +538,12 @@ void DisplayManager::drawCurrentLimitAdjust() {
     snprintf(buf, sizeof(buf), "%5.2f A", current_ma / 1000.0f);
     drawCenteredString(y, buf, UIColors::ACCENT, 3);
 
-    // Draw progress bar
+    // Draw progress bar (scaled to effective max)
     y += 60;
-    uint8_t percent = ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) /
-                      (AppConfig::CURRENT_LIMIT_MAX_MA - AppConfig::CURRENT_LIMIT_MIN_MA);
+    uint32_t range = max_ma - AppConfig::CURRENT_LIMIT_MIN_MA;
+    uint8_t percent = (range > 0)
+        ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
+        : 0;
     drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
 
     // Draw min/max labels and hints only on full redraw
@@ -528,7 +551,7 @@ void DisplayManager::drawCurrentLimitAdjust() {
         y += 30;
         char min_str[16], max_str[16];
         snprintf(min_str, sizeof(min_str), "%.1fA", AppConfig::CURRENT_LIMIT_MIN_MA / 1000.0f);
-        snprintf(max_str, sizeof(max_str), "%.1fA", AppConfig::CURRENT_LIMIT_MAX_MA / 1000.0f);
+        snprintf(max_str, sizeof(max_str), "%.1fA (max)", max_ma / 1000.0f);
 
         hw.display.drawString(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
 
@@ -542,6 +565,58 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
                               "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     }
+}
+
+// ============================================================================
+// About Screen
+// ============================================================================
+
+void DisplayManager::drawAboutScreen() {
+    int y = CONTENT_Y_START + 15;
+    const int LINE_H = 18;
+
+    // Product name (large)
+    drawCenteredString(y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, 3);
+    y += 35;
+
+    // Subtitle
+    drawCenteredString(y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, 2);
+    y += 30;
+
+    // Separator
+    hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
+    y += 12;
+
+    // Info lines
+    char buf[40];
+
+    snprintf(buf, sizeof(buf), "Version: %s", Version::FIRMWARE_VERSION);
+    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H;
+
+    snprintf(buf, sizeof(buf), "Author:  %s", Version::AUTHOR);
+    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H;
+
+    snprintf(buf, sizeof(buf), "Built:   %s %s", BUILD_DATE, BUILD_TIME);
+    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H;
+
+    hw.display.drawString(MARGIN * 2, y, "Target:  RP2040 (Pico)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H;
+
+    hw.display.drawString(MARGIN * 2, y, "Max:     48V 5A (240W)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H + 8;
+
+    // Separator
+    hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
+    y += 12;
+
+    drawCenteredString(y, "SYNAPTICON GmbH", UIColors::SYNAPTICON_PINK, 1);
+
+    // Navigation hint
+    hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
+                          "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
 }
 
 // ============================================================================
