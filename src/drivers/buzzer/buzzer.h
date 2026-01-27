@@ -14,6 +14,9 @@ struct Note {
 extern const Note MARIO_POWERUP[];
 extern const uint8_t MARIO_POWERUP_LENGTH;
 
+extern const Note CRITICAL_WARNING_ALARM[];
+extern const uint8_t CRITICAL_WARNING_ALARM_LENGTH;
+
 class Buzzer {
 private:
     uint     _pin;

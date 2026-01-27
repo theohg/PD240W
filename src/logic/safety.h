@@ -19,6 +19,7 @@
 
 enum class SafetyStatus {
     OK,
+    CAUTION,
     WARNING,
     FAULT
 };
@@ -27,6 +28,7 @@ struct SafetyState {
     // Temperature
     float temperature_c;        // NTC thermistor (board temperature)
     float ina_temperature_c;    // INA228 die temperature
+    float max_temperature_c;    // Maximum of the two temperatures
     SafetyStatus temp_status;
 
     // Voltage (VBUS)
@@ -77,6 +79,7 @@ private:
     absolute_time_t _last_voltage_check;
 
     // Temperature hysteresis
+    bool _temp_caution_active;
     bool _temp_warning_active;
     bool _temp_fault_active;
 

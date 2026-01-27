@@ -13,12 +13,12 @@ StateMachine stateMachine;
 // Boot Stage Messages
 // ============================================================================
 static const char* BOOT_MESSAGES[] = {
-    "",                     // 0: Logo only
+    "",                    // 0: Logo only
     "PD240W",              // 1: Product name
-    "Power Supply",        // 2: Subtitle
-    "",                     // 3: Playing melody
+    "",                    // 2: Reading PD
+    "Reading USB-PD...",   // 3: Playing melody
     "Reading USB-PD...",   // 4: Reading PD
-    "",                     // 5: Show contracts
+    "Reading USB-PD...",   // 5: Show contracts
     "Ready"                // 6: Complete
 };
 static constexpr uint8_t BOOT_STAGE_COUNT = 7;
@@ -79,9 +79,10 @@ void StateMachine::init() {
 bool StateMachine::update() {
     bool needs_refresh = false;
 
-    // Handle output buttons (BTN1, BTN2) in all states except BOOT
+    // Handle output buttons (BTN1, BTN2) in all states except BOOT and FAULT
     // Output must remain disabled during boot-up for safety
-    if (_state != AppState::BOOT) {
+    // During FAULT, outputs are disabled and must not be toggled
+    if (_state != AppState::BOOT && _state != AppState::FAULT) {
         handleOutputButtons();
     }
 
@@ -333,8 +334,8 @@ void StateMachine::transitionTo(AppState new_state) {
             _adjust_mode = AdjustMode::NONE;
             pdManager.refreshActiveContract();  // Ensure fresh contract data for display
             hw.rgbLed.setColor(0, 255, 0, 50);  // Green = ready
-            // Drain any button presses that occurred during BOOT
-            if (_previous_state == AppState::BOOT) {
+            // Drain any button presses that occurred during BOOT or FAULT
+            if (_previous_state == AppState::BOOT || _previous_state == AppState::FAULT) {
                 Interrupts::checkBtn1Clicked();
                 Interrupts::checkBtn2Clicked();
             }
@@ -352,6 +353,9 @@ void StateMachine::transitionTo(AppState new_state) {
         case AppState::FAULT:
             hw.rgbLed.setColor(255, 0, 0, 255);  // Red = fault
             hw.buzzer.playTone(1000, 500);  // Alert beep
+            // Drain button ISR flags to prevent stale presses after acknowledgment
+            Interrupts::checkBtn1Clicked();
+            Interrupts::checkBtn2Clicked();
             break;
     }
 }

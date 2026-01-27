@@ -2,6 +2,7 @@
 #include "hardware.h"
 #include "app_config.h"
 #include "utils/logging.h"
+#include "drivers/buzzer/buzzer.h"
 
 // Global instance
 Safety safety;
@@ -21,11 +22,13 @@ Safety::Safety()
     : _current_limit_a(5.0f)
     , _last_temp_check(nil_time)
     , _last_voltage_check(nil_time)
+    , _temp_caution_active(false)
     , _temp_warning_active(false)
     , _temp_fault_active(false)
 {
     _state.temperature_c = 25.0f;
     _state.ina_temperature_c = 25.0f;
+    _state.max_temperature_c = 25.0f;
     _state.temp_status = SafetyStatus::OK;
     _state.vbus_voltage_v = 0.0f;
     _state.pd_connected = false;
@@ -76,6 +79,47 @@ SafetyStatus Safety::update() {
         overall_status = SafetyStatus::FAULT;
     } else if (_temp_warning_active) {
         overall_status = SafetyStatus::WARNING;
+    } else if (_temp_caution_active) { 
+        overall_status = SafetyStatus::CAUTION;
+    }
+
+    // Critical temperature audible alarm (75C+, pre-fault)
+    // Play repeating alarm when temp is critical but not yet at shutdown
+    if (_state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)) {
+        if (!hw.buzzer.isPlayingMelody()) {
+            hw.buzzer.playMelody(CRITICAL_WARNING_ALARM, CRITICAL_WARNING_ALARM_LENGTH);
+        }
+    } else {
+        // Temperature dropped below critical - stop alarm if playing
+        if (hw.buzzer.isPlayingMelody()) {
+            hw.buzzer.stopMelody();
+        }
+    }
+
+    //RGB LED indication based on overall status
+    static SafetyStatus last_led_status = SafetyStatus::OK; // Assume OK initially
+    static bool first_run = true;
+
+    if (overall_status != last_led_status || first_run) {
+        switch (overall_status) {
+            case SafetyStatus::FAULT:
+                // Red for Error/Fault
+                hw.rgbLed.setColor(255, 0, 0);
+                break;
+            case SafetyStatus::WARNING:
+                // Orange for Warning (R=255, G=120 gives a solid amber/orange)
+                hw.rgbLed.setColor(255, 120, 0);
+                break;
+            case SafetyStatus::CAUTION:
+                // Yellow for Caution
+                hw.rgbLed.setColor(255, 255, 0);
+                break;
+            case SafetyStatus::OK:
+            default:
+                break;
+        }
+        last_led_status = overall_status;
+        first_run = false;
     }
 
     return overall_status;
@@ -89,11 +133,17 @@ void Safety::updateTemperature() {
     _state.temperature_c = hw.adc.getTemperature();
     _state.ina_temperature_c = hw.powerMonitor.getTemperature();
 
-    float warning_threshold = static_cast<float>(AppConfig::TEMP_WARNING_C);
-    float shutdown_threshold = static_cast<float>(AppConfig::TEMP_SHUTDOWN_C);
+    _state.max_temperature_c = (_state.temperature_c > _state.ina_temperature_c) ?
+                         _state.temperature_c : _state.ina_temperature_c;
 
-    // Check for fault (with hysteresis on recovery)
-    if (_state.temperature_c >= shutdown_threshold) {
+    float caution_threshold = static_cast<float>(AppConfig::TEMP_CAUTION_C);   // 50.0
+    float warning_threshold = static_cast<float>(AppConfig::TEMP_WARNING_C);   // 65.0
+    float shutdown_threshold = static_cast<float>(AppConfig::TEMP_SHUTDOWN_C); // 80.0
+
+    // --------------------------------------------------------
+    // 1. FAULT CHECK (Shutdown >= 80C)
+    // --------------------------------------------------------
+    if (_state.max_temperature_c >= shutdown_threshold) {
         if (!_temp_fault_active) {
             _temp_fault_active = true;
             _state.temp_status = SafetyStatus::FAULT;
@@ -101,26 +151,55 @@ void Safety::updateTemperature() {
             // Disable load switch
             hw.loadSwitch.off();
             LOG_ERROR("OVERTEMPERATURE FAULT: %.1fC >= %.1fC - Load disabled",
-                     _state.temperature_c, shutdown_threshold);
+                     _state.max_temperature_c, shutdown_threshold);
         }
-    } else if (_temp_fault_active && _state.temperature_c < (shutdown_threshold - TEMP_HYSTERESIS_C)) {
+    } else if (_temp_fault_active && _state.max_temperature_c < (shutdown_threshold - TEMP_HYSTERESIS_C)) {
         _temp_fault_active = false;
-        LOG_INFO("Temperature returned to safe level: %.1fC", _state.temperature_c);
+        LOG_INFO("Temperature returned to safe level: %.1fC", _state.max_temperature_c);
     }
 
-    // Check for warning (with hysteresis)
+    // --------------------------------------------------------
+    // 2. WARNING CHECK (>= 65C)
+    // Only check if not in Fault
+    // --------------------------------------------------------
     if (!_temp_fault_active) {
-        if (_state.temperature_c >= warning_threshold) {
+        if (_state.max_temperature_c >= warning_threshold) {
             if (!_temp_warning_active) {
                 _temp_warning_active = true;
                 _state.temp_status = SafetyStatus::WARNING;
                 LOG_WARN("Temperature warning: %.1fC >= %.1fC",
-                        _state.temperature_c, warning_threshold);
+                        _state.max_temperature_c, warning_threshold);
             }
-        } else if (_temp_warning_active && _state.temperature_c < (warning_threshold - TEMP_HYSTERESIS_C)) {
+            // Ensure lower severity state is cleared
+            _temp_caution_active = false; 
+        } else if (_temp_warning_active && _state.max_temperature_c < (warning_threshold - TEMP_HYSTERESIS_C)) {
             _temp_warning_active = false;
+            LOG_INFO("Temperature warning cleared: %.1fC", _state.max_temperature_c);
+            // Note: We don't set OK here yet; it might fall through to Caution below
+        }
+    }
+
+    // --------------------------------------------------------
+    // 3. CAUTION CHECK (>= 50C)
+    // Only check if not in Fault AND not in Warning
+    // --------------------------------------------------------
+    if (!_temp_fault_active && !_temp_warning_active) {
+        if (_state.max_temperature_c >= caution_threshold) {
+            if (!_temp_caution_active) {
+                _temp_caution_active = true;
+                _state.temp_status = SafetyStatus::CAUTION;
+                LOG_INFO("Temperature caution: %.1fC >= %.1fC", 
+                        _state.max_temperature_c, caution_threshold);
+            }
+        } else if (_temp_caution_active && _state.max_temperature_c < (caution_threshold - TEMP_HYSTERESIS_C)) {
+            _temp_caution_active = false;
             _state.temp_status = SafetyStatus::OK;
-            LOG_INFO("Temperature warning cleared: %.1fC", _state.temperature_c);
+            LOG_INFO("Temperature caution cleared: %.1fC", _state.max_temperature_c);
+        }
+        
+        // Ensure status is updated if we are neither Fault, Warning, nor Caution
+        if (!_temp_caution_active) {
+            _state.temp_status = SafetyStatus::OK;
         }
     }
 }

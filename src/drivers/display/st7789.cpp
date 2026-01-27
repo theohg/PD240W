@@ -376,6 +376,72 @@ void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint
     drawString(x, y, buffer, color, bg, font);
 }
 
+// ===== Bitmap drawing =====
+
+void ST7789::drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data) {
+    if (x >= WIDTH || y >= HEIGHT || w <= 0 || h <= 0) return;
+
+    int16_t x1 = x + w - 1;
+    int16_t y1 = y + h - 1;
+    if (x1 >= WIDTH) x1 = WIDTH - 1;
+    if (y1 >= HEIGHT) y1 = HEIGHT - 1;
+    int16_t draw_w = x1 - x + 1;
+    int16_t draw_h = y1 - y + 1;
+
+    setAddressWindow(x, y, x1, y1);
+
+    gpio_put(_pinDC, 1);
+    gpio_put(_pinCS, 0);
+
+    // Send row by row with byte-swap (RP2040 little-endian, ST7789 big-endian)
+    uint8_t line_buf[480]; // Max 240 pixels x 2 bytes per row
+
+    for (int16_t row = 0; row < draw_h; row++) {
+        const uint16_t* src = &data[row * w];
+        for (int16_t col = 0; col < draw_w; col++) {
+            uint16_t pixel = src[col];
+            line_buf[col * 2]     = pixel >> 8;
+            line_buf[col * 2 + 1] = pixel & 0xFF;
+        }
+        spi_write_blocking(_spi, line_buf, draw_w * 2);
+    }
+
+    gpio_put(_pinCS, 1);
+}
+
+void ST7789::drawBitmapScaled(int16_t x, int16_t y, int16_t out_w, int16_t out_h,
+                               int16_t src_w, int16_t src_h, const uint16_t* data) {
+    if (x >= WIDTH || y >= HEIGHT || out_w <= 0 || out_h <= 0) return;
+
+    int16_t x1 = x + out_w - 1;
+    int16_t y1 = y + out_h - 1;
+    if (x1 >= WIDTH) x1 = WIDTH - 1;
+    if (y1 >= HEIGHT) y1 = HEIGHT - 1;
+    int16_t draw_w = x1 - x + 1;
+    int16_t draw_h = y1 - y + 1;
+
+    setAddressWindow(x, y, x1, y1);
+
+    gpio_put(_pinDC, 1);
+    gpio_put(_pinCS, 0);
+
+    uint8_t line_buf[480];
+
+    for (int16_t row = 0; row < draw_h; row++) {
+        int16_t src_y = (row * src_h) / out_h;
+        const uint16_t* src_row = &data[src_y * src_w];
+        for (int16_t col = 0; col < draw_w; col++) {
+            int16_t src_x = (col * src_w) / out_w;
+            uint16_t pixel = src_row[src_x];
+            line_buf[col * 2]     = pixel >> 8;
+            line_buf[col * 2 + 1] = pixel & 0xFF;
+        }
+        spi_write_blocking(_spi, line_buf, draw_w * 2);
+    }
+
+    gpio_put(_pinCS, 1);
+}
+
 // ===== Utility =====
 
 uint16_t ST7789::rgb565(uint8_t r, uint8_t g, uint8_t b) {

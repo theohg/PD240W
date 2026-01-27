@@ -49,6 +49,11 @@ public:
     void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, const FontDef* font);
 
+    // Bitmap drawing
+    void drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data);
+    void drawBitmapScaled(int16_t x, int16_t y, int16_t out_w, int16_t out_h,
+                          int16_t src_w, int16_t src_h, const uint16_t* data);
+
     // Utility
     static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b);
 

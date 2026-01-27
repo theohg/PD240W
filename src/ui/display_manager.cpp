@@ -8,6 +8,7 @@
 #include "config/app_config.h"
 #include <cstdio>
 #include <cstring>
+#include "ui/assets/synapticon_logo.h"
 
 // Global instance
 DisplayManager displayManager;
@@ -107,8 +108,12 @@ void DisplayManager::setPdoList(const SourceCapability* pdos, uint8_t count) {
 
 void DisplayManager::renderBootScreen() {
     if (_needs_full_redraw) {
-        // Draw logo area (centered)
-        drawLogo();
+        // Draw scaled version of logo (centered)
+        int logo_size = 130;
+        int logo_x = (SCREEN_WIDTH - logo_size) / 2;
+        int y = CONTENT_Y_START;
+        hw.display.drawBitmapScaled(logo_x, y, logo_size, logo_size,
+                                    SYNAPTICON_WIDTH, SYNAPTICON_HEIGHT, synapticon_data);
     }
 
     // Update boot text and progress
@@ -185,9 +190,13 @@ void DisplayManager::renderFaultScreen() {
     if (_needs_full_redraw) {
         clearScreen();
         drawFaultIcon();
+        drawFaultDetails();
     }
 
-    drawFaultDetails();
+    // Live-update current temperature for overtemperature faults
+    if (stateMachine.getFaultType() == FaultType::OVERTEMPERATURE) {
+        drawFaultLiveTemperature();
+    }
 }
 
 // ============================================================================
@@ -227,31 +236,22 @@ void DisplayManager::drawProgressBar(int x, int y, int width, int height, uint8_
 // Boot Screen Elements
 // ============================================================================
 
-void DisplayManager::drawLogo() {
-    // Simple text logo for now
-    // TODO: Add actual Synapticon logo bitmap
-    drawCenteredString(60, "SYNAPTICON", UIColors::SYNAPTICON_PINK, 2);
-}
-
 void DisplayManager::drawBootText() {
-    // Static text - only draw once on full redraw
+    // Static text below the 220x220 logo (logo occupies y=5 to y=225)
     if (_needs_full_redraw) {
         // Product name
-        drawCenteredString(110, Version::PRODUCT_NAME, UIColors::TEXT_PRIMARY, 3);
-
-        // Subtitle
-        drawCenteredString(150, Version::PRODUCT_SUBTITLE, UIColors::TEXT_SECONDARY, 2);
+        drawCenteredString(200, Version::PRODUCT_NAME, UIColors::TEXT_PRIMARY, 3);
 
         // Version
-        drawCenteredString(180, Version::FIRMWARE_VERSION, UIColors::MUTED, 1);
+        drawCenteredString(230, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, 2);
     }
 
     // Stage message - only redraw when message changes (prevents flicker)
     const char* stage_msg = stateMachine.getBootStageMessage();
     if (stage_msg != _last_boot_message) {
-        hw.display.fillRect(0, 205, SCREEN_WIDTH, 20, UIColors::BACKGROUND);
+        hw.display.fillRect(0, 260, SCREEN_WIDTH, 12, UIColors::BACKGROUND);
         if (stage_msg && stage_msg[0] != '\0') {
-            drawCenteredString(210, stage_msg, UIColors::TEXT_SECONDARY, 1);
+            drawCenteredString(262, stage_msg, UIColors::TEXT_PRIMARY, 1);
         }
         _last_boot_message = stage_msg;
     }
@@ -259,7 +259,7 @@ void DisplayManager::drawBootText() {
 
 void DisplayManager::drawBootProgress() {
     uint8_t progress = stateMachine.getBootProgress();
-    drawProgressBar(MARGIN * 3, 250, SCREEN_WIDTH - MARGIN * 6, 15, progress, UIColors::SYNAPTICON_PINK);
+    drawProgressBar(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 15, progress, UIColors::SYNAPTICON_PINK);
 }
 
 // ============================================================================
@@ -290,39 +290,6 @@ void DisplayManager::drawActiveContract() {
         hw.display.drawString(MARGIN, y + 15, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, 2);
     }
 }
-
-// void DisplayManager::drawPowerReadings() {
-//     int y = CONTENT_Y_START + 50;
-
-//     // Get safety state for readings
-//     const SafetyState& state = safety.getState();
-
-//     // Use fixed-width format to overwrite previous values without clearing
-//     char buf[32];
-
-//     // VBUS Voltage
-//     snprintf(buf, sizeof(buf), "VIN: %6.2f V  ", state.vbus_voltage_v);
-//     hw.display.drawString(MARGIN, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 1);
-
-//     // INA228 Voltage - use fixed width to avoid clearing
-//     y += 15;
-//     snprintf(buf, sizeof(buf), "V");
-//     hw.display.drawString(MARGIN, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
-//     snprintf(buf, sizeof(buf), "OUT");
-//     hw.display.drawString(MARGIN + 12, y+7, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 1);
-//     snprintf(buf, sizeof(buf), ": %6.3f V  ", state.ina_voltage_v);
-//     hw.display.drawString(MARGIN + 31, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
-
-//     // Current
-//     y += 25;
-//     snprintf(buf, sizeof(buf), "I: %6.3f A  ", state.current_a);
-//     hw.display.drawString(MARGIN, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
-
-//     // Power
-//     y += 25;
-//     snprintf(buf, sizeof(buf), "P: %6.2f W  ", state.power_w);
-//     hw.display.drawString(MARGIN, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
-// }
 
 void DisplayManager::drawPowerReadings() {
     // Start slightly lower to give breathing room from the Contract info
@@ -371,28 +338,58 @@ void DisplayManager::drawPowerReadings() {
 }
 
 void DisplayManager::drawTemperature() {
-    // int y = CONTENT_Y_START + 150;
     int y = CONTENT_Y_START + 170;
-
     const SafetyState& state = safety.getState();
 
-    // Show both NTC (board) and INA228 (die) temperatures
-    char buf[40];
-    snprintf(buf, sizeof(buf), "NTC:%5.1fC  INA:%5.1fC",
-             state.temperature_c, state.ina_temperature_c);
-
-    uint16_t color = UIColors::TEXT_PRIMARY;
-    if (state.temp_status == SafetyStatus::WARNING) {
-        color = UIColors::WARNING;
+    // 1. Determine the dynamic color for the values
+    uint16_t val_color = UIColors::TEXT_PRIMARY;
+    
+    if (state.temp_status == SafetyStatus::CAUTION) {
+        val_color = UIColors::CAUTION;
+    } else if (state.temp_status == SafetyStatus::WARNING) {
+        val_color = UIColors::WARNING;
     } else if (state.temp_status == SafetyStatus::FAULT) {
-        color = UIColors::ERROR;
+        val_color = UIColors::ERROR;
     }
 
-    hw.display.drawString(MARGIN, y, buf, color, UIColors::BACKGROUND, 1);
+    // Blinking logic (only affects val_color)
+    if (state.max_temperature_c > AppConfig::TEMP_CRITICAL_WARNING_C) {
+        uint32_t ms = to_ms_since_boot(get_absolute_time());
+        // Blink fast (250ms interval) & make a beeping sound
+        if ((ms / 250) % 2 == 1) {
+            val_color = UIColors::BACKGROUND; // Hide text
+        }
+    }
+
+    // 2. Draw the components separately
+    const int CHAR_W = 6; 
+    int current_x = MARGIN;
+    char buf[16];
+
+    // --- First Pair (NTC) ---
+    
+    // Draw Label: "NTC:" (4 chars)
+    hw.display.drawString(current_x, y, "NTC:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    current_x += (4 * CHAR_W);
+
+    // Draw Value: " 25.0C" (6 chars)
+    snprintf(buf, sizeof(buf), "%5.1fC", state.temperature_c);
+    hw.display.drawString(current_x, y, buf, val_color, UIColors::BACKGROUND, 1);
+    current_x += (6 * CHAR_W);
+
+    // --- Second Pair (INA) ---
+
+    // Draw Label: "  INA:" (6 chars including padding spaces)
+    hw.display.drawString(current_x, y, "  INA:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    current_x += (6 * CHAR_W);
+
+    // Draw Value: " 25.0C" (6 chars)
+    snprintf(buf, sizeof(buf), "%5.1fC", state.ina_temperature_c);
+    hw.display.drawString(current_x, y, buf, val_color, UIColors::BACKGROUND, 1);
 }
 
 void DisplayManager::drawOutputStatus() {
-    int y = CONTENT_Y_START + 185;
+    int y = CONTENT_Y_START + 195;
 
     // Only draw labels on full redraw
     if (_needs_full_redraw) {
@@ -572,20 +569,27 @@ void DisplayManager::drawCurrentLimitAdjust() {
 // ============================================================================
 
 void DisplayManager::drawAboutScreen() {
-    int y = CONTENT_Y_START + 15;
-    const int LINE_H = 18;
+    const int LINE_H = 16;
 
-    // Product name (large)
-    drawCenteredString(y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, 3);
-    y += 35;
+    // Small scaled Synapticon logo (44x44, scaled from 220x220)
+    int logo_size = 44;
+    int logo_x = (SCREEN_WIDTH - logo_size) / 2;
+    int y = CONTENT_Y_START + 5;
+    hw.display.drawBitmapScaled(logo_x, y, logo_size, logo_size,
+                                 SYNAPTICON_WIDTH, SYNAPTICON_HEIGHT, synapticon_data);
+    y += logo_size + 4;
+
+    // Product name
+    drawCenteredString(y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, 2);
+    y += 18;
 
     // Subtitle
-    drawCenteredString(y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, 2);
-    y += 30;
+    drawCenteredString(y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, 1);
+    y += 14;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
-    y += 12;
+    y += 10;
 
     // Info lines
     const int LABEL_X = MARGIN * 2;
@@ -621,11 +625,11 @@ void DisplayManager::drawAboutScreen() {
     // Max
     hw.display.drawString(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     hw.display.drawString(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    y += LINE_H + 8;
+    y += LINE_H + 6;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
-    y += 12;
+    y += 10;
 
     drawCenteredString(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, 1);
 
@@ -673,7 +677,7 @@ void DisplayManager::drawFaultDetails() {
 
         case FaultType::OVERTEMPERATURE:
             fault_name = "OVERTEMPERATURE";
-            snprintf(detail1, sizeof(detail1), "Measured: %.1fC", safety.getState().temperature_c);
+            snprintf(detail1, sizeof(detail1), "Trigger: %.1fC", safety.getState().max_temperature_c);
             snprintf(detail2, sizeof(detail2), "Limit: %dC", AppConfig::TEMP_SHUTDOWN_C);
             break;
 
@@ -699,11 +703,31 @@ void DisplayManager::drawFaultDetails() {
         y += 20;
     }
 
+    // Live temperature line (updated dynamically by drawFaultLiveTemperature)
+    if (fault == FaultType::OVERTEMPERATURE) {
+        y += 5;
+        drawCenteredString(y, "Now:      ", UIColors::WARNING, 1);
+        y += 20;
+    }
+
     y += 20;
     drawCenteredString(y, "Load switch disabled", UIColors::WARNING, 1);
 
     // Draw acknowledge hint
-    drawCenteredString(SCREEN_HEIGHT - 30, "[Click to acknowledge]", UIColors::TEXT_SECONDARY, 1);
+    drawCenteredString(SCREEN_HEIGHT - 30, "[Press knob to acknowledge]", UIColors::TEXT_SECONDARY, 1);
+}
+
+void DisplayManager::drawFaultLiveTemperature() {
+    // Live temperature reading at fixed position on fault screen
+    // Position: after "Trigger:" and "Limit:" lines (y=140 + 0 + 40 + 20 + 20 + 5 = 225)
+    const int y = 225;
+    const SafetyState& state = safety.getState();
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Now: %5.1fC", state.max_temperature_c);
+
+    // Use fixed-width format to overwrite previous value without clearing
+    drawCenteredString(y, buf, UIColors::WARNING, 1);
 }
 
 // ============================================================================

@@ -117,6 +117,17 @@ const Note MARIO_POWERUP[] = {
 
 const uint8_t MARIO_POWERUP_LENGTH = sizeof(MARIO_POWERUP) / sizeof(Note);
 
+// Critical Warning Alarm: Beep-Beep-Pause (Repeatable)
+// High pitch (3000Hz) cuts through noise better than low pitch
+const Note CRITICAL_WARNING_ALARM[] = {
+    {3000, 80},   // High Beep
+    {0,    80},   // Silence
+    {3000, 80},   // High Beep
+    {0,    500}   // Longer Silence before repeating
+};
+
+const uint8_t CRITICAL_WARNING_ALARM_LENGTH = sizeof(CRITICAL_WARNING_ALARM) / sizeof(Note);
+
 // Callback for playing next note in melody
 int64_t Buzzer::playNextNoteCallback(alarm_id_t id, void *user_data) {
     Buzzer *buzzer = static_cast<Buzzer*>(user_data);

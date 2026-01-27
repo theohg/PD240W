@@ -18,7 +18,8 @@ namespace UIColors {
     constexpr uint16_t TEXT_PRIMARY = 0xFFFF;    // White
     constexpr uint16_t TEXT_SECONDARY = 0xC618;  // Light gray
     constexpr uint16_t ACCENT = 0x07E0;          // Green
-    constexpr uint16_t WARNING = 0xFFE0;         // Yellow
+    constexpr uint16_t CAUTION = 0xFFE0;         // Yellow
+    constexpr uint16_t WARNING = 0xFD20;         // Orange
     constexpr uint16_t ERROR = 0xF800;           // Red
     constexpr uint16_t HIGHLIGHT_BG = 0x001F;    // Blue
     constexpr uint16_t HIGHLIGHT_FG = 0xFFE0;    // Yellow
@@ -72,8 +73,10 @@ private:
     // Main screen elements
     void drawActiveContract();
     void drawPowerReadings();
-    void drawTemperature();
+    void drawTemperature();       // Legacy text-only temperature display
     void drawOutputStatus();
+    void drawThermometer();       // Graphical thermometer widget (right side)
+    void fillCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color);
 
     // Menu elements
     void drawMenuItem(int y, const char* text, bool selected);
@@ -86,6 +89,7 @@ private:
     // Fault screen elements
     void drawFaultIcon();
     void drawFaultDetails();
+    void drawFaultLiveTemperature();
 
     // Helper functions
     void clearScreen();

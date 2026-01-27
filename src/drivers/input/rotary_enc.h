@@ -8,8 +8,9 @@ private:
     uint _pinA, _pinB;
     volatile uint8_t _lastState = 0;
 
-    // Debouncing
-    volatile uint64_t _last_change_time_us = 0;
+    // Per-pin debouncing (shared timer caused missed ticks on fast rotation)
+    volatile uint64_t _last_change_time_a_us = 0;
+    volatile uint64_t _last_change_time_b_us = 0;
     static constexpr uint32_t DEBOUNCE_TIME_US = 1000;  // 1ms debounce per transition
 
 public:

@@ -30,12 +30,14 @@ void RotaryEncoder::reset() {
 }
 
 void RotaryEncoder::handleISR(uint gpio, uint32_t events) {
-    // Debouncing: Check if enough time has passed since last change
+    // Per-pin debouncing: each pin has its own timer so pin B transitions
+    // aren't suppressed when pin A just changed (quadrature signals are close in time)
     uint64_t current_time_us = time_us_64();
-    if (current_time_us - _last_change_time_us < DEBOUNCE_TIME_US) {
+    volatile uint64_t& last_time = (gpio == _pinA) ? _last_change_time_a_us : _last_change_time_b_us;
+    if (current_time_us - last_time < DEBOUNCE_TIME_US) {
         return;  // Ignore this transition (too fast, likely bounce)
     }
-    _last_change_time_us = current_time_us;
+    last_time = current_time_us;
 
     // Read current state of both pins
     uint8_t currentState = (gpio_get(_pinA) << 1) | gpio_get(_pinB);
