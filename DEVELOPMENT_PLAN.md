@@ -33,8 +33,8 @@ Create an adjustable power supply (0-48V, 0-5A, up to 240W) using USB-C Power De
 | **Encoder Rotate** | Navigate menu / Adjust values |
 | **Encoder Click** | Confirm / Select |
 | **Encoder Long Press (800ms)** | Go Back / Exit current screen |
-| **BTN1** | Toggle Load Switch (main output) - works in ANY state |
-| **BTN2** | Toggle 17V Buck - works in ANY state (only if VBUS > 18V) |
+| **BTN1** | Toggle Load Switch (main output) - any state except BOOT |
+| **BTN2** | Toggle 17V Buck - any state except BOOT (only if VBUS > 18V) |
 
 ---
 
@@ -148,55 +148,68 @@ FAULT ──(click acknowledge)──> MAIN
 
 **Goal:** Create intuitive LCD menu and displays
 
-#### 4.1 Screen Layouts
+#### 4.1 Implemented Screens
 
-**Main Screen (MAIN state):**
-- Active contract (voltage @ current)
+**Boot Screen** ✅
+- Synapticon logo (centered)
+- Product name, firmware version, boot stage messages
+- Progress bar with stage tracking
+- Ghost image fix (backlight delayed until framebuffer cleared)
+- Boot text flicker fix (only redraws on message change)
+- BTN1/BTN2 disabled during boot (ISR flags drained on BOOT→MAIN transition)
+
+**Main Screen** ✅
+- Active contract display (voltage @ current, or "USB 5V (no PD)" for non-PD chargers)
 - Measured V, I, P from INA228
-- Temperature
+- Temperature readings
 - Output status (Load: ON/OFF, 17V: ON/OFF)
+- Flicker-free rendering with fixed-width format strings
 
-**Menu Screen (MENU state):**
+**Menu Screen** ✅
 ```
 > Select Voltage      (enter PDO list)
   Current Limit       (enter adjustment)
-  About               (show version, uptime)
+  About               (show device info)
 ```
 
-**PDO Selection (ADJUST state):**
-```
-  5V @ 3000mA
-> 9V @ 3000mA        (highlighted)
-  15V @ 3000mA
-  20V @ 5000mA
-  [PPS] 3.3-21V
-```
+**PDO Selection** ✅
+- Scrollable list with highlighted selection
+- Shows "No PD contracts" with helpful message for non-PD chargers
+- Supports up to 13 PDOs with scroll window
 
-**Current Limit (ADJUST state):**
-```
-Current Limit: 2.50 A
-       [====----]
-       Min      Max
-```
+**Current Limit Adjustment** ✅
+- Large value display with progress bar
+- Encoder acceleration (step multiplied by accumulated ticks)
+- Capped to active contract max via `getEffectiveMaxCurrentMa()`
+- Min/max labels with "(max)" indicator
 
-**Fault Screen:**
-```
-     ⚠ OVERCURRENT ⚠
+**About Screen** ✅
+- Product name (large), subtitle
+- HW version, FW version, author, build date, target, max specs
+- Company name (Synapticon GmbH)
+- Read-only: any click or long press returns to menu
 
-   Measured: 5.23A
-   Limit: 5.00A
+**Fault Screen** ✅
+- Warning icon, fault type, measured/limit values
+- Click to acknowledge and return to MAIN
 
-   Load switch disabled
+#### 4.2 Bug Fixes During Phase 4
+- LCD ghost image (backlight timing in `st7789.cpp`)
+- Boot text flicker (message pointer tracking)
+- Contract current /10 error (RDO vs PDO field in `tps26750.cpp`)
+- Button queuing during boot (ISR flag draining)
+- Button polling reliability (switched to ISR-based detection)
+- Encoder acceleration for current limit adjustment
 
-   [Click to acknowledge]
-```
+#### 4.3 Files
+- `src/ui/display_manager.h/cpp` - All screen rendering (monolithic, no separate screen files)
 
-#### 4.2 Files to Create
-- `src/ui/display_manager.h/cpp` - Screen rendering coordinator
-- `src/ui/screens/screen_boot.h/cpp` - Boot splash screen
-- `src/ui/screens/screen_main.h/cpp` - Real-time monitoring
-- `src/ui/screens/screen_menu.h/cpp` - Menu navigation
-- `src/ui/screens/screen_fault.h/cpp` - Fault display
+#### 4.4 Remaining UI Work
+- Display real Synapticon logo during boot (220x220 RGB565 bitmap from `src/ui/assets/synapticon_logo.h`) and small version in About screen
+- Improve encoder tick counting (still misses ticks during fast rotation)
+- Thermometer temperature widget on main screen (bottom-right, color-coded, see Phase 6.3 for details)
+- Better font rendering for large text (current 5x7 bitmap looks pixelated at large sizes)
+- UI visual improvements: oval/rounded bounding boxes around voltage, current, power readouts (details TBD)
 
 ---
 
@@ -229,17 +242,86 @@ Current Limit: 2.50 A
 
 ---
 
+### Phase 6: Enhancements & Future Features (Planned)
+
+**Goal:** UI polish, new features, and advanced PD support
+
+#### 6.1 Display Synapticon Logo
+- Render the 220x220 RGB565 bitmap from `src/ui/assets/synapticon_logo.h` during boot splash (full size, centered)
+- Display a scaled-down version in the About screen
+- The bitmap is pre-encoded in ST7789 RGB565 format, ready for direct SPI transfer
+
+#### 6.2 Improve Encoder Tick Counting
+- Encoder still misses some ticks during fast rotation
+- Investigate: ISR debounce timing (currently 1ms), quadrature decoding edge detection, hardware filtering
+- Consider counting on both edges (A and B channels) for 2x or 4x resolution
+
+#### 6.3 Thermometer Temperature Widget
+- Programmatic thermometer graphic on main screen (bottom-right corner)
+- Vertical bar with rounded bulb at bottom, ~12px wide, ~80px tall
+- Color-coded fill levels: blue (<30°C), yellow (30-50°C), orange (50-65°C), red (65-80°C)
+- Blinking effect above 75°C (critical temperature warning)
+- INA die temp and NTC board temp labels displayed to the left of the thermometer
+- Implement as a standalone `drawThermometer()` function so it can be easily removed if it doesn't look good
+
+#### 6.4 Better Font Rendering
+- Current 5x7 bitmap font looks pixelated at large sizes (especially main screen readouts)
+- Options to evaluate:
+  - Larger bitmap font (8x16 or custom designed)
+  - Anti-aliased font rendering (grayscale pixels for smoother edges)
+  - Pre-rendered digit sprites for the big voltage/current/power values
+- Priority: main screen large numbers, About screen title
+
+#### 6.5 PPS Mode Support (Large Feature)
+Programmable Power Supply mode allows fine-grained voltage control within a range.
+
+- **6.5a** Parse PPS capabilities from source caps (min/max voltage, max current) — already partially done in `SourceCapability` struct (`is_pps`, `min_voltage_mv`)
+- **6.5b** Add PPS-aware PDO selection UI — show voltage range (e.g., "3.3-21V PPS") instead of fixed value, indicate PPS with label/color
+- **6.5c** Implement voltage adjustment within PPS range — new ADJUST sub-mode where encoder fine-tunes millivolts within the PPS range (20mV steps per PD spec)
+- **6.5d** Call `requestPPSProfile()` with user-selected voltage and current — the driver function already exists in `tps26750.cpp`
+- **6.5e** Implement PPS keep-alive — PD spec requires re-requesting PPS contract every <10 seconds or the source reverts to 5V. Add a periodic timer in `pd_manager.cpp`
+- **6.5f** Update main screen for PPS — show "PPS" indicator, programmable range, actual vs requested voltage
+
+#### 6.6 EEPROM Flash Menu Item
+Add "Flash EEPROM" entry to the settings menu for runtime TPS26750 configuration updates.
+
+- **UI Flow:**
+  1. User selects "Flash EEPROM" from menu
+  2. Firmware reads EEPROM content and compares against `tps26750_patch.c` binary
+  3. Display comparison result:
+     - "Config identical" — EEPROM already has the same binary
+     - "EEPROM appears empty" — no valid data found
+     - "Different config found" — EEPROM has a different configuration
+  4. Prompt: "Proceed with flash?" with Yes/No selection via encoder
+  5. On Yes: flash with progress bar, verify, show result (success/failure)
+  6. On No: return to menu
+
+- **Implementation Notes:**
+  - Existing functions in `eeprom_loader.cpp`: `eeprom_write_block()`, `eeprom_read_block()`, `eeprom_already_programmed()`, `flashTps26750Eeprom()`
+  - Needs refactoring: separate the compare and flash steps into individual callable functions (currently bundled behind `ENABLE_EEPROM_FLASHING` compile-time gate)
+  - Must init/deinit I2C1 for EEPROM access (separate bus from main I2C0)
+  - Flash is a blocking operation (~5-10 seconds) — display progress updates via callback or periodic check
+  - After successful flash, instruct user to power cycle the TPS26750
+
+#### 6.7 UI Visual Improvements
+- Redesign main screen power readouts with oval/rounded bounding boxes around voltage, current, and power values
+- Goal: visually appealing, clear separation of metrics
+- Specific design TBD — to be discussed in detail before implementation
+- May involve: rounded rectangle drawing primitive, layout redesign, color scheme refinement
+
+---
+
 ## File Structure (Current)
 
 ```
 src/
-├── main.cpp                 # Entry point, state machine driver
+├── main.cpp                 # Entry point, main event loop
 ├── hardware.h/cpp           # Global Hardware singleton
 ├── interrupts.h/cpp         # GPIO interrupt handling
 ├── config/                  # ✅ All configuration files
 │   ├── board_config.h       # Pin definitions (Board:: namespace)
 │   ├── app_config.h         # Timeouts, thresholds, constants
-│   └── version.h            # Firmware version string
+│   └── version.h            # Version, author, company (Version:: namespace)
 ├── drivers/                 # ✅ Complete - all hardware drivers
 │   ├── gpio/
 │   ├── input/
@@ -250,7 +332,7 @@ src/
 │       ├── ina228/
 │       └── tps26750/
 ├── logic/                   # ✅ Phase 3 - complete
-│   ├── state_machine.h/cpp  # ✅ Main state controller
+│   ├── state_machine.h/cpp  # ✅ Main state controller (incl. AdjustMode::ABOUT)
 │   ├── settings.h/cpp       # ✅ User settings management
 │   ├── safety.h/cpp         # ✅ Safety monitoring
 │   └── pd_manager.h/cpp     # ✅ PD contract management
@@ -258,15 +340,10 @@ src/
 │   ├── logging.h            # LOG_INFO, LOG_ERROR, etc.
 │   ├── eeprom_loader.h/cpp  # ✅ TPS26750 EEPROM flashing
 │   └── tps26750_patch.c     # ✅ TPS26750 configuration binary
-└── ui/                      # Phase 4 - in progress
-    ├── display_manager.h/cpp # ✅ State-based screen rendering
-    ├── screens/              # To implement (optional refinement)
-    │   ├── screen_boot.h/cpp
-    │   ├── screen_main.h/cpp
-    │   ├── screen_menu.h/cpp
-    │   └── screen_fault.h/cpp
+└── ui/                      # 🔄 Phase 4 - core screens done, refinement ongoing
+    ├── display_manager.h/cpp # ✅ All screen rendering (monolithic)
     └── assets/
-        └── synapticon_logo.h
+        └── synapticon_logo.h # 220x220 RGB565 bitmap
 ```
 
 ---
@@ -278,6 +355,8 @@ src/
 - Namespace Organization (`Board::`, `AppConfig::`, `Version::`)
 - Separate driver layer
 - Non-blocking timers (`absolute_time_t`)
+- ISR-based button detection (not polling)
+- Flicker-free rendering (overwrite, don't clear-then-draw)
 
 ### Patterns for New Code
 - **State Machine:** Simple enum with switch/case (no class inheritance)
@@ -294,8 +373,9 @@ src/
 | Phase 1 | ✅ Each driver tested independently |
 | Phase 2 | ✅ TPS26750 tested with USB-C charger, verified with INA228 |
 | Phase 3 | ✅ State transitions tested, safety bugs fixed |
-| Phase 4 | Test all menu navigation paths |
+| Phase 4 | 🔄 Menu navigation, boot sequence, fault display tested; UI refinement ongoing |
 | Phase 5 | Full integration testing |
+| Phase 6 | Per-feature testing as implemented |
 
 ---
 
@@ -306,3 +386,4 @@ src/
 - Testing should happen continuously
 - Safety features must be tested with real fault conditions
 - Prusa-style input mapping provides intuitive single-control navigation
+- Phase 6 features are independent and can be implemented in any order

@@ -588,31 +588,46 @@ void DisplayManager::drawAboutScreen() {
     y += 12;
 
     // Info lines
+    const int LABEL_X = MARGIN * 2;
+    const int VALUE_X = LABEL_X + 80;
     char buf[40];
 
-    snprintf(buf, sizeof(buf), "Version: %s", Version::FIRMWARE_VERSION);
-    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // HW Version
+    hw.display.drawString(LABEL_X, y, "HW Version:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, Version::HARDWARE_VERSION, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     y += LINE_H;
 
-    snprintf(buf, sizeof(buf), "Author:  %s", Version::AUTHOR);
-    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // FW Version
+    hw.display.drawString(LABEL_X, y, "FW Version:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     y += LINE_H;
 
-    snprintf(buf, sizeof(buf), "Built:   %s %s", BUILD_DATE, BUILD_TIME);
-    hw.display.drawString(MARGIN * 2, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // Author
+    hw.display.drawString(LABEL_X, y, "Author:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, Version::AUTHOR, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     y += LINE_H;
 
-    hw.display.drawString(MARGIN * 2, y, "Target:  RP2040 (Pico)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // Built
+    snprintf(buf, sizeof(buf), "%s %s", BUILD_DATE, BUILD_TIME);
+    hw.display.drawString(LABEL_X, y, "Built:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     y += LINE_H;
 
-    hw.display.drawString(MARGIN * 2, y, "Max:     48V 5A (240W)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // Target
+    hw.display.drawString(LABEL_X, y, "Target:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, Version::TARGET, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    y += LINE_H;
+
+    // Max
+    hw.display.drawString(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawString(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     y += LINE_H + 8;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
     y += 12;
 
-    drawCenteredString(y, "SYNAPTICON GmbH", UIColors::SYNAPTICON_PINK, 1);
+    drawCenteredString(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, 1);
 
     // Navigation hint
     hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,

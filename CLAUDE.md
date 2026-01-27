@@ -93,6 +93,12 @@ FAULT ──(click acknowledge)──> MAIN
 
 States: `BOOT`, `MAIN`, `MENU`, `ADJUST`, `FAULT` (see `AppState` enum in `state_machine.h`)
 
+Adjust modes: `PDO_SELECT`, `CURRENT_LIMIT`, `ABOUT` (see `AdjustMode` enum). The About screen is read-only — any click or long press returns to menu.
+
+**BTN1/BTN2 are disabled during BOOT state** — output stays off until boot completes. ISR flags are drained on BOOT→MAIN transition to prevent queued presses from firing.
+
+**Encoder acceleration:** In current limit adjustment, the step size is multiplied by the number of accumulated encoder ticks (`_encoder_delta`), allowing fast turns to make larger jumps.
+
 ### Input Mapping (Prusa-Style)
 
 | Control | Action |
@@ -100,8 +106,8 @@ States: `BOOT`, `MAIN`, `MENU`, `ADJUST`, `FAULT` (see `AppState` enum in `state
 | Encoder Rotate | Navigate menu / Adjust values |
 | Encoder Click | Confirm / Select |
 | Encoder Long Press (800ms) | Go Back / Exit current screen |
-| BTN1 | Toggle Load Switch (works in ANY state) |
-| BTN2 | Toggle 17V Buck (works in ANY state, only if VBUS > 18V) |
+| BTN1 | Toggle Load Switch (any state except BOOT) |
+| BTN2 | Toggle 17V Buck (any state except BOOT, only if VBUS > 18V) |
 
 ## Directory Structure
 
@@ -113,7 +119,7 @@ src/
 ├── config/
 │   ├── board_config.h       # Pin definitions (Board:: namespace)
 │   ├── app_config.h         # Timeouts, thresholds (AppConfig:: namespace)
-│   └── version.h            # Firmware version (Version:: namespace)
+│   └── version.h            # Version, author, company (Version:: namespace)
 ├── drivers/                 # Low-level hardware drivers (no business logic)
 │   ├── gpio/                # SimpleIO (digital I/O with non-blocking blink)
 │   ├── input/               # Button, RotaryEncoder, ADCInputs
@@ -160,9 +166,15 @@ The `PdManager` wraps this with caching and a negotiation state machine (`IDLE` 
 
 ### Display Rendering (DisplayManager)
 
-All rendering is in `display_manager.cpp` (monolithic - no separate screen files despite the plan mentioning them). Screens: `renderBootScreen()`, `renderMainScreen()`, `renderMenuScreen()`, `renderAdjustScreen()`, `renderFaultScreen()`.
+All rendering is in `display_manager.cpp` (monolithic - no separate screen files). Screens: `renderBootScreen()`, `renderMainScreen()`, `renderMenuScreen()`, `renderAdjustScreen()`, `renderFaultScreen()`.
 
-**Flicker-free rendering pattern:** Use fixed-width format strings (`%6.2f`) to overwrite previous values without clearing. Track previous values (`_last_menu_selection`, `_last_pdo_selection`, `_last_adjust_value`) and only redraw changed items. Full redraws only on state change via `_needs_full_redraw` flag.
+**Flicker-free rendering pattern:** Use fixed-width format strings (`%6.2f`) to overwrite previous values without clearing. Track previous values (`_last_menu_selection`, `_last_pdo_selection`, `_last_adjust_value`, `_last_boot_message`) and only redraw changed items. Full redraws only on state change via `_needs_full_redraw` flag.
+
+**Non-PD charger handling:** When no PD contract is active (0V@0A), the main screen shows "USB 5V (no PD)" and the PDO list shows an informational "No PD contracts" message.
+
+**Current limit capping:** The adjustment screen uses `getEffectiveMaxCurrentMa()` to cap the user's current limit to the active contract's maximum current (or hardware max if no contract).
+
+**About screen:** Renders product name, HW/FW version, author, build date, target, max specs, and company name from `version.h` constants.
 
 ### EEPROM Flashing (TPS26750 Config)
 
@@ -234,7 +246,17 @@ These document non-obvious gotchas. Read before modifying related code.
 
 **Display Flickering:** Clearing screen areas every frame caused visible flicker. Fixed by using fixed-width format strings to overwrite previous values, and only performing full redraws on state change.
 
-**Lesson:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw.
+**LCD Ghost Image:** ST7789 VRAM persists across MCU reset, so old framebuffer content was visible as a ghost image during init. Fixed by starting backlight OFF in `st7789.cpp`, enabling only after `fillScreen(BLACK)` completes.
+
+**Boot Text Flicker:** "Reading USB-PD..." stage message was redrawn every frame during boot. Fixed by tracking `_last_boot_message` pointer in DisplayManager and only redrawing when the message changes.
+
+**Contract Current /10 Error:** `getActiveContract()` in `tps26750.cpp` read RDO operating current (bits 19:10, auto-negotiated by TPS26750, often 1/10 of max) instead of PDO max current (bits 9:0). Fixed by reading PDO max current field.
+
+**Button Presses During Boot:** ISR button flags persisted through the BOOT→MAIN state transition, causing queued button actions to fire immediately. Fixed by draining `checkBtn1Clicked()`/`checkBtn2Clicked()` flags on transition in `state_machine.cpp`.
+
+**Button Polling vs ISR:** `isClicked()` polling in the main loop missed short button presses between slow loop iterations. Fixed by switching to ISR-based detection via `Interrupts::checkBtn1Clicked()`/`checkBtn2Clicked()` which capture presses via interrupt flags.
+
+**Lessons:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw. RDO operating current ≠ PDO max current — always read the PDO for advertised limits. ISR flags must be drained on state transitions to prevent stale events. Prefer ISR-based button detection over polling for responsiveness.
 
 ## Hardware Details
 
