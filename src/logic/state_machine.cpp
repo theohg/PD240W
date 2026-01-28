@@ -3,6 +3,7 @@
 #include "interrupts.h"
 #include "app_config.h"
 #include "utils/logging.h"
+#include "utils/eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
 
@@ -57,6 +58,12 @@ StateMachine::StateMachine()
     , _fault_limit_value(0.0f)
     , _last_encoder_ticks(0)
     , _encoder_delta(0)
+    , _eeprom_stage(0)
+    , _eeprom_phase(0)
+    , _eeprom_progress(0)
+    , _eeprom_result(false)
+    , _eeprom_confirm_yes(false)
+    , _eeprom_message(nullptr)
 {
 }
 
@@ -209,6 +216,17 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     transitionTo(AppState::ADJUST);
                     break;
 
+                case MenuItem::FLASH_EEPROM:
+                    _adjust_mode = AdjustMode::EEPROM_FLASH;
+                    _eeprom_stage = 0;  // Start with compare stage
+                    _eeprom_message = "Initializing...";
+                    _eeprom_progress = 0;
+                    _eeprom_result = false;
+                    _eeprom_confirm_yes = false;
+                    transitionTo(AppState::ADJUST);
+                    startEepromCompare();
+                    break;
+
                 case MenuItem::ABOUT:
                     _adjust_mode = AdjustMode::ABOUT;
                     transitionTo(AppState::ADJUST);
@@ -235,6 +253,51 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
     if (_adjust_mode == AdjustMode::ABOUT) {
         if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
             transitionTo(AppState::MENU);
+        }
+        return;
+    }
+
+    // EEPROM flash mode: special handling based on stage
+    if (_adjust_mode == AdjustMode::EEPROM_FLASH) {
+        switch (_eeprom_stage) {
+            case 0:  // Compare stage - show result, no interaction yet
+                // Handled by startEepromCompare(), wait for it to set stage=1
+                break;
+
+            case 1:  // Confirm stage - Yes/No selection
+                if (event == EncoderEvent::ROTATE_CW || event == EncoderEvent::ROTATE_CCW) {
+                    _eeprom_confirm_yes = !_eeprom_confirm_yes;
+                    _last_activity_time = get_absolute_time();
+                } else if (event == EncoderEvent::CLICK) {
+                    if (_eeprom_confirm_yes) {
+                        // User confirmed - start flash
+                        _eeprom_stage = 2;  // Flashing
+                        _eeprom_message = "Flashing...";
+                        _eeprom_progress = 0;
+                        executeEepromFlash();
+                    } else {
+                        // User cancelled
+                        eepromDeinit();
+                        transitionTo(AppState::MENU);
+                    }
+                    _last_activity_time = get_absolute_time();
+                } else if (event == EncoderEvent::LONG_PRESS) {
+                    // Cancel
+                    eepromDeinit();
+                    transitionTo(AppState::MENU);
+                }
+                break;
+
+            case 2:  // Flashing stage - no user interaction (blocking)
+                // Progress updates come from the callback
+                break;
+
+            case 3:  // Done stage - show result, click to exit
+                if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
+                    eepromDeinit();
+                    transitionTo(AppState::MENU);
+                }
+                break;
         }
         return;
     }
@@ -590,4 +653,106 @@ const SourceCapability* getPdoList() {
 uint8_t getPdoCount() {
     return stateMachine.getSelectedPdoIndex() >= 0 ?
            static_cast<uint8_t>(stateMachine.getSelectedPdoIndex() + 1) : 0;
+}
+
+// ============================================================================
+// EEPROM Flash Helpers
+// ============================================================================
+
+// Static callback for EEPROM progress updates
+static void eepromProgressCallback(uint8_t phase, uint8_t progress, void* user_data) {
+    StateMachine* sm = static_cast<StateMachine*>(user_data);
+    sm->setEepromProgress(phase, progress);
+}
+
+void StateMachine::setEepromProgress(uint8_t phase, uint8_t progress) {
+    _eeprom_phase = phase;
+    _eeprom_progress = progress;
+    if (phase == 0) {
+        _eeprom_message = "Writing...";
+    } else {
+        _eeprom_message = "Verifying...";
+    }
+}
+
+void StateMachine::startEepromCompare() {
+    LOG_INFO("Starting EEPROM compare...");
+
+    // Initialize I2C1 for EEPROM access
+    if (!eepromInit()) {
+        _eeprom_message = "I2C init failed";
+        _eeprom_stage = 3;  // Done with failure
+        _eeprom_result = false;
+        return;
+    }
+
+    // Probe for device
+    if (!eepromProbe()) {
+        _eeprom_message = "EEPROM not found";
+        _eeprom_stage = 3;  // Done with failure
+        _eeprom_result = false;
+        return;
+    }
+
+    // Compare EEPROM against firmware
+    EepromCompareResult result = eepromCompare();
+
+    switch (result) {
+        case EepromCompareResult::IDENTICAL:
+            _eeprom_message = "Config identical";
+            _eeprom_stage = 3;  // Done - no need to flash
+            _eeprom_result = false;  // No flash was performed
+            eepromDeinit();  // Release I2C resources
+            break;
+
+        case EepromCompareResult::EMPTY:
+            _eeprom_message = "EEPROM empty";
+            _eeprom_stage = 1;  // Ask for confirmation
+            break;
+
+        case EepromCompareResult::DIFFERENT:
+            _eeprom_message = "Different config";
+            _eeprom_stage = 1;  // Ask for confirmation
+            break;
+
+        case EepromCompareResult::NO_DEVICE:
+            _eeprom_message = "No EEPROM found";
+            _eeprom_stage = 3;  // Done with failure
+            _eeprom_result = false;
+            eepromDeinit();  // Release I2C resources
+            break;
+
+        case EepromCompareResult::READ_ERROR:
+        default:
+            _eeprom_message = "Read error";
+            _eeprom_stage = 3;  // Done with failure
+            _eeprom_result = false;
+            eepromDeinit();  // Release I2C resources
+            break;
+    }
+}
+
+void StateMachine::executeEepromFlash() {
+    LOG_INFO("Starting EEPROM flash...");
+
+    // Disable interrupts that might interfere with the long blocking operation
+    // (The I2C EEPROM write is blocking with delays)
+
+    // Execute flash with progress callback
+    _eeprom_result = eepromFlash(eepromProgressCallback, this);
+
+    // Move to done stage
+    _eeprom_stage = 3;
+
+    if (_eeprom_result) {
+        _eeprom_message = "Success! Power cycle";
+        hw.buzzer.playTone(1000, 100);
+        sleep_ms(100);
+        hw.buzzer.playTone(1500, 100);  // Success melody
+        LOG_INFO("EEPROM flash successful");
+    } else {
+        _eeprom_message = "Flash failed!";
+        hw.buzzer.playTone(200, 300);  // Error beep
+        LOG_ERROR("EEPROM flash failed");
+    }
 }

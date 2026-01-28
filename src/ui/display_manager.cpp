@@ -151,6 +151,9 @@ void DisplayManager::renderMenuScreen() {
         drawMenuItem(y, "Current Limit", selected == MenuItem::CURRENT_LIMIT);
         y += MENU_ITEM_HEIGHT;
 
+        drawMenuItem(y, "Flash EEPROM", selected == MenuItem::FLASH_EEPROM);
+        y += MENU_ITEM_HEIGHT;
+
         drawMenuItem(y, "About", selected == MenuItem::ABOUT);
 
         _last_menu_selection = sel_idx;
@@ -178,6 +181,11 @@ void DisplayManager::renderAdjustScreen() {
             drawHeader("Current Limit");
         }
         drawCurrentLimitAdjust();
+    } else if (mode == AdjustMode::EEPROM_FLASH) {
+        if (_needs_full_redraw) {
+            drawHeader("Flash EEPROM");
+        }
+        drawEepromFlashScreen();
     } else if (mode == AdjustMode::ABOUT) {
         if (_needs_full_redraw) {
             drawHeader("About");
@@ -561,6 +569,141 @@ void DisplayManager::drawCurrentLimitAdjust() {
                               "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
         hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
                               "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    }
+}
+
+void DisplayManager::drawEepromFlashScreen() {
+    uint8_t stage = stateMachine.getEepromStage();
+    uint8_t phase = stateMachine.getEepromPhase();
+    uint8_t progress = stateMachine.getEepromProgress();
+    bool result = stateMachine.getEepromResult();
+    bool confirm_yes = stateMachine.getEepromConfirmYes();
+    const char* message = stateMachine.getEepromMessage();
+
+    // Clear content area on full redraw or stage change
+    static uint8_t last_stage = 255;
+    static uint8_t last_progress = 255;
+    static bool last_confirm_yes = false;
+
+    bool stage_changed = (stage != last_stage);
+    bool progress_changed = (progress != last_progress);
+    bool confirm_changed = (confirm_yes != last_confirm_yes);
+
+    if (_needs_full_redraw || stage_changed) {
+        hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, UIColors::BACKGROUND);
+        last_stage = stage;
+    }
+
+    int y = CONTENT_Y_START + 20;
+
+    switch (stage) {
+        case 0:  // Comparing (initializing)
+            drawCenteredString(y, "Checking EEPROM...", UIColors::TEXT_PRIMARY, 2);
+            y += 40;
+            // Spinning indicator would be nice here, but simple dots work
+            drawCenteredString(y, "Please wait", UIColors::TEXT_SECONDARY, 1);
+            break;
+
+        case 1:  // Confirm stage - show result and Yes/No
+            if (message) {
+                drawCenteredString(y, message, UIColors::CAUTION, 2);
+            }
+            y += 35;
+
+            drawCenteredString(y, "Proceed with flash?", UIColors::TEXT_PRIMARY, 1);
+            y += 40;
+
+            // Draw Yes/No buttons
+            {
+                int btn_width = 80;
+                int btn_height = 30;
+                int spacing = 30;
+                int total_width = btn_width * 2 + spacing;
+                int start_x = (SCREEN_WIDTH - total_width) / 2;
+
+                // "No" button (left)
+                uint16_t no_bg = confirm_yes ? UIColors::BACKGROUND : UIColors::HIGHLIGHT_BG;
+                uint16_t no_fg = confirm_yes ? UIColors::TEXT_SECONDARY : UIColors::HIGHLIGHT_FG;
+                hw.display.fillRect(start_x, y, btn_width, btn_height, no_bg);
+                hw.display.drawRect(start_x, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
+                hw.display.drawString(start_x + (btn_width - 18) / 2, y + 8, "No", no_fg, no_bg, 2);
+
+                // "Yes" button (right)
+                uint16_t yes_bg = confirm_yes ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
+                uint16_t yes_fg = confirm_yes ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_SECONDARY;
+                hw.display.fillRect(start_x + btn_width + spacing, y, btn_width, btn_height, yes_bg);
+                hw.display.drawRect(start_x + btn_width + spacing, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
+                hw.display.drawString(start_x + btn_width + spacing + (btn_width - 24) / 2, y + 8, "Yes", yes_fg, yes_bg, 2);
+
+                last_confirm_yes = confirm_yes;
+            }
+
+            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
+                                  "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
+                                  "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            break;
+
+        case 2:  // Flashing - show progress
+            if (message) {
+                drawCenteredString(y, message, UIColors::ACCENT, 2);
+            }
+            y += 40;
+
+            // Phase label
+            {
+                const char* phase_label = (phase == 0) ? "Writing to EEPROM..." : "Verifying...";
+                drawCenteredString(y, phase_label, UIColors::TEXT_SECONDARY, 1);
+            }
+            y += 25;
+
+            // Progress bar
+            if (_needs_full_redraw || progress_changed) {
+                drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 25, progress, UIColors::SYNAPTICON_PINK);
+                last_progress = progress;
+            }
+            y += 35;
+
+            // Progress percentage
+            {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "%d%%", progress);
+                drawCenteredString(y, buf, UIColors::TEXT_PRIMARY, 2);
+            }
+
+            y += 30;
+            drawCenteredString(y, "Do not disconnect power!", UIColors::WARNING, 1);
+            break;
+
+        case 3:  // Done - show result
+            if (result) {
+                drawCenteredString(y, "Success!", UIColors::ACCENT, 3);
+                y += 50;
+                drawCenteredString(y, "EEPROM programmed", UIColors::TEXT_PRIMARY, 1);
+                y += 20;
+                drawCenteredString(y, "Power cycle the board", UIColors::CAUTION, 1);
+                y += 15;
+                drawCenteredString(y, "to load new config", UIColors::CAUTION, 1);
+            } else {
+                // Check if it was "already identical"
+                if (message && strstr(message, "identical")) {
+                    drawCenteredString(y, "Already Up-to-Date", UIColors::ACCENT, 2);
+                    y += 40;
+                    drawCenteredString(y, "EEPROM config matches", UIColors::TEXT_SECONDARY, 1);
+                    y += 15;
+                    drawCenteredString(y, "No flash needed", UIColors::TEXT_SECONDARY, 1);
+                } else {
+                    drawCenteredString(y, "Failed!", UIColors::ERROR, 3);
+                    y += 50;
+                    if (message) {
+                        drawCenteredString(y, message, UIColors::TEXT_SECONDARY, 1);
+                    }
+                }
+            }
+
+            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
+                                  "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            break;
     }
 }
 

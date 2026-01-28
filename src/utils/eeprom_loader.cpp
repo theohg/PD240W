@@ -232,8 +232,164 @@ static bool eeprom_already_programmed(const uint8_t* fw_data, size_t fw_size) {
     return true;  // All bytes match
 }
 
+/**
+ * @brief Check if EEPROM appears to be empty (all 0xFF or all 0x00).
+ * @return true if first 128 bytes are all 0xFF or all 0x00
+ */
+static bool eeprom_is_empty() {
+    uint8_t read_buffer[128];
+    if (!eeprom_read_block(0, read_buffer, sizeof(read_buffer))) {
+        return false;  // Can't read, assume not empty
+    }
+
+    bool all_ff = true;
+    bool all_00 = true;
+    for (size_t i = 0; i < sizeof(read_buffer); i++) {
+        if (read_buffer[i] != 0xFF) all_ff = false;
+        if (read_buffer[i] != 0x00) all_00 = false;
+    }
+
+    return all_ff || all_00;
+}
+
 // =============================================================================
-// Public Implementation
+// Public Runtime API
+// =============================================================================
+
+bool eepromInit() {
+    eeprom_i2c_init();
+    sleep_ms(50);  // Allow bus to stabilize
+    return true;
+}
+
+void eepromDeinit() {
+    eeprom_i2c_deinit();
+}
+
+bool eepromProbe() {
+    return eeprom_probe_device();
+}
+
+size_t eepromGetFirmwareSize() {
+    return (size_t)gSizeFullFlashArray;
+}
+
+EepromCompareResult eepromCompare() {
+    // Check firmware size sanity
+    if (gSizeFullFlashArray <= 0 || (size_t)gSizeFullFlashArray > EEPROM_TOTAL_SIZE) {
+        LOG_ERROR("[EEPROM] Invalid firmware size: %d bytes", gSizeFullFlashArray);
+        return EepromCompareResult::READ_ERROR;
+    }
+
+    // Probe for device
+    if (!eeprom_probe_device()) {
+        LOG_ERROR("[EEPROM] Device not found at 0x%02X", EEPROM_I2C_ADDR);
+        return EepromCompareResult::NO_DEVICE;
+    }
+
+    const uint8_t* fw_data = reinterpret_cast<const uint8_t*>(tps25750x_fullFlash_i2c_array);
+
+    // Check if empty first
+    if (eeprom_is_empty()) {
+        LOG_INFO("[EEPROM] EEPROM appears to be empty");
+        return EepromCompareResult::EMPTY;
+    }
+
+    // Compare against firmware
+    if (eeprom_already_programmed(fw_data, gSizeFullFlashArray)) {
+        LOG_INFO("[EEPROM] EEPROM matches firmware exactly");
+        return EepromCompareResult::IDENTICAL;
+    }
+
+    LOG_INFO("[EEPROM] EEPROM has different configuration");
+    return EepromCompareResult::DIFFERENT;
+}
+
+bool eepromFlash(EepromProgressCallback callback, void* user_data) {
+    // Validate firmware
+    if (gSizeFullFlashArray <= 0 || (size_t)gSizeFullFlashArray > EEPROM_TOTAL_SIZE) {
+        LOG_ERROR("[EEPROM] Invalid firmware size: %d bytes", gSizeFullFlashArray);
+        return false;
+    }
+
+    // Probe device
+    if (!eeprom_probe_device()) {
+        LOG_ERROR("[EEPROM] Device not found at 0x%02X", EEPROM_I2C_ADDR);
+        return false;
+    }
+
+    const uint8_t* fw_data = reinterpret_cast<const uint8_t*>(tps25750x_fullFlash_i2c_array);
+    size_t fw_size = (size_t)gSizeFullFlashArray;
+
+    // Phase 0: Write
+    LOG_INFO("[EEPROM] Phase 1: Writing %d bytes...", fw_size);
+
+    // Buffer: 2 bytes address + up to EEPROM_PAGE_SIZE data bytes
+    uint8_t buffer[EEPROM_PAGE_SIZE + 2];
+    size_t written = 0;
+
+    while (written < fw_size) {
+        uint16_t mem_addr = written;
+        uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
+        size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset), fw_size - written);
+
+        buffer[0] = (mem_addr >> 8) & 0xFF;
+        buffer[1] = mem_addr & 0xFF;
+        memcpy(&buffer[2], &fw_data[written], chunk_size);
+
+        int ret = i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR, buffer, chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
+        if (ret < 0) {
+            LOG_ERROR("[EEPROM] Write failed at 0x%04X (ret=%d)", mem_addr, ret);
+            return false;
+        }
+
+        sleep_ms(EEPROM_WRITE_DELAY_MS);
+
+        written += chunk_size;
+
+        // Progress callback
+        if (callback) {
+            uint8_t progress = (uint8_t)((written * 100) / fw_size);
+            callback(0, progress, user_data);
+        }
+    }
+
+    LOG_INFO("[EEPROM] Write complete.");
+
+    // Phase 1: Verify
+    LOG_INFO("[EEPROM] Phase 2: Verifying...");
+
+    uint8_t read_buffer[128];
+    size_t verified = 0;
+
+    while (verified < fw_size) {
+        size_t chunk = std::min(sizeof(read_buffer), fw_size - verified);
+
+        if (!eeprom_read_block(verified, read_buffer, chunk)) {
+            LOG_ERROR("[EEPROM] Verification read failed at 0x%04X", verified);
+            return false;
+        }
+
+        if (memcmp(&fw_data[verified], read_buffer, chunk) != 0) {
+            LOG_ERROR("[EEPROM] Verification mismatch at 0x%04X", verified);
+            return false;
+        }
+
+        verified += chunk;
+
+        // Progress callback
+        if (callback) {
+            uint8_t progress = (uint8_t)((verified * 100) / fw_size);
+            callback(1, progress, user_data);
+        }
+    }
+
+    LOG_INFO("[EEPROM] Verification complete - SUCCESS!");
+    return true;
+}
+
+// =============================================================================
+// Legacy Public Implementation
 // =============================================================================
 
 bool flashTps26750Eeprom() {

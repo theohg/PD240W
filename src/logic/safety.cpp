@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "utils/logging.h"
 #include "drivers/buzzer/buzzer.h"
+#include "logic/state_machine.h"
 
 // Global instance
 Safety safety;
@@ -96,12 +97,18 @@ SafetyStatus Safety::update() {
         }
     }
 
-    //RGB LED indication based on overall status
-    static SafetyStatus last_led_status = SafetyStatus::OK; // Assume OK initially
+    // RGB LED indication
+    // Force red while FAULT screen is displayed, even if sensor readings have cleared
+    SafetyStatus led_status = overall_status;
+    if (stateMachine.getState() == AppState::FAULT) {
+        led_status = SafetyStatus::FAULT;
+    }
+
+    static SafetyStatus last_led_status = SafetyStatus::OK;
     static bool first_run = true;
 
-    if (overall_status != last_led_status || first_run) {
-        switch (overall_status) {
+    if (led_status != last_led_status || first_run) {
+        switch (led_status) {
             case SafetyStatus::FAULT:
                 // Red for Error/Fault
                 hw.rgbLed.setColor(255, 0, 0);
@@ -118,7 +125,7 @@ SafetyStatus Safety::update() {
             default:
                 break;
         }
-        last_led_status = overall_status;
+        last_led_status = led_status;
         first_run = false;
     }
 

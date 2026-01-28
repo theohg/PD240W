@@ -282,28 +282,28 @@ Programmable Power Supply mode allows fine-grained voltage control within a rang
 - **6.5e** Implement PPS keep-alive — PD spec requires re-requesting PPS contract every <10 seconds or the source reverts to 5V. Add a periodic timer in `pd_manager.cpp`
 - **6.5f** Update main screen for PPS — show "PPS" indicator, programmable range, actual vs requested voltage
 
-#### 6.6 EEPROM Flash Menu Item
+#### 6.6 EEPROM Flash Menu Item ✅ COMPLETE
 Add "Flash EEPROM" entry to the settings menu for runtime TPS26750 configuration updates.
 
-- **UI Flow:**
+- **UI Flow:** ✅
   1. User selects "Flash EEPROM" from menu
   2. Firmware reads EEPROM content and compares against `tps26750_patch.c` binary
   3. Display comparison result:
      - "Config identical" — EEPROM already has the same binary
-     - "EEPROM appears empty" — no valid data found
+     - "EEPROM empty" — no valid data found
      - "Different config found" — EEPROM has a different configuration
-  4. Prompt: "Proceed with flash?" with Yes/No selection via encoder
+  4. Prompt: "Proceed with flash?" with Yes/No selection via encoder (if not identical)
   5. On Yes: flash with progress bar, verify, show result (success/failure)
   6. On No: return to menu
 
-- **Implementation Notes:**
+- **Implementation Notes:** ✅
   - Existing functions in `eeprom_loader.cpp`: `eeprom_write_block()`, `eeprom_read_block()`, `eeprom_already_programmed()`, `flashTps26750Eeprom()`
-  - Needs refactoring: separate the compare and flash steps into individual callable functions (currently bundled behind `ENABLE_EEPROM_FLASHING` compile-time gate)
-  - Must init/deinit I2C1 for EEPROM access (separate bus from main I2C0)
-  - Flash is a blocking operation (~5-10 seconds) — display progress updates via callback or periodic check
-  - After successful flash, instruct user to power cycle the TPS26750
+  - Refactored: separate the compare and flash steps into individual callable functions (now accessible at runtime)
+  - Properly inits/deinits I2C1 for EEPROM access
+  - Flash is a blocking operation (~5-10 seconds) — display progress updates via callback
+  - After successful flash, instructs user to power cycle the TPS26750
 
-#### 6.7 UI Visual Improvements
+#### 6.7 UI Visual Improvements (Pending)
 - Redesign main screen power readouts with oval/rounded bounding boxes around voltage, current, and power values
 - Goal: visually appealing, clear separation of metrics
 - Specific design TBD — to be discussed in detail before implementation

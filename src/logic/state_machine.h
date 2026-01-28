@@ -27,6 +27,7 @@ enum class AppState {
 enum class MenuItem {
     SELECT_VOLTAGE,
     CURRENT_LIMIT,
+    FLASH_EEPROM,
     ABOUT,
     MENU_COUNT  // Number of menu items
 };
@@ -36,6 +37,7 @@ enum class AdjustMode {
     NONE,
     PDO_SELECT,     // Selecting a PDO from the list
     CURRENT_LIMIT,  // Adjusting current limit value
+    EEPROM_FLASH,   // EEPROM flash workflow
     ABOUT           // Displaying about screen (read-only)
 };
 
@@ -133,6 +135,14 @@ private:
     int _last_encoder_ticks;
     int _encoder_delta;     // Accumulated ticks since last read (for acceleration)
 
+    // EEPROM flash state
+    uint8_t _eeprom_stage;        // 0=compare, 1=confirm, 2=flashing, 3=done
+    uint8_t _eeprom_phase;        // 0=write, 1=verify
+    uint8_t _eeprom_progress;     // 0-100%
+    bool _eeprom_result;          // true=success, false=failure
+    bool _eeprom_confirm_yes;     // Yes/No selection
+    const char* _eeprom_message;  // Status message for display
+
     // State handlers
     void handleBootState();
     void handleMainState(EncoderEvent event);
@@ -154,6 +164,22 @@ private:
     void loadPdoList();
     void requestSelectedPdo();
     void applyCurrentLimit();
+
+    // EEPROM flash helpers
+    void startEepromCompare();
+    void executeEepromFlash();
+
+public:
+    // EEPROM flash state accessors (for display manager)
+    uint8_t getEepromStage() const { return _eeprom_stage; }
+    uint8_t getEepromPhase() const { return _eeprom_phase; }
+    uint8_t getEepromProgress() const { return _eeprom_progress; }
+    bool getEepromResult() const { return _eeprom_result; }
+    bool getEepromConfirmYes() const { return _eeprom_confirm_yes; }
+    const char* getEepromMessage() const { return _eeprom_message; }
+
+    // EEPROM progress callback (called from eeprom_loader)
+    void setEepromProgress(uint8_t phase, uint8_t progress);
 };
 
 // Global instance

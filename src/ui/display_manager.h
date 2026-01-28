@@ -83,6 +83,9 @@ private:
     void drawPdoList();
     void drawCurrentLimitAdjust();
 
+    // EEPROM flash screen elements
+    void drawEepromFlashScreen();
+
     // About screen elements
     void drawAboutScreen();
 
