@@ -157,6 +157,17 @@ Negotiates voltage contracts with USB-C chargers. Supports Fixed, PPS (5-21V pro
 
 The `PdManager` wraps this with caching and a negotiation state machine (`IDLE` → `REQUESTING` → `SUCCESS`/`FAILED`/`TIMEOUT`).
 
+#### PPS Mode (Programmable Power Supply)
+
+PPS allows fine-grained voltage adjustment within a charger's advertised range (typically 3.3-21V). Implementation details:
+
+- **Voltage resolution:** 20mV steps per USB PD spec
+- **Keep-alive required:** PD spec mandates re-requesting the PPS contract every <10 seconds or the source reverts to 5V. Implemented in `PdManager::update()` with 7-second refresh interval.
+- **State tracking:** `PdManager` tracks `_pps_active`, `_pps_voltage_mv`, `_pps_current_ma`, `_pps_last_refresh` for automatic keep-alive.
+- **UI flow:** When user selects a PPS PDO, enters `AdjustMode::PPS_VOLTAGE` for voltage adjustment (encoder rotates through range). Confirm with click to apply.
+- **Main screen indicator:** Green "PPS" badge shown next to contract info when PPS mode is active.
+- **State deactivation:** PPS state is automatically cleared when switching to Fixed or AVS profiles.
+
 ### Power Monitoring & Safety (INA228 + Safety Module)
 
 - INA228: Measures voltage, current, power, die temperature via I2C. Configured with 8mΩ shunt, 5A max.

@@ -37,6 +37,7 @@ enum class AdjustMode {
     NONE,
     PDO_SELECT,     // Selecting a PDO from the list
     CURRENT_LIMIT,  // Adjusting current limit value
+    PPS_VOLTAGE,    // Adjusting PPS voltage within range
     EEPROM_FLASH,   // EEPROM flash workflow
     ABOUT           // Displaying about screen (read-only)
 };
@@ -135,6 +136,13 @@ private:
     int _last_encoder_ticks;
     int _encoder_delta;     // Accumulated ticks since last read (for acceleration)
 
+    // PPS adjustment state
+    uint32_t _pps_target_voltage_mv;    // Current target voltage
+    uint32_t _pps_min_voltage_mv;       // Min voltage from PPS PDO
+    uint32_t _pps_max_voltage_mv;       // Max voltage from PPS PDO
+    uint32_t _pps_max_current_ma;       // Max current from PPS PDO
+    uint8_t _pps_pdo_index;             // Index of selected PPS PDO
+
     // EEPROM flash state
     uint8_t _eeprom_stage;        // 0=compare, 1=confirm, 2=flashing, 3=done
     uint8_t _eeprom_phase;        // 0=write, 1=verify
@@ -164,6 +172,7 @@ private:
     void loadPdoList();
     void requestSelectedPdo();
     void applyCurrentLimit();
+    void applyPpsVoltage();
 
     // EEPROM flash helpers
     void startEepromCompare();
@@ -180,6 +189,12 @@ public:
 
     // EEPROM progress callback (called from eeprom_loader)
     void setEepromProgress(uint8_t phase, uint8_t progress);
+
+    // PPS state accessors (for display manager)
+    uint32_t getPpsTargetVoltageMv() const { return _pps_target_voltage_mv; }
+    uint32_t getPpsMinVoltageMv() const { return _pps_min_voltage_mv; }
+    uint32_t getPpsMaxVoltageMv() const { return _pps_max_voltage_mv; }
+    uint32_t getPpsMaxCurrentMa() const { return _pps_max_current_ma; }
 };
 
 // Global instance

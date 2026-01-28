@@ -27,6 +27,9 @@ struct ActiveContract {
     bool is_pps;
     bool is_avs;
     bool valid;
+    // PPS-specific fields
+    uint32_t pps_min_mv;    // PPS range min voltage
+    uint32_t pps_max_mv;    // PPS range max voltage
 };
 
 class PdManager {
@@ -60,6 +63,9 @@ public:
     // Check if charger is connected
     bool isChargerConnected() const { return _charger_connected; }
 
+    // Check if PPS contract is active
+    bool isPpsActive() const { return _pps_active; }
+
     // Get TPS26750 mode string
     bool getMode(char* mode_str);
 
@@ -79,6 +85,13 @@ private:
     SourceCapability _pdo_cache[13];
     uint8_t _pdo_count;
     bool _pdos_valid;
+
+    // PPS keep-alive state
+    bool _pps_active;                   // True if current contract is PPS
+    uint32_t _pps_voltage_mv;           // Last requested PPS voltage
+    uint32_t _pps_current_ma;           // Last requested PPS current
+    absolute_time_t _pps_last_refresh;  // Time of last PPS request
+    static constexpr uint32_t PPS_REFRESH_INTERVAL_MS = 7000;  // Refresh every 7s (spec requires <10s)
 
     // Process PD interrupt events
     void handlePdInterrupt();

@@ -82,6 +82,7 @@ private:
     void drawMenuItem(int y, const char* text, bool selected);
     void drawPdoList();
     void drawCurrentLimitAdjust();
+    void drawPpsVoltageAdjust();
 
     // EEPROM flash screen elements
     void drawEepromFlashScreen();
@@ -102,6 +103,7 @@ private:
     int8_t _last_menu_selection;
     int8_t _last_pdo_selection;
     uint32_t _last_adjust_value;
+    uint32_t _last_pps_voltage;
     const char* _last_boot_message;
 };
 

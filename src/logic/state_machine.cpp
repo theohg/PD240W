@@ -6,6 +6,7 @@
 #include "utils/eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
+#include "ui/display_manager.h"
 
 // Global instance
 StateMachine stateMachine;
@@ -35,6 +36,9 @@ static const uint32_t BOOT_STAGE_TIMES[] = {
     2000    // 6: Complete -> transition to MAIN
 };
 
+// Storage for PDO list (shared with display)
+static SourceCapability s_pdo_list[13];
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -58,6 +62,11 @@ StateMachine::StateMachine()
     , _fault_limit_value(0.0f)
     , _last_encoder_ticks(0)
     , _encoder_delta(0)
+    , _pps_target_voltage_mv(0)
+    , _pps_min_voltage_mv(0)
+    , _pps_max_voltage_mv(0)
+    , _pps_max_current_ma(0)
+    , _pps_pdo_index(0)
     , _eeprom_stage(0)
     , _eeprom_phase(0)
     , _eeprom_progress(0)
@@ -318,6 +327,15 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _current_limit_ma = max_ma;
                 }
+            } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
+                // PPS voltage step: 20mV per tick (PD spec), with acceleration
+                uint32_t abs_delta = (_encoder_delta > 0) ? _encoder_delta : 1;
+                uint32_t step = 20 * abs_delta;  // 20mV per encoder tick
+                if (_pps_target_voltage_mv + step <= _pps_max_voltage_mv) {
+                    _pps_target_voltage_mv += step;
+                } else {
+                    _pps_target_voltage_mv = _pps_max_voltage_mv;
+                }
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -336,6 +354,15 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _current_limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
                 }
+            } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
+                // PPS voltage step: 20mV per tick (PD spec), with acceleration
+                uint32_t abs_delta = (_encoder_delta < 0) ? -_encoder_delta : 1;
+                uint32_t step = 20 * abs_delta;  // 20mV per encoder tick
+                if (_pps_target_voltage_mv >= _pps_min_voltage_mv + step) {
+                    _pps_target_voltage_mv -= step;
+                } else {
+                    _pps_target_voltage_mv = _pps_min_voltage_mv;
+                }
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -343,11 +370,36 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         case EncoderEvent::CLICK:
             // Confirm selection
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
-                requestSelectedPdo();
+                // Check if selected PDO is PPS - if so, enter voltage adjustment mode
+                if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos) {
+                    SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+                    if (pdo.is_pps) {
+                        // Enter PPS voltage adjustment mode
+                        _pps_pdo_index = _selected_pdo_index;
+                        _pps_min_voltage_mv = pdo.min_voltage_mv;
+                        _pps_max_voltage_mv = pdo.voltage_mv;
+                        _pps_max_current_ma = pdo.max_current_ma;
+                        // Start at mid-range voltage
+                        _pps_target_voltage_mv = (_pps_min_voltage_mv + _pps_max_voltage_mv) / 2;
+                        // Round to 20mV step (PPS resolution)
+                        _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+                        _adjust_mode = AdjustMode::PPS_VOLTAGE;
+                        LOG_INFO("Entering PPS voltage adjustment: %u-%umV", _pps_min_voltage_mv, _pps_max_voltage_mv);
+                        // Force display redraw since we changed mode within same state
+                        displayManager.invalidate();
+                    } else {
+                        // Fixed or AVS - request immediately
+                        requestSelectedPdo();
+                        transitionTo(AppState::MENU);
+                    }
+                }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
                 applyCurrentLimit();
+                transitionTo(AppState::MENU);
+            } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
+                applyPpsVoltage();
+                transitionTo(AppState::MENU);
             }
-            transitionTo(AppState::MENU);
             _last_activity_time = get_absolute_time();
             break;
 
@@ -586,9 +638,6 @@ const char* StateMachine::getBootStageMessage() const {
 // PDO Management Helpers
 // ============================================================================
 
-// Storage for PDO list (shared with display)
-static SourceCapability s_pdo_list[13];
-
 void StateMachine::loadPdoList() {
     _num_pdos = hw.pdController.getSourceCapabilities(s_pdo_list, 13);
     _selected_pdo_index = 0;
@@ -631,6 +680,21 @@ void StateMachine::applyCurrentLimit() {
     // For now, just store the value - it will be checked in safety module
 
     hw.buzzer.playTone(1000, 50);  // Confirmation beep
+}
+
+void StateMachine::applyPpsVoltage() {
+    LOG_INFO("Requesting PPS: %umV @ %umA", _pps_target_voltage_mv, _pps_max_current_ma);
+
+    // Request PPS contract with the selected voltage
+    bool success = pdManager.requestPpsVoltage(_pps_target_voltage_mv, _pps_max_current_ma);
+
+    if (success) {
+        LOG_INFO("PPS request sent successfully");
+        hw.buzzer.playTone(1000, 50);  // Confirmation beep
+    } else {
+        LOG_ERROR("Failed to request PPS");
+        hw.buzzer.playTone(200, 200);  // Error beep
+    }
 }
 
 uint32_t StateMachine::getEffectiveMaxCurrentMa() const {

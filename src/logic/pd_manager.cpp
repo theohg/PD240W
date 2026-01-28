@@ -16,12 +16,18 @@ PdManager::PdManager()
     , _charger_connected(false)
     , _pdo_count(0)
     , _pdos_valid(false)
+    , _pps_active(false)
+    , _pps_voltage_mv(0)
+    , _pps_current_ma(0)
+    , _pps_last_refresh(nil_time)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
     _active_contract.is_pps = false;
     _active_contract.is_avs = false;
     _active_contract.valid = false;
+    _active_contract.pps_min_mv = 0;
+    _active_contract.pps_max_mv = 0;
 }
 
 // ============================================================================
@@ -78,6 +84,23 @@ void PdManager::update() {
             _negotiation_state = NegotiationState::TIMEOUT;
         }
     }
+
+    // PPS keep-alive: must refresh contract every <10 seconds or source reverts to 5V
+    if (_pps_active && _pps_voltage_mv > 0) {
+        uint32_t elapsed_ms = absolute_time_diff_us(_pps_last_refresh, get_absolute_time()) / 1000;
+
+        if (elapsed_ms >= PPS_REFRESH_INTERVAL_MS) {
+            LOG_DEBUG("PPS keep-alive: refreshing %umV @ %umA", _pps_voltage_mv, _pps_current_ma);
+
+            // Re-request the same PPS contract
+            if (hw.pdController.requestPPSProfile(_pps_voltage_mv, _pps_current_ma)) {
+                _pps_last_refresh = get_absolute_time();
+            } else {
+                LOG_WARN("PPS keep-alive request failed");
+                // Don't deactivate - let it retry next cycle
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -122,6 +145,11 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
         _negotiation_start = get_absolute_time();
+
+        // Deactivate PPS mode when switching to fixed
+        _pps_active = false;
+        _pps_voltage_mv = 0;
+        _pps_current_ma = 0;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send Fixed contract request");
@@ -138,6 +166,12 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
         _negotiation_start = get_absolute_time();
+
+        // Track PPS state for keep-alive
+        _pps_active = true;
+        _pps_voltage_mv = voltage_mv;
+        _pps_current_ma = current_ma;
+        _pps_last_refresh = get_absolute_time();
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send PPS contract request");
@@ -154,6 +188,11 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
         _negotiation_start = get_absolute_time();
+
+        // Deactivate PPS mode when switching to AVS
+        _pps_active = false;
+        _pps_voltage_mv = 0;
+        _pps_current_ma = 0;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send AVS contract request");
@@ -174,13 +213,21 @@ bool PdManager::refreshActiveContract() {
         _active_contract.current_ma = current_ma;
         _active_contract.valid = true;
 
-        // Determine if PPS/AVS based on voltage
-        // PPS: 5-21V, AVS: 15-48V (but overlap exists)
-        // This is a simplification - proper detection requires reading PDO type
-        _active_contract.is_pps = false;
-        _active_contract.is_avs = false;
+        // Use our tracked PPS state for proper detection
+        _active_contract.is_pps = _pps_active;
+        _active_contract.is_avs = false;  // TODO: Add AVS tracking when needed
 
-        LOG_DEBUG("Active contract: %umV @ %umA", voltage_mv, current_ma);
+        // Store PPS voltage range if active
+        if (_pps_active) {
+            _active_contract.pps_min_mv = _pps_voltage_mv;  // Store current requested voltage
+            _active_contract.pps_max_mv = _pps_voltage_mv;  // Will be updated from capability
+        } else {
+            _active_contract.pps_min_mv = 0;
+            _active_contract.pps_max_mv = 0;
+        }
+
+        LOG_DEBUG("Active contract: %umV @ %umA (PPS: %s)",
+                  voltage_mv, current_ma, _pps_active ? "yes" : "no");
         return true;
     }
 

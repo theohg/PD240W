@@ -272,15 +272,22 @@ FAULT ──(click acknowledge)──> MAIN
   - Pre-rendered digit sprites for the big voltage/current/power values
 - Priority: main screen large numbers, About screen title
 
-#### 6.5 PPS Mode Support (Large Feature)
+#### 6.5 PPS Mode Support ✅ COMPLETE
 Programmable Power Supply mode allows fine-grained voltage control within a range.
 
-- **6.5a** Parse PPS capabilities from source caps (min/max voltage, max current) — already partially done in `SourceCapability` struct (`is_pps`, `min_voltage_mv`)
-- **6.5b** Add PPS-aware PDO selection UI — show voltage range (e.g., "3.3-21V PPS") instead of fixed value, indicate PPS with label/color
-- **6.5c** Implement voltage adjustment within PPS range — new ADJUST sub-mode where encoder fine-tunes millivolts within the PPS range (20mV steps per PD spec)
-- **6.5d** Call `requestPPSProfile()` with user-selected voltage and current — the driver function already exists in `tps26750.cpp`
-- **6.5e** Implement PPS keep-alive — PD spec requires re-requesting PPS contract every <10 seconds or the source reverts to 5V. Add a periodic timer in `pd_manager.cpp`
-- **6.5f** Update main screen for PPS — show "PPS" indicator, programmable range, actual vs requested voltage
+- **6.5a** Parse PPS capabilities from source caps (min/max voltage, max current) ✅ — already implemented in `SourceCapability` struct (`is_pps`, `min_voltage_mv`)
+- **6.5b** Add PPS-aware PDO selection UI ✅ — PDO list shows "PPS x-yV zzzzmA" for PPS profiles, clearly indicating programmable range
+- **6.5c** Implement voltage adjustment within PPS range ✅ — new `AdjustMode::PPS_VOLTAGE` mode where encoder adjusts millivolts (20mV steps per PD spec). Shows progress bar, min/max labels, and current selection
+- **6.5d** Call `requestPPSProfile()` with user-selected voltage ✅ — integrated via `pd_manager.requestPpsVoltage()`
+- **6.5e** Implement PPS keep-alive ✅ — `PdManager::update()` automatically refreshes PPS contract every 7 seconds (under 10-second spec limit). Tracks `_pps_active`, `_pps_voltage_mv`, `_pps_current_ma`, `_pps_last_refresh`
+- **6.5f** Update main screen for PPS ✅ — shows green "PPS" badge next to contract info when PPS mode is active
+
+**Implementation Details:**
+- State machine tracks PPS state: target voltage, min/max range, max current, PDO index
+- When user selects PPS PDO from list, enters voltage adjustment mode instead of immediate request
+- Display shows "Programmable Power" header with large voltage display, progress bar, and range labels
+- PPS keep-alive runs in `pd_manager.update()`, transparent to application
+- PPS state is deactivated when switching to fixed/AVS profiles
 
 #### 6.6 EEPROM Flash Menu Item ✅ COMPLETE
 Add "Flash EEPROM" entry to the settings menu for runtime TPS26750 configuration updates.

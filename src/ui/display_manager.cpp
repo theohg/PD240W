@@ -36,6 +36,7 @@ DisplayManager::DisplayManager()
     , _last_menu_selection(-1)
     , _last_pdo_selection(-1)
     , _last_adjust_value(0)
+    , _last_pps_voltage(0)
     , _last_boot_message(nullptr)
 {
 }
@@ -181,6 +182,11 @@ void DisplayManager::renderAdjustScreen() {
             drawHeader("Current Limit");
         }
         drawCurrentLimitAdjust();
+    } else if (mode == AdjustMode::PPS_VOLTAGE) {
+        if (_needs_full_redraw) {
+            drawHeader("PPS Voltage");
+        }
+        drawPpsVoltageAdjust();
     } else if (mode == AdjustMode::EEPROM_FLASH) {
         if (_needs_full_redraw) {
             drawHeader("Flash EEPROM");
@@ -293,9 +299,22 @@ void DisplayManager::drawActiveContract() {
                  contract.voltage_mv / 1000.0f,
                  contract.current_ma / 1000.0f);
         hw.display.drawString(MARGIN, y + 15, line1, UIColors::ACCENT, UIColors::BACKGROUND, 2);
+
+        // Show PPS indicator if active
+        if (contract.is_pps) {
+            // Draw "PPS" badge in accent color to the right of contract info
+            int badge_x = SCREEN_WIDTH - MARGIN - 30;
+            hw.display.fillRect(badge_x - 2, y - 2, 34, 16, UIColors::ACCENT);
+            hw.display.drawString(badge_x, y, "PPS", UIColors::BACKGROUND, UIColors::ACCENT, 1);
+        } else {
+            // Clear PPS badge area when not in PPS mode
+            hw.display.fillRect(SCREEN_WIDTH - MARGIN - 32, y - 2, 34, 16, UIColors::BACKGROUND);
+        }
     } else {
         // Non-PD charger or no contract: show USB default
         hw.display.drawString(MARGIN, y + 15, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, 2);
+        // Clear PPS badge area
+        hw.display.fillRect(SCREEN_WIDTH - MARGIN - 32, y - 2, 34, 16, UIColors::BACKGROUND);
     }
 }
 
@@ -567,6 +586,72 @@ void DisplayManager::drawCurrentLimitAdjust() {
 
         hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
                               "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
+                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    }
+}
+
+void DisplayManager::drawPpsVoltageAdjust() {
+    uint32_t target_mv = stateMachine.getPpsTargetVoltageMv();
+    uint32_t min_mv = stateMachine.getPpsMinVoltageMv();
+    uint32_t max_mv = stateMachine.getPpsMaxVoltageMv();
+    uint32_t max_current = stateMachine.getPpsMaxCurrentMa();
+
+    // Skip redraw if value hasn't changed
+    if (!_needs_full_redraw && target_mv == _last_pps_voltage) {
+        return;
+    }
+    _last_pps_voltage = target_mv;
+
+    int y = CONTENT_Y_START + 20;
+
+    // Only clear content area on full redraw
+    if (_needs_full_redraw) {
+        hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
+
+        // Draw "PPS" badge
+        drawCenteredString(y, "Programmable Power", UIColors::SYNAPTICON_PINK, 1);
+        y += 15;
+    } else {
+        y += 15;
+    }
+
+    // Draw target voltage - large display
+    y += 10;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%5.2f V", target_mv / 1000.0f);
+    drawCenteredString(y, buf, UIColors::ACCENT, 3);
+
+    // Draw progress bar (scaled to PPS range)
+    y += 60;
+    uint32_t range = max_mv - min_mv;
+    uint8_t percent = (range > 0)
+        ? ((target_mv - min_mv) * 100) / range
+        : 0;
+    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
+
+    // Draw min/max labels
+    if (_needs_full_redraw) {
+        y += 30;
+        char min_str[16], max_str[16];
+        snprintf(min_str, sizeof(min_str), "%.1fV", min_mv / 1000.0f);
+        snprintf(max_str, sizeof(max_str), "%.1fV", max_mv / 1000.0f);
+
+        hw.display.drawString(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+
+        // Right-align max
+        int max_width = strlen(max_str) * 6;
+        hw.display.drawString(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
+                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+
+        // Show max current available
+        y += 25;
+        snprintf(buf, sizeof(buf), "Max current: %umA", (unsigned)max_current);
+        drawCenteredString(y, buf, UIColors::TEXT_SECONDARY, 1);
+
+        // Hints
+        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
+                              "Rotate: 20mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
         hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
                               "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
     }
