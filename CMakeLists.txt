@@ -103,7 +103,9 @@ target_link_libraries(PD240W
         hardware_spi
         hardware_pio
         hardware_adc
-        hardware_pwm)
+        hardware_pwm
+        hardware_flash
+        hardware_sync)
 
 # Add the standard include files to the build
 target_include_directories(PD240W PRIVATE

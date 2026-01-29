@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
+#include "hardware/pwm.h"
 #include "src/drivers/display/aa_font.h"
 
 // ST7789 LCD Driver for PD240W
@@ -31,6 +32,7 @@ public:
 
     // Backlight control
     void setBacklight(bool on);
+    void setBacklightBrightness(uint8_t percent);  // 0-100%
 
     // Basic drawing
     void fillScreen(uint16_t color);
@@ -66,6 +68,7 @@ public:
 private:
     spi_inst_t* _spi;
     uint _pinCS, _pinDC, _pinRST, _pinBL;
+    uint _pwm_slice;  // PWM slice for backlight brightness control
 
     // Low-level communication
     void writeCommand(uint8_t cmd);

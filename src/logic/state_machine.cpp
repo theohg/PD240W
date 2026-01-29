@@ -6,6 +6,7 @@
 #include "utils/eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
+#include "settings.h"
 #include "ui/display_manager.h"
 
 // Global instance
@@ -50,6 +51,7 @@ StateMachine::StateMachine()
     , _encoder_button_held(false)
     , _boot_stage(0)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
+    , _selected_settings_item(SettingsItem::FLASH_EEPROM)
     , _selected_pdo_index(0)
     , _num_pdos(0)
     , _adjust_mode(AdjustMode::NONE)
@@ -71,6 +73,10 @@ StateMachine::StateMachine()
     , _eeprom_result(false)
     , _eeprom_confirm_yes(false)
     , _eeprom_message(nullptr)
+    , _brightness_value(100)
+    , _brightness_sun_visible(true)
+    , _brightness_adjusting(false)
+    , _screen_dimmed(false)
 {
 }
 
@@ -83,8 +89,10 @@ void StateMachine::init() {
     _last_activity_time = get_absolute_time();
     _last_encoder_ticks = hw.encoder.getTicks();
 
-    // Start Mario power-up melody at boot
-    hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+    // Start Mario power-up melody at boot (only if sounds enabled)
+    if (settings.isSoundsEnabled()) {
+        hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+    }
 
     LOG_INFO("State machine initialized, starting BOOT sequence");
 }
@@ -112,6 +120,15 @@ bool StateMachine::update() {
     // Read encoder event
     EncoderEvent event = readEncoderEvent();
 
+    // Auto-dim handling: wake up on any user activity
+    if (_screen_dimmed && event != EncoderEvent::NONE) {
+        // User interacted - restore brightness
+        _screen_dimmed = false;
+        hw.display.setBacklightBrightness(_brightness_value);
+        _last_activity_time = get_absolute_time();
+        LOG_INFO("Screen woken from dim (encoder input)");
+    }
+
     // State-specific handling
     switch (_state) {
         case AppState::BOOT:
@@ -138,13 +155,23 @@ bool StateMachine::update() {
             break;
     }
 
-    // Check for menu timeout (return to MAIN after 30s inactivity)
+    // Check for menu timeout (return to MAIN after inactivity)
     if (_state == AppState::MENU || _state == AppState::ADJUST) {
         int64_t idle_ms = absolute_time_diff_us(_last_activity_time, get_absolute_time()) / 1000;
         if (idle_ms > (int64_t)AppConfig::MENU_TIMEOUT_MS) {
             LOG_INFO("Menu timeout, returning to MAIN");
             transitionTo(AppState::MAIN);
             needs_refresh = true;
+        }
+    }
+
+    // Auto-dim check: dim screen after inactivity (applies in all states except BOOT)
+    if (_state != AppState::BOOT && !_screen_dimmed) {
+        int64_t idle_ms = absolute_time_diff_us(_last_activity_time, get_absolute_time()) / 1000;
+        if (idle_ms > (int64_t)AppConfig::AUTO_DIM_TIMEOUT_MS) {
+            _screen_dimmed = true;
+            hw.display.setBacklightBrightness(AppConfig::LCD_BRIGHTNESS_DIM);
+            LOG_INFO("Screen auto-dimmed after %lld ms inactivity", idle_ms);
         }
     }
 
@@ -172,14 +199,20 @@ void StateMachine::handleBootState() {
 }
 
 void StateMachine::handleMainState(EncoderEvent event) {
-    // Long press or click enters menu
-    if (event == EncoderEvent::LONG_PRESS || event == EncoderEvent::CLICK) {
-        hw.buzzer.playTone(1200, 30);  // Menu entry beep
+    // Click enters menu (long press disabled but variable kept)
+    if (event == EncoderEvent::CLICK) {
         transitionTo(AppState::MENU);
     }
 }
 
 void StateMachine::handleMenuState(EncoderEvent event) {
+    // Helper to play navigation beep (respects sound setting)
+    auto playNavBeep = [this]() {
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(800, 20);
+        }
+    };
+
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             // Move down in menu (with wrap-around)
@@ -189,6 +222,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     next = 0;  // Wrap to first item
                 }
                 _selected_menu_item = static_cast<MenuItem>(next);
+                playNavBeep();
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -201,22 +235,21 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     prev = static_cast<int>(MenuItem::MENU_COUNT) - 1;  // Wrap to last item
                 }
                 _selected_menu_item = static_cast<MenuItem>(prev);
+                playNavBeep();
             }
             _last_activity_time = get_absolute_time();
             break;
 
         case EncoderEvent::CLICK:
-            // Select current menu item
+            // Select current menu item (no select beep - navigation sounds removed)
             switch (_selected_menu_item) {
                 case MenuItem::SELECT_VOLTAGE:
-                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     loadPdoList();
                     _adjust_mode = AdjustMode::PDO_SELECT;
                     transitionTo(AppState::ADJUST);
                     break;
 
                 case MenuItem::CURRENT_LIMIT:
-                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     _adjust_original_value = _current_limit_ma;
                     // Clamp current value to effective max (contract may have changed)
                     {
@@ -229,22 +262,21 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     transitionTo(AppState::ADJUST);
                     break;
 
-                case MenuItem::FLASH_EEPROM:
-                    hw.buzzer.playTone(1400, 30);  // Submenu beep
-                    _adjust_mode = AdjustMode::EEPROM_FLASH;
-                    _eeprom_stage = 0;  // Start with compare stage
-                    _eeprom_message = "Initializing...";
-                    _eeprom_progress = 0;
-                    _eeprom_result = false;
-                    _eeprom_confirm_yes = false;
+                case MenuItem::SETTINGS:
+                    _selected_settings_item = SettingsItem::FLASH_EEPROM;
+                    _brightness_value = settings.getLcdBrightness();  // Initialize brightness value
+                    _brightness_adjusting = false;  // Reset brightness adjust mode
+                    _adjust_mode = AdjustMode::SETTINGS_MENU;
                     transitionTo(AppState::ADJUST);
-                    startEepromCompare();
                     break;
 
                 case MenuItem::ABOUT:
-                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     _adjust_mode = AdjustMode::ABOUT;
                     transitionTo(AppState::ADJUST);
+                    break;
+
+                case MenuItem::BACK:
+                    transitionTo(AppState::MAIN);
                     break;
 
                 default:
@@ -254,8 +286,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
             break;
 
         case EncoderEvent::LONG_PRESS:
-            // Return to main
-            transitionTo(AppState::MAIN);
+            // Long press disabled (variable kept for future use)
             break;
 
         default:
@@ -264,14 +295,40 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 }
 
 void StateMachine::handleAdjustState(EncoderEvent event) {
-    // About screen: any click or long press returns to menu
+    // Helper to play navigation beep (respects sound setting)
+    auto playNavBeep = [this]() {
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(800, 20);
+        }
+    };
+    
+    auto playSelectBeep = [this]() {
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(1400, 30);
+        }
+    };
+    
+    auto playExitBeep = [this]() {
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(1000, 30);
+        }
+    };
+
+    // About screen: click returns to menu
     if (_adjust_mode == AdjustMode::ABOUT) {
-        if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
-            hw.buzzer.playTone(1000, 30);  // Exit beep
+        if (event == EncoderEvent::CLICK) {
             transitionTo(AppState::MENU);
         }
         return;
     }
+
+    // Settings submenu handling
+    if (_adjust_mode == AdjustMode::SETTINGS_MENU) {
+        handleSettingsMenuState(event);
+        return;
+    }
+
+    // Brightness adjustment mode removed - now handled inline in settings menu
 
     // EEPROM flash mode: special handling based on stage
     if (_adjust_mode == AdjustMode::EEPROM_FLASH) {
@@ -292,17 +349,12 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         _eeprom_progress = 0;
                         executeEepromFlash();
                     } else {
-                        // User cancelled
-                        hw.buzzer.playTone(1000, 30);  // Cancel beep
+                        // User cancelled - return to settings menu
                         eepromDeinit();
-                        transitionTo(AppState::MENU);
+                        _adjust_mode = AdjustMode::SETTINGS_MENU;
+                        displayManager.invalidate();
                     }
                     _last_activity_time = get_absolute_time();
-                } else if (event == EncoderEvent::LONG_PRESS) {
-                    // Cancel
-                    hw.buzzer.playTone(1000, 30);  // Cancel beep
-                    eepromDeinit();
-                    transitionTo(AppState::MENU);
                 }
                 break;
 
@@ -311,10 +363,11 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 break;
 
             case 3:  // Done stage - show result, click to exit
-                if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
-                    hw.buzzer.playTone(1000, 30);  // Exit beep
+                if (event == EncoderEvent::CLICK) {
                     eepromDeinit();
-                    transitionTo(AppState::MENU);
+                    // Return to settings menu, not main menu
+                    _adjust_mode = AdjustMode::SETTINGS_MENU;
+                    displayManager.invalidate();
                 }
                 break;
         }
@@ -433,11 +486,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             break;
 
         case EncoderEvent::LONG_PRESS:
-            // Cancel and return to menu
-            if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                _current_limit_ma = _adjust_original_value;  // Restore original
-            }
-            transitionTo(AppState::MENU);
+            // Long press disabled (variable kept for future use)
             break;
 
         default:
@@ -561,9 +610,20 @@ EncoderEvent StateMachine::readEncoderEvent() {
 }
 
 void StateMachine::handleOutputButtons() {
+    // Check for button presses to wake from dim
+    bool btn1_clicked = Interrupts::checkBtn1Clicked();
+    bool btn2_clicked = Interrupts::checkBtn2Clicked();
+
+    // Wake from dim on any button press
+    if (_screen_dimmed && (btn1_clicked || btn2_clicked)) {
+        _screen_dimmed = false;
+        hw.display.setBacklightBrightness(_brightness_value);
+        _last_activity_time = get_absolute_time();
+        LOG_INFO("Screen woken from dim (button press)");
+    }
+
     // BTN1: Toggle load switch
-    // Use ISR-based detection for reliable quick press capture
-    if (Interrupts::checkBtn1Clicked()) {
+    if (btn1_clicked) {
         // Clear INA228 fault latch before enabling
         hw.powerMonitor.getDiagnoseAlert();
 
@@ -578,8 +638,7 @@ void StateMachine::handleOutputButtons() {
     }
 
     // BTN2: Toggle 17V buck (only if VBUS > 18V)
-    // Use ISR-based detection for reliable quick press capture
-    if (Interrupts::checkBtn2Clicked()) {
+    if (btn2_clicked) {
         // Check VBUS voltage via INA228
         float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
 
@@ -716,7 +775,9 @@ void StateMachine::applyCurrentLimit() {
     // TODO: Apply to INA228 alert threshold
     // For now, just store the value - it will be checked in safety module
 
-    hw.buzzer.playTone(1000, 50);  // Confirmation beep
+    if (settings.isSoundsEnabled()) {
+        hw.buzzer.playTone(1000, 50);  // Confirmation beep
+    }
 }
 
 void StateMachine::applyPpsVoltage() {
@@ -727,10 +788,135 @@ void StateMachine::applyPpsVoltage() {
 
     if (success) {
         LOG_INFO("PPS request sent successfully");
-        hw.buzzer.playTone(1000, 50);  // Confirmation beep
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(1000, 50);  // Confirmation beep
+        }
     } else {
         LOG_ERROR("Failed to request PPS");
-        hw.buzzer.playTone(200, 200);  // Error beep
+        // Error beep always plays (safety feedback)
+        hw.buzzer.playTone(200, 200);
+    }
+}
+
+// ============================================================================
+// Settings Menu Helpers
+// ============================================================================
+
+void StateMachine::handleSettingsMenuState(EncoderEvent event) {
+    // Helper to play navigation beep (respects sound setting)
+    auto playNavBeep = [this]() {
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(800, 20);
+        }
+    };
+
+    switch (event) {
+        case EncoderEvent::ROTATE_CW:
+            // If in brightness adjust mode, decrease value (CW = down in menus)
+            if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
+                if (_brightness_value > 5) {
+                    _brightness_value -= 5;
+                } else {
+                    _brightness_value = 5;  // Minimum 5% to keep screen visible
+                }
+                settings.setLcdBrightness(_brightness_value);
+                settings.saveToFlash();
+                hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
+                // Display manager detects brightness change and redraws only that line
+                playNavBeep();
+            } else {
+                // Move down in settings menu (with wrap-around)
+                int next = static_cast<int>(_selected_settings_item) + 1;
+                if (next >= static_cast<int>(SettingsItem::SETTINGS_COUNT)) {
+                    next = 0;
+                }
+                _selected_settings_item = static_cast<SettingsItem>(next);
+                playNavBeep();
+            }
+            _last_activity_time = get_absolute_time();
+            break;
+
+        case EncoderEvent::ROTATE_CCW:
+            // If in brightness adjust mode, increase value (CCW = up in menus)
+            if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
+                if (_brightness_value < 100) {
+                    _brightness_value += 5;
+                    if (_brightness_value > 100) _brightness_value = 100;
+                    settings.setLcdBrightness(_brightness_value);
+                    settings.saveToFlash();
+                    hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
+                    // Display manager detects brightness change and redraws only that line
+                }
+                playNavBeep();
+            } else {
+                // Move up in settings menu (with wrap-around)
+                int prev = static_cast<int>(_selected_settings_item) - 1;
+                if (prev < 0) {
+                    prev = static_cast<int>(SettingsItem::SETTINGS_COUNT) - 1;
+                }
+                _selected_settings_item = static_cast<SettingsItem>(prev);
+                playNavBeep();
+            }
+            _last_activity_time = get_absolute_time();
+            break;
+
+        case EncoderEvent::CLICK:
+            switch (_selected_settings_item) {
+                case SettingsItem::FLASH_EEPROM:
+                    _adjust_mode = AdjustMode::EEPROM_FLASH;
+                    _eeprom_stage = 0;
+                    _eeprom_message = "Initializing...";
+                    _eeprom_progress = 0;
+                    _eeprom_result = false;
+                    _eeprom_confirm_yes = false;
+                    displayManager.invalidate();
+                    startEepromCompare();
+                    break;
+
+                case SettingsItem::AUTO_PPS:
+                    // Toggle Auto PPS setting
+                    settings.setAutoPpsEnabled(!settings.isAutoPpsEnabled());
+                    settings.saveToFlash();
+                    displayManager.invalidate();  // Force immediate redraw
+                    break;
+
+                case SettingsItem::BRIGHTNESS:
+                    // Toggle brightness adjustment mode
+                    _brightness_adjusting = !_brightness_adjusting;
+                    displayManager.invalidate();  // Redraw to show/hide indicator
+                    break;
+
+                case SettingsItem::SOUNDS:
+                    // Toggle Sounds setting
+                    settings.setSoundsEnabled(!settings.isSoundsEnabled());
+                    settings.saveToFlash();
+                    displayManager.invalidate();  // Force immediate redraw
+                    break;
+
+                case SettingsItem::BACK:
+                    transitionTo(AppState::MENU);
+                    break;
+
+                default:
+                    break;
+            }
+            _last_activity_time = get_absolute_time();
+            break;
+
+        case EncoderEvent::LONG_PRESS:
+            // Long press disabled (variable kept for future use)
+            break;
+
+        default:
+            break;
+    }
+}
+
+void StateMachine::toggleBrightnessSunBlink() {
+    if (_adjust_mode == AdjustMode::BRIGHTNESS_ADJUST) {
+        _brightness_sun_visible = !_brightness_sun_visible;
+    } else {
+        _brightness_sun_visible = true;
     }
 }
 
@@ -742,8 +928,8 @@ uint32_t StateMachine::getEffectiveMaxCurrentMa() const {
                ? contract.current_ma
                : AppConfig::CURRENT_LIMIT_MAX_MA;
     }
-    // No valid contract - use hardware max
-    return AppConfig::CURRENT_LIMIT_MAX_MA;
+    // No valid PD contract - cap at 3A (USB BC1.2 limit)
+    return AppConfig::CURRENT_LIMIT_NON_PD_MAX_MA;
 }
 
 // Expose PDO list for display manager

@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Target:** RP2040 (Raspberry Pi Pico), C++17, Pico SDK v2.2.0
 - **Build:** CMake + Ninja
-- **Status:** Phase 4 (UI refinement) complete. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
-- **Key features:** Voltage selection from PD contracts (up to 48V), adjustable current limiting (10mA-5A via INA228), LCD menu with Prusa-style encoder navigation, overcurrent/overtemperature protection, optional 17V buck converter
+- **Status:** Phase 5 (Settings submenu) complete. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
+- **Key features:** Voltage selection from PD contracts (up to 48V), adjustable current limiting (10mA-5A via INA228), LCD menu with Prusa-style encoder navigation, overcurrent/overtemperature protection, optional 17V buck converter, settings persistence to flash
 - **Non-PD fallback:** 5V @ 3A max when connected to non-PD chargers (USB BC1.2 mode)
 
 ## Build Commands
@@ -172,7 +172,7 @@ src/
 │       └── tps26750/        # USB PD controller (I2C 0x21)
 ├── logic/                   # Application logic
 │   ├── state_machine.h/cpp  # AppState transitions, encoder/button handling
-│   ├── settings.h/cpp       # User settings (current limit, PDO, output states)
+│   ├── settings.h/cpp       # User settings with flash persistence (brightness, sounds, auto_pps)
 │   ├── safety.h/cpp         # Safety monitoring (temp, voltage, overcurrent)
 │   └── pd_manager.h/cpp     # PD contract caching and negotiation state machine
 ├── utils/
@@ -207,8 +207,35 @@ PPS allows fine-grained voltage adjustment within a charger's advertised range (
 - **Keep-alive required:** PD spec mandates re-requesting the PPS contract every <10 seconds or the source reverts to 5V. Implemented in `PdManager::update()` with 7-second refresh interval.
 - **State tracking:** `PdManager` tracks `_pps_active`, `_pps_voltage_mv`, `_pps_current_ma`, `_pps_last_refresh` for automatic keep-alive.
 - **UI flow:** When user selects a PPS PDO, enters `AdjustMode::PPS_VOLTAGE` for voltage adjustment (encoder rotates through range). Confirm with click to apply.
-- **Main screen indicator:** Green "PPS" badge shown next to contract info when PPS mode is active.
+- **Main screen indicator:** Rounded green "PPS" badge shown next to contract info when PPS mode is active.
 - **State deactivation:** PPS state is automatically cleared when switching to Fixed or AVS profiles.
+
+### Settings Persistence (Flash Storage)
+
+User settings are stored in the last 4KB sector of RP2040 flash (offset 0x1FF000 for 2MB flash):
+
+```cpp
+struct SettingsData {
+    uint32_t magic;           // 0x50443234 ("PD24")
+    uint8_t lcd_brightness;   // 5-100%
+    bool sounds_enabled;
+    bool auto_pps_enabled;
+    uint32_t crc32;
+};
+```
+
+- **Persistence:** Survives power cycle, loaded on boot
+- **Defaults:** 100% brightness, sounds enabled, auto PPS disabled
+- **Flash wear:** Settings saved immediately on change (consider debouncing for production)
+
+### Backlight Brightness (PWM)
+
+LCD backlight uses PWM on GPIO24 with perceptual brightness curve:
+- **Range:** 5-100% (minimum prevents completely dark screen)
+- **Curve:** Piecewise linear approximation for perceptually linear brightness
+- **PWM resolution:** 8-bit (0-255)
+- **Auto-dim:** Screen dims to 5% after 1 minute of inactivity, restored on any input
+- **Configuration:** `AUTO_DIM_TIMEOUT_MS` and `LCD_BRIGHTNESS_DIM` in `app_config.h`
 
 ### Power Monitoring & Safety (INA228 + Safety Module)
 
@@ -353,11 +380,15 @@ These document non-obvious gotchas. Read before modifying related code.
 
 **Button Polling vs ISR:** `isClicked()` polling in the main loop missed short button presses between slow loop iterations. Fixed by switching to ISR-based detection via `Interrupts::checkBtn1Clicked()`/`checkBtn2Clicked()` which capture presses via interrupt flags.
 
-**Lessons:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw. RDO operating current ≠ PDO max current — always read the PDO for advertised limits. ISR flags must be drained on state transitions to prevent stale events. Prefer ISR-based button detection over polling for responsiveness.
+**Lessons:** Pre-switch vs post-switch measurements matter. ISR conditions must account for all GPIO states. Use overwrite-based rendering instead of clear-then-draw. RDO operating current ≠ PDO max current — always read the PDO for advertised limits. ISR flags must be drained on state transitions to prevent stale events. Prefer ISR-based button detection over polling for responsiveness. Use member variables instead of static locals for UI state that must reset on MCU warm reset.
+
+**PPS Badge After Reset:** Static local variable for PPS badge state survived warm MCU reset, preventing badge from being drawn even when contract.is_pps was true. Fixed by using member variable `_last_pps_state` initialized to -1 and explicitly reset in `DisplayManager::init()`.
+
+**Brightness Curve:** Initial linear PWM mapping caused perceptually non-linear brightness (harsh drop at low values). Fixed by using piecewise linear curve that maps 5-100% to more perceptually uniform brightness levels.
 
 ## Hardware Details
 
-- **LCD:** 240x320 (2.4") ST7789, SPI @ 10MHz, 180° rotation (MADCTL 0xC0)
+- **LCD:** 240x320 (2.4") ST7789, SPI @ 10MHz, 180° rotation (MADCTL 0xC0), PWM backlight on GP24
 - **17V Buck:** STO/SBC voltage for motor drive safety (200mA fused), enable only when VBUS > 18V
 - **ADC Voltage:** Pre-switch VBUS (150kΩ/10kΩ divider), redundant to INA228 post-switch
 - **ADC Temp:** NTC thermistor (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series resistor)

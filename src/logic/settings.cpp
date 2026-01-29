@@ -2,9 +2,18 @@
 #include "app_config.h"
 #include "utils/logging.h"
 #include <cstring>
+#include "hardware/flash.h"
+#include "hardware/sync.h"
+#include "pico/stdlib.h"
 
 // Global instance
 Settings settings;
+
+// Flash storage configuration
+// Use the last 4KB sector of flash for settings
+// RP2040 has 2MB flash, sectors are 4KB
+static constexpr uint32_t FLASH_TARGET_OFFSET = (2 * 1024 * 1024) - FLASH_SECTOR_SIZE;  // Last sector
+#define FLASH_TARGET_ADDR ((const uint8_t*)(XIP_BASE + FLASH_TARGET_OFFSET))
 
 // ============================================================================
 // Constructor
@@ -15,6 +24,25 @@ Settings::Settings()
 {
     // Zero-initialize settings struct
     memset(&_settings, 0, sizeof(_settings));
+}
+
+// ============================================================================
+// CRC32 Calculation (simple implementation for data integrity)
+// ============================================================================
+
+uint32_t Settings::calculateCrc32() const {
+    // Calculate CRC32 over settings data (excluding the crc32 field itself)
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(&_settings);
+    size_t len = offsetof(UserSettings, crc32);  // Don't include CRC in calculation
+    
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    return ~crc;
 }
 
 // ============================================================================
@@ -82,33 +110,98 @@ void Settings::setLcdBrightness(uint8_t brightness) {
     }
 }
 
+void Settings::setSoundsEnabled(bool enabled) {
+    if (_settings.sounds_enabled != enabled) {
+        _settings.sounds_enabled = enabled;
+        _dirty = true;
+        LOG_DEBUG("Sounds %s", enabled ? "enabled" : "disabled");
+    }
+}
+
+void Settings::setAutoPpsEnabled(bool enabled) {
+    if (_settings.auto_pps_enabled != enabled) {
+        _settings.auto_pps_enabled = enabled;
+        _dirty = true;
+        LOG_DEBUG("Auto PPS %s", enabled ? "enabled" : "disabled");
+    }
+}
+
 // ============================================================================
 // Persistence
 // ============================================================================
 
 bool Settings::saveToFlash() {
-    // TODO: Implement flash storage using RP2040 flash APIs
-    // For now, just mark as saved
+    // Update CRC before saving
+    _settings.crc32 = calculateCrc32();
+    
+    // Prepare data aligned to 256 bytes (minimum write size)
+    uint8_t buffer[FLASH_PAGE_SIZE];
+    memset(buffer, 0xFF, sizeof(buffer));  // Fill with 0xFF (erased state)
+    memcpy(buffer, &_settings, sizeof(_settings));
+    
+    // Disable interrupts during flash operations
+    uint32_t interrupts = save_and_disable_interrupts();
+    
+    // Erase the sector (4KB)
+    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
+    
+    // Write the settings (256 bytes minimum)
+    flash_range_program(FLASH_TARGET_OFFSET, buffer, FLASH_PAGE_SIZE);
+    
+    // Restore interrupts
+    restore_interrupts(interrupts);
+    
     _dirty = false;
-    LOG_DEBUG("Settings save requested (not implemented)");
+    LOG_INFO("Settings saved to flash");
     return true;
 }
 
 bool Settings::loadFromFlash() {
-    // TODO: Implement flash loading
-    // For now, always return false to trigger defaults
-    LOG_DEBUG("Settings load requested (not implemented, using defaults)");
-    return false;
+    // Read settings from flash
+    const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
+    
+    // Validate magic number
+    if (flash_settings->magic != SETTINGS_MAGIC) {
+        LOG_DEBUG("Settings: Invalid magic (0x%08X), using defaults", flash_settings->magic);
+        return false;
+    }
+    
+    // Validate version
+    if (flash_settings->version != SETTINGS_VERSION) {
+        LOG_DEBUG("Settings: Version mismatch (%d vs %d), using defaults", 
+                  flash_settings->version, SETTINGS_VERSION);
+        return false;
+    }
+    
+    // Copy to RAM
+    memcpy(&_settings, flash_settings, sizeof(_settings));
+    
+    // Validate CRC
+    uint32_t expected_crc = _settings.crc32;
+    if (calculateCrc32() != expected_crc) {
+        LOG_WARN("Settings: CRC mismatch, using defaults");
+        return false;
+    }
+    
+    _dirty = false;
+    LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d",
+             _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled);
+    return true;
 }
 
 void Settings::resetToDefaults() {
+    _settings.magic = SETTINGS_MAGIC;
+    _settings.version = SETTINGS_VERSION;
     _settings.current_limit_ma = AppConfig::CURRENT_LIMIT_DEFAULT_MA;
     _settings.last_pdo_index = 0;
     _settings.load_switch_enabled = false;  // Output disabled by default
     _settings.buck_17v_enabled = false;
     _settings.lcd_brightness = AppConfig::LCD_BRIGHTNESS_DEFAULT;
+    _settings.sounds_enabled = true;        // Sounds ON by default
+    _settings.auto_pps_enabled = false;     // Auto PPS OFF by default
 
     memset(_settings.reserved, 0, sizeof(_settings.reserved));
+    _settings.crc32 = 0;  // Will be calculated on save
 
     _dirty = false;
 

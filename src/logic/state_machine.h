@@ -27,19 +27,32 @@ enum class AppState {
 enum class MenuItem {
     SELECT_VOLTAGE,
     CURRENT_LIMIT,
-    FLASH_EEPROM,
+    SETTINGS,
     ABOUT,
-    MENU_COUNT  // Number of menu items
+    BACK,           // Back to main screen
+    MENU_COUNT      // Number of menu items
+};
+
+// Settings submenu items
+enum class SettingsItem {
+    FLASH_EEPROM,
+    AUTO_PPS,
+    BRIGHTNESS,
+    SOUNDS,
+    BACK,           // Back to main menu
+    SETTINGS_COUNT  // Number of settings items
 };
 
 // Adjust modes when in ADJUST state
 enum class AdjustMode {
     NONE,
-    PDO_SELECT,     // Selecting a PDO from the list
-    CURRENT_LIMIT,  // Adjusting current limit value
-    PPS_VOLTAGE,    // Adjusting PPS voltage within range
-    EEPROM_FLASH,   // EEPROM flash workflow
-    ABOUT           // Displaying about screen (read-only)
+    PDO_SELECT,         // Selecting a PDO from the list
+    CURRENT_LIMIT,      // Adjusting current limit value
+    PPS_VOLTAGE,        // Adjusting PPS voltage within range
+    EEPROM_FLASH,       // EEPROM flash workflow
+    ABOUT,              // Displaying about screen (read-only)
+    SETTINGS_MENU,      // Settings submenu navigation
+    BRIGHTNESS_ADJUST   // Adjusting brightness value
 };
 
 // Fault types
@@ -82,6 +95,9 @@ public:
     // Get selected menu item
     MenuItem getSelectedMenuItem() const { return _selected_menu_item; }
 
+    // Get selected settings item
+    SettingsItem getSelectedSettingsItem() const { return _selected_settings_item; }
+
     // Get selected PDO index
     int8_t getSelectedPdoIndex() const { return _selected_pdo_index; }
 
@@ -113,12 +129,14 @@ private:
     absolute_time_t _last_activity_time;
     absolute_time_t _encoder_press_start;
     bool _encoder_button_held;
+    bool _screen_dimmed;  // True when auto-dim is active
 
     // Boot sequence
     uint8_t _boot_stage;
 
     // Menu navigation
     MenuItem _selected_menu_item;
+    SettingsItem _selected_settings_item;
     int8_t _selected_pdo_index;
     int8_t _num_pdos;
 
@@ -173,12 +191,24 @@ private:
     void requestSelectedPdo();
     void applyCurrentLimit();
     void applyPpsVoltage();
+    void handleSettingsMenuState(EncoderEvent event);
 
     // EEPROM flash helpers
     void startEepromCompare();
     void executeEepromFlash();
 
+    // Brightness adjustment state
+    uint8_t _brightness_value;      // Current brightness during adjustment
+    bool _brightness_sun_visible;   // For blinking sun icon
+    bool _brightness_adjusting;     // True when in brightness adjust mode (click to toggle)
+
 public:
+    // Brightness state accessors (for display manager)
+    uint8_t getBrightnessValue() const { return _brightness_value; }
+    bool isBrightnessSunVisible() const { return _brightness_sun_visible; }
+    bool isBrightnessAdjusting() const { return _brightness_adjusting; }
+    void toggleBrightnessSunBlink();  // Called from display update for blinking
+
     // EEPROM flash state accessors (for display manager)
     uint8_t getEepromStage() const { return _eeprom_stage; }
     uint8_t getEepromPhase() const { return _eeprom_phase; }

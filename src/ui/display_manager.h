@@ -51,6 +51,7 @@ private:
     bool _needs_full_redraw;
     bool _backlight_on;
     AppState _last_rendered_state;
+    int8_t _last_pps_state;  // -1=unknown, 0=not PPS, 1=PPS
 
     // PDO list reference
     const SourceCapability* _pdo_list;
@@ -83,9 +84,17 @@ private:
 
     // Menu elements
     void drawMenuItem(int y, const char* text, bool selected);
+    void drawMenuItemMuted(int y, const char* text, bool selected);
     void drawPdoList();
     void drawCurrentLimitAdjust();
     void drawPpsVoltageAdjust();
+
+    // Settings menu elements
+    void drawSettingsMenu();
+    void drawSettingsItem(int y, const char* label, bool is_on, bool selected, bool is_toggle);
+    void drawBrightnessItem(int y, bool selected);
+    void drawBrightnessAdjust();
+    void drawSunIcon(int x, int y, uint16_t color, bool visible);
 
     // EEPROM flash screen elements
     void drawEepromFlashScreen();
@@ -105,10 +114,15 @@ private:
 
     // Tracking for flicker reduction (skip redraw when unchanged)
     int8_t _last_menu_selection;
+    int8_t _last_settings_selection;
     int8_t _last_pdo_selection;
     uint32_t _last_adjust_value;
     uint32_t _last_pps_voltage;
+    uint8_t _last_brightness_value;
     const char* _last_boot_message;
+    
+    // Brightness sun blink timing
+    absolute_time_t _sun_blink_time;
 };
 
 // Global instance

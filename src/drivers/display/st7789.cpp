@@ -1,19 +1,26 @@
 #include "drivers/display/st7789.h"
 #include "drivers/display/font.h"
 #include "hardware/gpio.h"
+#include "hardware/pwm.h"
 #include <stdint.h>
 #include <stdio.h>   // For snprintf (number formatting)
 #include <stdlib.h>
 
 ST7789::ST7789(spi_inst_t* spi, uint pinCS, uint pinDC, uint pinRST, uint pinBL)
-    : _spi(spi), _pinCS(pinCS), _pinDC(pinDC), _pinRST(pinRST), _pinBL(pinBL) {}
+    : _spi(spi), _pinCS(pinCS), _pinDC(pinDC), _pinRST(pinRST), _pinBL(pinBL), _pwm_slice(0) {}
 
 bool ST7789::init() {
     // Initialize GPIOs
     gpio_init(_pinCS);  gpio_set_dir(_pinCS, GPIO_OUT);  gpio_put(_pinCS, 1);
     gpio_init(_pinDC);  gpio_set_dir(_pinDC, GPIO_OUT);  gpio_put(_pinDC, 1);
     gpio_init(_pinRST); gpio_set_dir(_pinRST, GPIO_OUT); gpio_put(_pinRST, 1);
-    gpio_init(_pinBL);  gpio_set_dir(_pinBL, GPIO_OUT);  gpio_put(_pinBL, 0);  // Start OFF to hide ghost image
+    
+    // Initialize backlight with PWM for brightness control
+    gpio_set_function(_pinBL, GPIO_FUNC_PWM);
+    _pwm_slice = pwm_gpio_to_slice_num(_pinBL);
+    pwm_set_wrap(_pwm_slice, 255);  // 8-bit resolution
+    pwm_set_gpio_level(_pinBL, 0);  // Start OFF to hide ghost image
+    pwm_set_enabled(_pwm_slice, true);
 
     // 1. Hardware Reset Sequence (LCD.pdf Page 19 recommends ~100ms+ delays)
     gpio_put(_pinRST, 1); sleep_ms(100);
@@ -129,7 +136,34 @@ bool ST7789::init() {
 }
 
 void ST7789::setBacklight(bool on) {
-    gpio_put(_pinBL, on ? 1 : 0);
+    // Use PWM level: 255 = full on, 0 = off
+    pwm_set_gpio_level(_pinBL, on ? 255 : 0);
+}
+
+void ST7789::setBacklightBrightness(uint8_t percent) {
+    // Convert 0-100% to 0-255 PWM level with perceptual correction
+    // Use square root curve (gamma 0.5) for more linear perceived brightness
+    if (percent > 100) percent = 100;
+    
+    // Apply gamma 1.5 (softer than pure linear, avoids harsh low-end dropoff)
+    // Formula: level = (percent/100)^1.5 * 255
+    // Approximation using integer math: sqrt(p) * p / 100 * 255 / 10
+    uint32_t p = percent;
+    // Use lookup for common values or linear interpolation with floor
+    uint32_t level;
+    if (p == 0) {
+        level = 0;
+    } else if (p <= 10) {
+        level = 8 + (p * 2);  // 10% -> 28 (~11% of 255)
+    } else if (p <= 30) {
+        level = 28 + ((p - 10) * 3);  // 30% -> 88 (~35% of 255)
+    } else {
+        // Above 30%, linear from 88 to 255
+        level = 88 + ((p - 30) * 167 / 70);
+    }
+    if (level > 255) level = 255;
+    
+    pwm_set_gpio_level(_pinBL, level);
 }
 
 // ===== Low-level SPI communication =====

@@ -29,6 +29,7 @@ namespace AppConfig {
     // -------------------------------------------------------------------------
     constexpr uint32_t CURRENT_LIMIT_MIN_MA = 10;       // Minimum current limit [mA] (0.01A)
     constexpr uint32_t CURRENT_LIMIT_MAX_MA = 5000;     // Maximum current limit [mA]
+    constexpr uint32_t CURRENT_LIMIT_NON_PD_MAX_MA = 3000; // Max for non-PD chargers (USB BC1.2)
     constexpr uint32_t CURRENT_LIMIT_STEP_MA = 10;      // Base adjustment step [mA] (fine control)
     constexpr uint32_t CURRENT_LIMIT_DEFAULT_MA = 1000; // Default current limit [mA]
     constexpr uint32_t CURRENT_LIMIT_VELOCITY_DIV = 1;  // Velocity divider (1 = use full velocity scaling)
@@ -43,6 +44,8 @@ namespace AppConfig {
     // Display Settings
     // -------------------------------------------------------------------------
     constexpr uint8_t LCD_BRIGHTNESS_DEFAULT = 100;    // Default brightness (%)
+    constexpr uint8_t LCD_BRIGHTNESS_DIM = 5;          // Dimmed brightness (%)
+    constexpr uint32_t AUTO_DIM_TIMEOUT_MS = 60000;    // Auto-dim after inactivity [ms] (1 minute)
     constexpr uint16_t LCD_WIDTH = 240;
     constexpr uint16_t LCD_HEIGHT = 320;
 }
