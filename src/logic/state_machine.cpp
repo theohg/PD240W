@@ -318,9 +318,11 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index++;
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                // Acceleration: multiply step by number of accumulated ticks
-                uint32_t abs_delta = (_encoder_delta > 0) ? _encoder_delta : 1;
-                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * abs_delta;
+                // Velocity-based acceleration for current limit (smaller range: 0-5A)
+                uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1) 
+                                         / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
+                if (velocity_mult < 1) velocity_mult = 1;
+                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
                 uint32_t max_ma = getEffectiveMaxCurrentMa();
                 if (_current_limit_ma + step <= max_ma) {
                     _current_limit_ma += step;
@@ -328,14 +330,16 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _current_limit_ma = max_ma;
                 }
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
-                // PPS voltage step: 20mV per tick (PD spec), with acceleration
-                uint32_t abs_delta = (_encoder_delta > 0) ? _encoder_delta : 1;
-                uint32_t step = 20 * abs_delta;  // 20mV per encoder tick
+                // PPS voltage: Use velocity-based acceleration (larger range: up to 21V)
+                uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::PPS_VELOCITY_MULT;
+                uint32_t step = AppConfig::PPS_VOLTAGE_STEP_MV * velocity_mult;
                 if (_pps_target_voltage_mv + step <= _pps_max_voltage_mv) {
                     _pps_target_voltage_mv += step;
                 } else {
                     _pps_target_voltage_mv = _pps_max_voltage_mv;
                 }
+                // Round to 20mV boundary (PD spec requirement)
+                _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -346,23 +350,27 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index--;
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                // Acceleration: multiply step by number of accumulated ticks
-                uint32_t abs_delta = (_encoder_delta < 0) ? -_encoder_delta : 1;
-                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * abs_delta;
+                // Velocity-based acceleration for current limit (smaller range: 0-5A)
+                uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1) 
+                                         / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
+                if (velocity_mult < 1) velocity_mult = 1;
+                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
                 if (_current_limit_ma > AppConfig::CURRENT_LIMIT_MIN_MA + step) {
                     _current_limit_ma -= step;
                 } else {
                     _current_limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
                 }
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
-                // PPS voltage step: 20mV per tick (PD spec), with acceleration
-                uint32_t abs_delta = (_encoder_delta < 0) ? -_encoder_delta : 1;
-                uint32_t step = 20 * abs_delta;  // 20mV per encoder tick
+                // PPS voltage: Use velocity-based acceleration (larger range: up to 21V)
+                uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::PPS_VELOCITY_MULT;
+                uint32_t step = AppConfig::PPS_VOLTAGE_STEP_MV * velocity_mult;
                 if (_pps_target_voltage_mv >= _pps_min_voltage_mv + step) {
                     _pps_target_voltage_mv -= step;
                 } else {
                     _pps_target_voltage_mv = _pps_min_voltage_mv;
                 }
+                // Round to 20mV boundary (PD spec requirement)
+                _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -495,24 +503,37 @@ EncoderEvent StateMachine::readEncoderEvent() {
         _last_encoder_ticks = current_ticks;
     }
 
-    // Check encoder button for long press
+    // Encoder button handling:
+    // - Use ISR flag for reliable click detection (catches short presses)
+    // - Use polling for long-press timing (needs duration measurement)
+    
     bool button_pressed = hw.btnEnc.isPressed();
 
     if (button_pressed && !_encoder_button_held) {
-        // Button just pressed - start timing
+        // Button just pressed - start timing for long press
         _encoder_press_start = get_absolute_time();
         _encoder_button_held = true;
-    } else if (!button_pressed && _encoder_button_held) {
-        // Button released
+        // Consume any ISR flag that fired for this press
+        Interrupts::checkBtnEncClicked();
+    } else if (_encoder_button_held) {
+        // Button is being held - check for long press threshold
         uint32_t press_duration = absolute_time_diff_us(_encoder_press_start, get_absolute_time()) / 1000;
-
-        if (press_duration >= AppConfig::ENCODER_LONG_PRESS_MS) {
-            event = EncoderEvent::LONG_PRESS;
-        } else if (press_duration > 50) {  // Debounce threshold
+        
+        if (!button_pressed) {
+            // Button released
+            if (press_duration >= AppConfig::ENCODER_LONG_PRESS_MS) {
+                event = EncoderEvent::LONG_PRESS;
+            } else if (press_duration > 30) {  // Minimum press time (debounce)
+                event = EncoderEvent::CLICK;
+            }
+            _encoder_button_held = false;
+        }
+    } else {
+        // Button not held - check ISR flag for any clicks we might have missed
+        // (e.g., very quick press between main loop iterations)
+        if (Interrupts::checkBtnEncClicked()) {
             event = EncoderEvent::CLICK;
         }
-
-        _encoder_button_held = false;
     }
 
     return event;

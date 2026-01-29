@@ -27,10 +27,17 @@ namespace AppConfig {
     // -------------------------------------------------------------------------
     // Current Limit Settings
     // -------------------------------------------------------------------------
-    constexpr uint32_t CURRENT_LIMIT_MIN_MA = 100;      // Minimum current limit [mA]
+    constexpr uint32_t CURRENT_LIMIT_MIN_MA = 50;       // Minimum current limit [mA]
     constexpr uint32_t CURRENT_LIMIT_MAX_MA = 5000;     // Maximum current limit [mA]
-    constexpr uint32_t CURRENT_LIMIT_STEP_MA = 100;     // Adjustment step size  [mA]
+    constexpr uint32_t CURRENT_LIMIT_STEP_MA = 50;      // Adjustment step size  [mA]
     constexpr uint32_t CURRENT_LIMIT_DEFAULT_MA = 1000; // Default current limit [mA]
+    constexpr uint32_t CURRENT_LIMIT_VELOCITY_DIV = 3;  // Velocity divider (slower scaling for small range)
+
+    // -------------------------------------------------------------------------
+    // PPS Voltage Settings
+    // -------------------------------------------------------------------------
+    constexpr uint32_t PPS_VOLTAGE_STEP_MV = 20;        // PPS voltage step size [mV] (PD spec minimum)
+    constexpr uint32_t PPS_VELOCITY_MULT = 2;           // Velocity multiplier (faster scaling for large range)
 
     // -------------------------------------------------------------------------
     // Display Settings
