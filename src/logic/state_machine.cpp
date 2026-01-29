@@ -23,7 +23,7 @@ StateMachine stateMachine;
 static const char* BOOT_MESSAGES[] = {
     "",                    // 0: Logo only (melody plays)
     "Reading USB-PD...",   // 1: Reading PD contracts
-    "Ready"                // 2: Complete
+    "Ready!"                // 2: Complete
 };
 static constexpr uint8_t BOOT_STAGE_COUNT = 3;
 
@@ -174,6 +174,7 @@ void StateMachine::handleBootState() {
 void StateMachine::handleMainState(EncoderEvent event) {
     // Long press or click enters menu
     if (event == EncoderEvent::LONG_PRESS || event == EncoderEvent::CLICK) {
+        hw.buzzer.playTone(1200, 30);  // Menu entry beep
         transitionTo(AppState::MENU);
     }
 }
@@ -208,12 +209,14 @@ void StateMachine::handleMenuState(EncoderEvent event) {
             // Select current menu item
             switch (_selected_menu_item) {
                 case MenuItem::SELECT_VOLTAGE:
+                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     loadPdoList();
                     _adjust_mode = AdjustMode::PDO_SELECT;
                     transitionTo(AppState::ADJUST);
                     break;
 
                 case MenuItem::CURRENT_LIMIT:
+                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     _adjust_original_value = _current_limit_ma;
                     // Clamp current value to effective max (contract may have changed)
                     {
@@ -227,6 +230,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     break;
 
                 case MenuItem::FLASH_EEPROM:
+                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     _adjust_mode = AdjustMode::EEPROM_FLASH;
                     _eeprom_stage = 0;  // Start with compare stage
                     _eeprom_message = "Initializing...";
@@ -238,6 +242,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     break;
 
                 case MenuItem::ABOUT:
+                    hw.buzzer.playTone(1400, 30);  // Submenu beep
                     _adjust_mode = AdjustMode::ABOUT;
                     transitionTo(AppState::ADJUST);
                     break;
@@ -262,6 +267,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
     // About screen: any click or long press returns to menu
     if (_adjust_mode == AdjustMode::ABOUT) {
         if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
+            hw.buzzer.playTone(1000, 30);  // Exit beep
             transitionTo(AppState::MENU);
         }
         return;
@@ -287,12 +293,14 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         executeEepromFlash();
                     } else {
                         // User cancelled
+                        hw.buzzer.playTone(1000, 30);  // Cancel beep
                         eepromDeinit();
                         transitionTo(AppState::MENU);
                     }
                     _last_activity_time = get_absolute_time();
                 } else if (event == EncoderEvent::LONG_PRESS) {
                     // Cancel
+                    hw.buzzer.playTone(1000, 30);  // Cancel beep
                     eepromDeinit();
                     transitionTo(AppState::MENU);
                 }
@@ -304,6 +312,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
 
             case 3:  // Done stage - show result, click to exit
                 if (event == EncoderEvent::CLICK || event == EncoderEvent::LONG_PRESS) {
+                    hw.buzzer.playTone(1000, 30);  // Exit beep
                     eepromDeinit();
                     transitionTo(AppState::MENU);
                 }
@@ -383,6 +392,13 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         case EncoderEvent::CLICK:
             // Confirm selection
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
+                // If no PDOs, click returns to menu
+                if (_num_pdos == 0) {
+                    hw.buzzer.playTone(1000, 30);  // Exit beep
+                    transitionTo(AppState::MENU);
+                    _last_activity_time = get_absolute_time();
+                    break;
+                }
                 // Check if selected PDO is PPS - if so, enter voltage adjustment mode
                 if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos) {
                     SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
@@ -831,9 +847,12 @@ void StateMachine::executeEepromFlash() {
 
     if (_eeprom_result) {
         _eeprom_message = "Success! Power cycle";
-        hw.buzzer.playTone(1000, 100);
-        sleep_ms(100);
-        hw.buzzer.playTone(1500, 100);  // Success melody
+        // Ta-da! success melody
+        hw.buzzer.playTone(880, 80);   // A5
+        sleep_ms(80);
+        hw.buzzer.playTone(1175, 80);  // D6
+        sleep_ms(80);
+        hw.buzzer.playTone(1397, 150); // F6
         LOG_INFO("EEPROM flash successful");
     } else {
         _eeprom_message = "Flash failed!";

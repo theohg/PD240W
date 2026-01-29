@@ -27,6 +27,7 @@ namespace UIColors {
     constexpr uint16_t HEADER_LINE = 0xE00F;     // Synapticon Pink
     constexpr uint16_t MUTED = 0x7BEF;           // Dark gray
     constexpr uint16_t SYNAPTICON_PINK = 0xE00F; // Brand Magenta
+    constexpr uint16_t LINK_BLUE = 0x5D9F;       // Hyperlink blue
 }
 
 class DisplayManager {
@@ -48,6 +49,7 @@ public:
 private:
     // Render flags
     bool _needs_full_redraw;
+    bool _backlight_on;
     AppState _last_rendered_state;
 
     // PDO list reference

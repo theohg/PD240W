@@ -160,9 +160,14 @@ FAULT ──(click acknowledge)──> MAIN
 
 **Main Screen** ✅
 - Active contract display (voltage @ current, or "USB 5V (no PD)" for non-PD chargers)
-- Measured V, I, P from INA228
-- Temperature readings
-- Output status (Load: ON/OFF, 17V: ON/OFF)
+- PPS badge indicator when using programmable power supply mode
+- Rounded rectangle frame around power readings (pink Synapticon brand color)
+- Measured V, I, P from INA228 with large anti-aliased fonts
+- Secondary readings: Vin, current limit
+- Temperature readings (NTC board temp, INA die temp)
+- Output status with inverted rounded badges:
+  - Load Switch: Green "ON" / Red "OFF"
+  - 17V Buck: Yellow "ON" (safety STO/SBC) / Gray "OFF"
 - Flicker-free rendering with fixed-width format strings
 
 **Menu Screen** ✅
@@ -184,32 +189,37 @@ FAULT ──(click acknowledge)──> MAIN
 - Min/max labels with "(max)" indicator
 
 **About Screen** ✅
-- Product name (large), subtitle
+- Product name (large), subtitle with Synapticon logo
 - HW version, FW version, author, build date, target, max specs
+- Flash usage (auto-calculated from linker symbols, shows KB and %)
+- GitHub link (synapticon/PD240W in blue hyperlink color)
 - Company name (Synapticon GmbH)
-- Read-only: any click or long press returns to menu
+- Read-only: any click or long press returns to menu (with exit beep)
 
 **Fault Screen** ✅
 - Warning icon, fault type, measured/limit values
 - Click to acknowledge and return to MAIN
 
-#### 4.2 Bug Fixes During Phase 4
-- LCD ghost image (backlight timing in `st7789.cpp`)
+#### 4.2 Bug Fixes & Refinements (Phase 4)
+- Ghost image fix (backlight delayed until first frame renders)
 - Boot text flicker (message pointer tracking)
-- Contract current /10 error (RDO vs PDO field in `tps26750.cpp`)
+- Contract current /10 error (RDO vs PDO field)
 - Button queuing during boot (ISR flag draining)
-- Button polling reliability (switched to ISR-based detection)
-- Encoder acceleration for current limit adjustment
+- Badge corner artifacts (fillRect with +1px margin before fillRoundRect)
+- Encoder acceleration for current limit (velocity scaling)
 
-#### 4.3 Files
-- `src/ui/display_manager.h/cpp` - All screen rendering (monolithic, no separate screen files)
+#### 4.3 UI Features Implemented
+- Rounded rectangle primitives (`drawRoundRect`, `fillRoundRect`)
+- Power readings in pink Synapticon-branded frame
+- ON/OFF badges with inverted colors and rounded corners
+- Menu navigation beeps (entry/exit/confirm sounds)
+- Flash usage display with linker symbols
+- Build date via CMake injection
+- Temperature display with °C notation
+- Configurable STDIO (UART/USB) in CMakeLists.txt
 
 #### 4.4 Remaining UI Work
-- Display real Synapticon logo during boot (220x220 RGB565 bitmap from `src/ui/assets/synapticon_logo.h`) and small version in About screen
-- Improve encoder tick counting (still misses ticks during fast rotation)
-- Thermometer temperature widget on main screen (bottom-right, color-coded, see Phase 6.3 for details)
-- Better font rendering for large text (current 5x7 bitmap looks pixelated at large sizes)
-- UI visual improvements: oval/rounded bounding boxes around voltage, current, power readouts (details TBD)
+- Improve encoder tick counting (misses ticks during fast rotation)
 
 ---
 
@@ -246,75 +256,108 @@ FAULT ──(click acknowledge)──> MAIN
 
 **Goal:** UI polish, new features, and advanced PD support
 
-#### 6.1 Display Synapticon Logo
-- Render the 220x220 RGB565 bitmap from `src/ui/assets/synapticon_logo.h` during boot splash (full size, centered)
-- Display a scaled-down version in the About screen
-- The bitmap is pre-encoded in ST7789 RGB565 format, ready for direct SPI transfer
+#### 6.1 Settings Submenu (Planned)
+Reorganize menu structure to group configuration options under a "Settings" submenu:
 
-#### 6.2 Improve Encoder Tick Counting
+```
+Main Menu:
+> Select Voltage
+  Current Limit
+  Settings          <-- NEW submenu
+  About
+
+Settings Submenu:
+> Flash EEPROM      (moved from main menu)
+  PPS Calibration   (NEW feature, see 6.2)
+  Back
+```
+
+**Benefits:**
+- Cleaner main menu with fewer items
+- Logical grouping of advanced/rarely-used options
+- Room for future settings (brightness, sounds, etc.)
+
+#### 6.2 Automatic PPS Voltage Calibration (Planned)
+**Problem:** PPS chargers often output slightly different voltages than requested. When you request 12.00V, you might get 12.15V or 11.92V. This affects precision applications.
+
+**Solution:** An automatic calibration routine that:
+1. Requests multiple voltage points across the PPS range
+2. Measures actual output voltage via INA228
+3. Builds a calibration table (requested → actual)
+4. Applies correction when user selects a target voltage
+
+**Proposed Flow:**
+```
+User enters Settings > PPS Calibration
+
+Screen 1: "PPS Calibration"
+  "This will measure your charger's
+   voltage accuracy at multiple points.
+   Takes ~30 seconds. Load switch will
+   be enabled during calibration."
+   
+   [Start] [Cancel]
+
+Screen 2: Calibration in progress
+  Progress bar: "Testing 5.0V..."
+  Shows: Requested: 5.00V  Actual: 5.12V
+  
+Screen 3: Results
+  "Calibration complete!
+   Average offset: +0.08V
+   Max error: 0.15V @ 15V
+   
+   [Save] [Discard]"
+```
+
+**Data Structure:**
+```cpp
+struct PpsCalibration {
+    bool valid;
+    uint8_t num_points;         // e.g., 8 points
+    uint16_t requested_mv[8];   // 5000, 7000, 9000, 11000, ...
+    int16_t offset_mv[8];       // +120, +80, +50, -20, ...
+};
+```
+
+**Usage:** When user selects a PPS voltage, apply linear interpolation from calibration table to request a corrected value that results in the desired actual output.
+
+**Settings Toggle:** "Enable PPS Calibration: [ON]/OFF" in Settings menu to enable/disable correction.
+
+**Storage:** Calibration data could be stored in RP2040 flash (not EEPROM) using Pico SDK's flash storage, persisting across power cycles.
+
+#### 6.3 Improve Encoder Tick Counting (Pending)
 - Encoder still misses some ticks during fast rotation
-- Investigate: ISR debounce timing (currently 1ms), quadrature decoding edge detection, hardware filtering
-- Consider counting on both edges (A and B channels) for 2x or 4x resolution
+- Investigate: ISR debounce timing, quadrature decoding edge detection
+- Consider counting on both edges for 2x or 4x resolution
 
-#### 6.3 Thermometer Temperature Widget
+#### 6.4 Thermometer Temperature Widget (Optional)
 - Programmatic thermometer graphic on main screen (bottom-right corner)
-- Vertical bar with rounded bulb at bottom, ~12px wide, ~80px tall
-- Color-coded fill levels: blue (<30°C), yellow (30-50°C), orange (50-65°C), red (65-80°C)
-- Blinking effect above 75°C (critical temperature warning)
-- INA die temp and NTC board temp labels displayed to the left of the thermometer
-- Implement as a standalone `drawThermometer()` function so it can be easily removed if it doesn't look good
+- Color-coded fill: blue (<30°C) → yellow → orange → red (>65°C)
+- Blinking above 75°C (critical warning)
+- Low priority - current dual temp display works well
 
-#### 6.4 Better Font Rendering
-- Current 5x7 bitmap font looks pixelated at large sizes (especially main screen readouts)
-- Options to evaluate:
-  - Larger bitmap font (8x16 or custom designed)
-  - Anti-aliased font rendering (grayscale pixels for smoother edges)
-  - Pre-rendered digit sprites for the big voltage/current/power values
-- Priority: main screen large numbers, About screen title
+#### 6.5 Completed Features (Reference)
 
-#### 6.5 PPS Mode Support ✅ COMPLETE
-Programmable Power Supply mode allows fine-grained voltage control within a range.
+The following Phase 6 features have been fully implemented:
 
-- **6.5a** Parse PPS capabilities from source caps (min/max voltage, max current) ✅ — already implemented in `SourceCapability` struct (`is_pps`, `min_voltage_mv`)
-- **6.5b** Add PPS-aware PDO selection UI ✅ — PDO list shows "PPS x-yV zzzzmA" for PPS profiles, clearly indicating programmable range
-- **6.5c** Implement voltage adjustment within PPS range ✅ — new `AdjustMode::PPS_VOLTAGE` mode where encoder adjusts millivolts (20mV steps per PD spec). Shows progress bar, min/max labels, and current selection
-- **6.5d** Call `requestPPSProfile()` with user-selected voltage ✅ — integrated via `pd_manager.requestPpsVoltage()`
-- **6.5e** Implement PPS keep-alive ✅ — `PdManager::update()` automatically refreshes PPS contract every 7 seconds (under 10-second spec limit). Tracks `_pps_active`, `_pps_voltage_mv`, `_pps_current_ma`, `_pps_last_refresh`
-- **6.5f** Update main screen for PPS ✅ — shows green "PPS" badge next to contract info when PPS mode is active
+| Feature | Status | Notes |
+|---------|--------|-------|
+| PPS Mode Support | ✅ | Voltage adjustment, keep-alive, UI badge |
+| EEPROM Flash Menu | ✅ | Compare, flash, verify with progress |
+| Anti-aliased Fonts | ✅ | Inter font family, 3 sizes |
+| Synapticon Logo | ✅ | Boot screen + About screen |
+| Rounded UI Elements | ✅ | Frames, badges with fillRoundRect |
 
-**Implementation Details:**
-- State machine tracks PPS state: target voltage, min/max range, max current, PDO index
-- When user selects PPS PDO from list, enters voltage adjustment mode instead of immediate request
-- Display shows "Programmable Power" header with large voltage display, progress bar, and range labels
-- PPS keep-alive runs in `pd_manager.update()`, transparent to application
-- PPS state is deactivated when switching to fixed/AVS profiles
+---
 
-#### 6.6 EEPROM Flash Menu Item ✅ COMPLETE
-Add "Flash EEPROM" entry to the settings menu for runtime TPS26750 configuration updates.
+## Hardware Notes
 
-- **UI Flow:** ✅
-  1. User selects "Flash EEPROM" from menu
-  2. Firmware reads EEPROM content and compares against `tps26750_patch.c` binary
-  3. Display comparison result:
-     - "Config identical" — EEPROM already has the same binary
-     - "EEPROM empty" — no valid data found
-     - "Different config found" — EEPROM has a different configuration
-  4. Prompt: "Proceed with flash?" with Yes/No selection via encoder (if not identical)
-  5. On Yes: flash with progress bar, verify, show result (success/failure)
-  6. On No: return to menu
-
-- **Implementation Notes:** ✅
-  - Existing functions in `eeprom_loader.cpp`: `eeprom_write_block()`, `eeprom_read_block()`, `eeprom_already_programmed()`, `flashTps26750Eeprom()`
-  - Refactored: separate the compare and flash steps into individual callable functions (now accessible at runtime)
-  - Properly inits/deinits I2C1 for EEPROM access
-  - Flash is a blocking operation (~5-10 seconds) — display progress updates via callback
-  - After successful flash, instructs user to power cycle the TPS26750
-
-#### 6.7 UI Visual Improvements (Pending)
-- Redesign main screen power readouts with oval/rounded bounding boxes around voltage, current, and power values
-- Goal: visually appealing, clear separation of metrics
-- Specific design TBD — to be discussed in detail before implementation
-- May involve: rounded rectangle drawing primitive, layout redesign, color scheme refinement
+### Non-PD Charger Behavior
+- When connected to a non-PD charger (no USB-PD negotiation), the device operates in USB BC1.2 mode
+- **Maximum current: 3A** (limited by USB-C specification for non-PD sources)
+- Main screen shows "USB 5V (no PD)" to indicate fallback mode
+- PDO selection shows "No PD contracts" with helpful message
 
 ---
 

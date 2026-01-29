@@ -11,7 +11,7 @@ namespace AppConfig {
     // Timing Constants
     // -------------------------------------------------------------------------
     constexpr uint32_t BOOT_DURATION_MS = 2000;        // Boot screen duration [ms]
-    constexpr uint32_t MENU_TIMEOUT_MS = 10000;        // Auto-return from menu [ms]
+    constexpr uint32_t MENU_TIMEOUT_MS = 15000;        // Auto-return from menu [ms]
     constexpr uint32_t DISPLAY_UPDATE_MS = 100;        // Main screen refresh rate [ms]
     constexpr uint32_t ENCODER_LONG_PRESS_MS = 700;    // Long press threshold [ms]
 
@@ -27,11 +27,11 @@ namespace AppConfig {
     // -------------------------------------------------------------------------
     // Current Limit Settings
     // -------------------------------------------------------------------------
-    constexpr uint32_t CURRENT_LIMIT_MIN_MA = 50;       // Minimum current limit [mA]
+    constexpr uint32_t CURRENT_LIMIT_MIN_MA = 10;       // Minimum current limit [mA] (0.01A)
     constexpr uint32_t CURRENT_LIMIT_MAX_MA = 5000;     // Maximum current limit [mA]
-    constexpr uint32_t CURRENT_LIMIT_STEP_MA = 50;      // Adjustment step size  [mA]
+    constexpr uint32_t CURRENT_LIMIT_STEP_MA = 10;      // Base adjustment step [mA] (fine control)
     constexpr uint32_t CURRENT_LIMIT_DEFAULT_MA = 1000; // Default current limit [mA]
-    constexpr uint32_t CURRENT_LIMIT_VELOCITY_DIV = 3;  // Velocity divider (slower scaling for small range)
+    constexpr uint32_t CURRENT_LIMIT_VELOCITY_DIV = 1;  // Velocity divider (1 = use full velocity scaling)
 
     // -------------------------------------------------------------------------
     // PPS Voltage Settings

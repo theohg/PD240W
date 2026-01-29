@@ -39,6 +39,7 @@ DisplayManager::DisplayManager()
     , _last_adjust_value(0)
     , _last_pps_voltage(0)
     , _last_boot_message(nullptr)
+    , _backlight_on(false)
 {
 }
 
@@ -93,6 +94,12 @@ void DisplayManager::render() {
     }
 
     _needs_full_redraw = false;
+
+    // Turn on backlight after first frame is fully rendered (prevents ghost image)
+    if (!_backlight_on) {
+        hw.display.setBacklight(true);
+        _backlight_on = true;
+    }
 }
 
 void DisplayManager::invalidate() {
@@ -264,9 +271,9 @@ void DisplayManager::drawBootText() {
     // Stage message - only redraw when message changes (prevents flicker)
     const char* stage_msg = stateMachine.getBootStageMessage();
     if (stage_msg != _last_boot_message) {
-        hw.display.fillRect(0, 260, SCREEN_WIDTH, 16, UIColors::BACKGROUND);
+        hw.display.fillRect(0, 255, SCREEN_WIDTH, 16, UIColors::BACKGROUND);
         if (stage_msg && stage_msg[0] != '\0') {
-            drawCenteredStringAA(262, stage_msg, UIColors::TEXT_PRIMARY, FONT_SMALL);
+            drawCenteredStringAA(255, stage_msg, UIColors::TEXT_PRIMARY, FONT_SMALL);
         }
         _last_boot_message = stage_msg;
     }
@@ -340,13 +347,25 @@ void DisplayManager::drawActiveContract() {
 }
 
 void DisplayManager::drawPowerReadings() {
-    // Start slightly lower to give breathing room from the Contract info
-    int y = CONTENT_Y_START + 50;
+    // Power readings frame constants
+    const int FRAME_X = MARGIN - 2;
+    const int FRAME_Y = CONTENT_Y_START + 45;
+    const int FRAME_W = SCREEN_WIDTH - 2 * MARGIN + 4;
+    const int FRAME_H = 138;  // Increased to fully contain power section
+    const int FRAME_R = 6;  // Corner radius
+
+    // Draw rounded frame on full redraw
+    if (_needs_full_redraw) {
+        hw.display.drawRoundRect(FRAME_X, FRAME_Y, FRAME_W, FRAME_H, FRAME_R, UIColors::HEADER_LINE);
+    }
+
+    // Power readings start inside the frame
+    int y = FRAME_Y + 8;
 
     // Layout Constants
-    const int LABEL_X = MARGIN;
-    const int VALUE_X = MARGIN + 40; // Align all big numbers here
-    const int UNIT_X  = 163;         // Fixed X for unit letters (V, A, W) — prevents shifting
+    const int LABEL_X = MARGIN + 3;
+    const int VALUE_X = MARGIN + 43; // Align all big numbers here
+    const int UNIT_X  = 165;         // Fixed X for unit letters (V, A, W) — prevents shifting
 
     const SafetyState& state = safety.getState();
     char buf[32];
@@ -361,13 +380,13 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "V", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
-    // Secondary: Input Voltage
+    // Secondary: Input Voltage - right aligned in frame
     y += 32;
     snprintf(buf, sizeof(buf), "Vin: %.2f V", state.vbus_voltage_v);
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
     // --- Current Section ---
-    y += 16; // Gap between sections
+    y += 14; // Gap between sections
 
     // Primary: Output Current (number and unit rendered separately)
     hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
@@ -385,7 +404,7 @@ void DisplayManager::drawPowerReadings() {
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
     // --- Power Section ---
-    y += 16; // Gap between sections
+    y += 14; // Gap between sections
 
     // Primary: Power (number and unit rendered separately)
     hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
@@ -398,7 +417,8 @@ void DisplayManager::drawPowerReadings() {
 }
 
 void DisplayManager::drawTemperature() {
-    int y = CONTENT_Y_START + 185;
+    // Position below the power readings frame (frame ends at CONTENT_Y_START + 45 + 138 = 183)
+    int y = CONTENT_Y_START + 188;
     const SafetyState& state = safety.getState();
 
     // Static tracking for flicker prevention
@@ -446,7 +466,9 @@ void DisplayManager::drawTemperature() {
     // --- NTC temperature ---
     if (_needs_full_redraw) {
         hw.display.drawStringAA(NTC_LABEL_X, y, "NTC:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(NTC_UNIT_X, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        // Draw degree symbol as small 'o' + 'C' (no extended ASCII in font)
+        hw.display.drawStringAA(NTC_UNIT_X, y - 3, "o", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(NTC_UNIT_X + 6, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
     if (ntc_changed) {
         if (blink_hide) {
@@ -461,7 +483,9 @@ void DisplayManager::drawTemperature() {
     // --- INA temperature ---
     if (_needs_full_redraw) {
         hw.display.drawStringAA(INA_LABEL_X, y, "INA:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(INA_UNIT_X, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        // Draw degree symbol as small 'o' + 'C' (no extended ASCII in font)
+        hw.display.drawStringAA(INA_UNIT_X, y - 3, "o", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(INA_UNIT_X + 6, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
     if (ina_changed) {
         if (blink_hide) {
@@ -477,28 +501,76 @@ void DisplayManager::drawTemperature() {
 }
 
 void DisplayManager::drawOutputStatus() {
-    int y = CONTENT_Y_START + 210;
+    // Position below temperature readings
+    int y = CONTENT_Y_START + 208;
+
+    // Badge constants
+    const int BADGE_W = 32;
+    const int BADGE_H = 16;
+    const int BADGE_R = 3;
+    const int BADGE_X = SCREEN_WIDTH - MARGIN - BADGE_W;  // Right-aligned badges
+
+    // Static tracking for flicker prevention
+    static bool last_load_on = false;
+    static bool last_buck_on = false;
+
+    bool load_on = hw.loadSwitch.read();
+    bool buck_on = hw.EN_17V.read();
 
     // Only draw labels on full redraw
     if (_needs_full_redraw) {
-        hw.display.drawStringAA(MARGIN, y, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(MARGIN, y + 20, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, y + 2, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, y + 22, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        // Force badge redraw
+        last_load_on = !load_on;
+        last_buck_on = !buck_on;
     }
 
-    // Load switch status - use fixed width "ON " or "OFF"
-    bool load_on = hw.loadSwitch.read();
-    int status_x = MARGIN + ST7789::getStringWidthAA("Load Switch: ", FONT_SMALL);
-    hw.display.drawStringAA(status_x, y, load_on ? "ON " : "OFF",
-                          load_on ? UIColors::ACCENT : UIColors::ERROR,
-                          UIColors::BACKGROUND, FONT_SMALL);
+    // --- Load Switch Badge ---
+    if (load_on != last_load_on || _needs_full_redraw) {
+        // Clear badge area first to avoid corner artifacts (+1px margin for rounding)
+        hw.display.fillRect(BADGE_X - 1, y - 1, BADGE_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
+        if (load_on) {
+            // Green "ON" badge
+            hw.display.fillRoundRect(BADGE_X, y, BADGE_W, BADGE_H, BADGE_R, UIColors::ACCENT);
+            int text_w = ST7789::getStringWidthAA("ON", FONT_SMALL);
+            int text_x = BADGE_X + (BADGE_W - text_w) / 2;
+            int text_y = y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(text_x, text_y, "ON", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
+        } else {
+            // Red "OFF" badge
+            hw.display.fillRoundRect(BADGE_X, y, BADGE_W, BADGE_H, BADGE_R, UIColors::ERROR);
+            int text_w = ST7789::getStringWidthAA("OFF", FONT_SMALL);
+            int text_x = BADGE_X + (BADGE_W - text_w) / 2;
+            int text_y = y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(text_x, text_y, "OFF", UIColors::BACKGROUND, UIColors::ERROR, FONT_SMALL);
+        }
+        last_load_on = load_on;
+    }
 
-    // 17V buck status
-    bool buck_on = hw.EN_17V.read();
-    int buck_status_x = MARGIN + ST7789::getStringWidthAA("17V Buck: ", FONT_SMALL);
-    hw.display.drawStringAA(buck_status_x, y + 20, buck_on ? "ON " : "OFF",
-                          buck_on ? UIColors::ACCENT : UIColors::MUTED,
-                          UIColors::BACKGROUND, FONT_SMALL);
+    // --- 17V Buck Badge (aligned vertically with Load badge) ---
+    if (buck_on != last_buck_on || _needs_full_redraw) {
+        int buck_y = y + 20;
+        // Clear badge area first to avoid corner artifacts (+1px margin for rounding)
+        hw.display.fillRect(BADGE_X - 1, buck_y - 1, BADGE_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
+        if (buck_on) {
+            // Yellow "ON" badge (safety STO/SBC)
+            hw.display.fillRoundRect(BADGE_X, buck_y, BADGE_W, BADGE_H, BADGE_R, UIColors::CAUTION);
+            int text_w = ST7789::getStringWidthAA("ON", FONT_SMALL);
+            int text_x = BADGE_X + (BADGE_W - text_w) / 2;
+            int text_y = buck_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(text_x, text_y, "ON", UIColors::BACKGROUND, UIColors::CAUTION, FONT_SMALL);
+        } else {
+            // Gray "OFF" badge
+            hw.display.fillRoundRect(BADGE_X, buck_y, BADGE_W, BADGE_H, BADGE_R, UIColors::MUTED);
+            int text_w = ST7789::getStringWidthAA("OFF", FONT_SMALL);
+            int text_x = BADGE_X + (BADGE_W - text_w) / 2;
+            int text_y = buck_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(text_x, text_y, "OFF", UIColors::BACKGROUND, UIColors::MUTED, FONT_SMALL);
+        }
+        last_buck_on = buck_on;
+    }
 }
 
 // ============================================================================
@@ -540,7 +612,7 @@ void DisplayManager::drawPdoList() {
 
         if (_needs_full_redraw) {
             hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                                  "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                                  "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         }
         return;
     }
@@ -882,7 +954,7 @@ void DisplayManager::drawEepromFlashScreen() {
 // ============================================================================
 
 void DisplayManager::drawAboutScreen() {
-    const int LINE_H = 18;
+    const int LINE_H = 16;
 
     // Logo on left, product name on right
     int logo_size = 44;
@@ -902,12 +974,12 @@ void DisplayManager::drawAboutScreen() {
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
-    y += 10;
+    y += 8;
 
     // Info lines — compact two-column layout to fit 240px width
     const int LABEL_X = MARGIN + 5;
-    const int VALUE_X = LABEL_X + 68;
-    char buf[40];
+    const int VALUE_X = LABEL_X + 55;
+    char buf[48];
 
     // HW / FW on one line
     hw.display.drawStringAA(LABEL_X, y, "HW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
@@ -932,11 +1004,33 @@ void DisplayManager::drawAboutScreen() {
 
     hw.display.drawStringAA(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     hw.display.drawStringAA(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-    y += LINE_H + 6;
+    y += LINE_H;
+
+    // Flash usage using linker symbols (RP2040 has 2MB flash)
+    // These symbols are defined by the Pico SDK linker script
+    extern char __flash_binary_start;
+    extern char __flash_binary_end;
+    uint32_t flash_used = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
+    constexpr uint32_t FLASH_TOTAL = 2 * 1024 * 1024;  // 2MB RP2040 internal flash
+    float flash_percent = (flash_used * 100.0f) / FLASH_TOTAL;
+    hw.display.drawStringAA(LABEL_X, y, "Flash:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%luKB (%.1f%%)", (unsigned long)(flash_used / 1024), flash_percent);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+    y += LINE_H + 4;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
-    y += 10;
+    y += 8;
+
+    // GitHub link section
+    hw.display.drawStringAA(LABEL_X, y, "Link:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    // Display shortened URL
+    hw.display.drawStringAA(VALUE_X, y, "synapticon/PD240W", UIColors::LINK_BLUE, UIColors::BACKGROUND, FONT_SMALL);
+    y += LINE_H + 4;
+
+    // Separator
+    hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
+    y += 8;
 
     drawCenteredStringAA(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
 

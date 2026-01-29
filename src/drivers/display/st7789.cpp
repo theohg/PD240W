@@ -122,10 +122,14 @@ bool ST7789::init() {
     // 18. Clear screen to black immediately
     fillScreen(COLOR_BLACK);
 
-    // 19. Turn on backlight now that screen is cleared (prevents ghost image from previous session)
-    gpio_put(_pinBL, 1);
+    // 19. Backlight stays OFF - will be turned on after first frame is rendered
+    // This prevents any ghost image or uninitialized content from being visible
 
     return true;
+}
+
+void ST7789::setBacklight(bool on) {
+    gpio_put(_pinBL, on ? 1 : 0);
 }
 
 // ===== Low-level SPI communication =====
@@ -260,6 +264,110 @@ void ST7789::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color
     }
 
     gpio_put(_pinCS, 1);
+}
+
+void ST7789::drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+    // Draw the straight edges (inset by radius)
+    drawLine(x + r, y, x + w - r - 1, y, color);              // Top
+    drawLine(x + r, y + h - 1, x + w - r - 1, y + h - 1, color); // Bottom
+    drawLine(x, y + r, x, y + h - r - 1, color);              // Left
+    drawLine(x + w - 1, y + r, x + w - 1, y + h - r - 1, color); // Right
+
+    // Draw four corners using midpoint circle algorithm
+    int16_t cx1 = x + r;
+    int16_t cy1 = y + r;
+    int16_t cx2 = x + w - r - 1;
+    int16_t cy2 = y + h - r - 1;
+
+    int16_t f = 1 - r;
+    int16_t ddF_x = 1;
+    int16_t ddF_y = -2 * r;
+    int16_t px = 0;
+    int16_t py = r;
+
+    while (px <= py) {
+        // Top-left corner
+        drawPixel(cx1 - py, cy1 - px, color);
+        drawPixel(cx1 - px, cy1 - py, color);
+        // Top-right corner
+        drawPixel(cx2 + py, cy1 - px, color);
+        drawPixel(cx2 + px, cy1 - py, color);
+        // Bottom-left corner
+        drawPixel(cx1 - py, cy2 + px, color);
+        drawPixel(cx1 - px, cy2 + py, color);
+        // Bottom-right corner
+        drawPixel(cx2 + py, cy2 + px, color);
+        drawPixel(cx2 + px, cy2 + py, color);
+
+        if (f >= 0) {
+            py--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        px++;
+        ddF_x += 2;
+        f += ddF_x;
+    }
+}
+
+void ST7789::fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+    // Clamp radius to half of smallest dimension
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r <= 0) {
+        fillRect(x, y, w, h, color);
+        return;
+    }
+
+    // Fill the central rectangle (full width, middle portion)
+    fillRect(x, y + r, w, h - 2 * r, color);
+
+    // Fill the corners using the helper
+    fillCircleHelper(x + w - r - 1, y + r, r, 1, h - 2 * r - 1, color);  // Right side
+    fillCircleHelper(x + r, y + r, r, 2, h - 2 * r - 1, color);          // Left side
+
+    // Fill top and bottom strips between corners
+    fillRect(x + r, y, w - 2 * r, r, color);
+    fillRect(x + r, y + h - r, w - 2 * r, r, color);
+}
+
+// Helper to fill rounded corners using vertical lines
+// cornermask: bit 0 = right side (fills right), bit 1 = left side (fills left)
+void ST7789::fillCircleHelper(int16_t x0, int16_t y0, int16_t r,
+                               uint8_t cornermask, int16_t delta, uint16_t color) {
+    int16_t f = 1 - r;
+    int16_t ddF_x = 1;
+    int16_t ddF_y = -2 * r;
+    int16_t px = 0;
+    int16_t py = r;
+
+    while (px <= py) {
+        if (cornermask & 0x1) {
+            // Right side corners
+            drawVLine(x0 + px, y0 - py, 2 * py + 1 + delta, color);
+            drawVLine(x0 + py, y0 - px, 2 * px + 1 + delta, color);
+        }
+        if (cornermask & 0x2) {
+            // Left side corners
+            drawVLine(x0 - px, y0 - py, 2 * py + 1 + delta, color);
+            drawVLine(x0 - py, y0 - px, 2 * px + 1 + delta, color);
+        }
+
+        if (f >= 0) {
+            py--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        px++;
+        ddF_x += 2;
+        f += ddF_x;
+    }
+}
+
+// Optimized vertical line
+void ST7789::drawVLine(int16_t x, int16_t y, int16_t h, uint16_t color) {
+    if (h <= 0) return;
+    fillRect(x, y, 1, h, color);
 }
 
 // ===== Text rendering =====

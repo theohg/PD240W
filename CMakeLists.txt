@@ -69,9 +69,22 @@ add_executable(PD240W
 pico_set_program_name(PD240W "PD240W")
 pico_set_program_version(PD240W "0.1")
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(PD240W 1)
-pico_enable_stdio_usb(PD240W 0)
+# =============================================================================
+# STDIO Configuration - Choose ONE output method
+# =============================================================================
+# Option 1: UART on GPIO 16 (TX) and GPIO 29 (RX) - for debug probe/FTDI
+# Option 2: USB Serial - appears as /dev/ttyACM0 or COM port
+#
+# To switch: change the 1/0 values below and re-run CMake (not just ninja)
+# =============================================================================
+set(STDIO_UART 1)   # Set to 1 for UART output, 0 to disable
+set(STDIO_USB  0)   # Set to 1 for USB serial output, 0 to disable
+
+pico_enable_stdio_uart(PD240W ${STDIO_UART})
+pico_enable_stdio_usb(PD240W ${STDIO_USB})
+
+# Get build timestamp (updates on each build)
+string(TIMESTAMP BUILD_TIMESTAMP "%b %d %Y" UTC)
 
 # ADD THESE LINES TO SET YOUR CUSTOM PINS:
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
@@ -79,6 +92,8 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   PICO_DEFAULT_UART_TX_PIN=16
   PICO_DEFAULT_UART_RX_PIN=29
   PICO_DEFAULT_UART_BAUD_RATE=115200
+  # Build date from CMake (always updates on rebuild)
+  BUILD_DATE="${BUILD_TIMESTAMP}"
 )
 
 # Add the standard library to the build
@@ -102,5 +117,14 @@ target_include_directories(PD240W PRIVATE
 )
 
 pico_add_extra_outputs(PD240W)
+
+# Post-build: display flash usage (find the size tool from the toolchain)
+find_program(ARM_SIZE arm-none-eabi-size HINTS ${PICO_TOOLCHAIN_PATH}/bin)
+if(ARM_SIZE)
+    add_custom_command(TARGET PD240W POST_BUILD
+        COMMAND ${ARM_SIZE} $<TARGET_FILE:PD240W>
+        COMMENT "Flash/RAM usage:"
+    )
+endif()
 
 pico_generate_pio_header(PD240W ${CMAKE_CURRENT_LIST_DIR}/src/drivers/rgb_led/sk6812.pio)

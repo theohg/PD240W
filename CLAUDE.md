@@ -8,25 +8,64 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Target:** RP2040 (Raspberry Pi Pico), C++17, Pico SDK v2.2.0
 - **Build:** CMake + Ninja
-- **Status:** Phase 4 (UI refinement) in progress. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
-- **Key features:** Voltage selection from PD contracts (up to 48V), adjustable current limiting (0-5A via INA228), LCD menu with Prusa-style encoder navigation, overcurrent/overtemperature protection, optional 17V buck converter
+- **Status:** Phase 4 (UI refinement) complete. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for roadmap.
+- **Key features:** Voltage selection from PD contracts (up to 48V), adjustable current limiting (10mA-5A via INA228), LCD menu with Prusa-style encoder navigation, overcurrent/overtemperature protection, optional 17V buck converter
+- **Non-PD fallback:** 5V @ 3A max when connected to non-PD chargers (USB BC1.2 mode)
 
 ## Build Commands
 
+### Quick Reference
+
+| Command | What it does |
+|---------|-------------|
+| `ninja` | Fast incremental build (only changed files) |
+| `cmake .. && ninja` | Reconfigure + build (updates build date) |
+| `rm -rf * && cmake -G Ninja .. && ninja` | Full clean rebuild |
+
+### Detailed Build Commands
+
 ```bash
-# Build (use -G Ninja explicitly)
+# INCREMENTAL BUILD (fastest, use during development)
+# Only recompiles files that changed. Does NOT update build date.
+cd build && ninja
+
+# RECONFIGURE + BUILD (use when CMakeLists.txt changes or to update build date)
+# Regenerates build system, then compiles. Updates BUILD_DATE in About screen.
 cd build && cmake -G Ninja .. && ninja
 
-# Clean build
-cd build && rm -rf * && cmake -G Ninja .. && ninja
+# CLEAN BUILD (use when things are broken or for releases)
+# Deletes everything in build/, regenerates from scratch.
+cd build && rm -rf ./* && cmake -G Ninja .. && ninja
 
-# Flash: Hold BOOTSEL while connecting USB, drag build/PD240W.uf2 to mounted drive
+# FLASH via USB (no debugger needed)
+# Hold BOOTSEL button while connecting USB, drag .uf2 to mounted drive
+cp build/PD240W.uf2 /Volumes/RPI-RP2/
 
-# Serial debugging (UART on GP16/GP29 @ 115200)
+# FLASH via debug probe (SWD)
+# Uses OpenOCD with CMSIS-DAP probe. VSCode task "Flash" does this.
+openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+  -c "adapter speed 5000; program build/PD240W.elf verify reset exit"
+
+# SERIAL DEBUGGING (UART on GP16 TX, GP29 RX @ 115200 baud)
 screen /dev/tty.usbserial-* 115200
+# or
+minicom -D /dev/tty.usbserial-* -b 115200
 ```
 
-**Build outputs:** `build/PD240W.uf2` (flash image), `build/PD240W.elf`, `build/compile_commands.json` (for IDE support)
+### Build Outputs
+
+| File | Purpose |
+|------|--------|
+| `build/PD240W.uf2` | Flash image for USB drag-and-drop |
+| `build/PD240W.elf` | Debug binary with symbols (for SWD flash) |
+| `build/PD240W.bin` | Raw binary image |
+| `build/compile_commands.json` | IDE support (clangd, VSCode) |
+
+### Build Info
+
+- **Build date:** Updated when running `cmake ..` (stored as `BUILD_DATE` macro)
+- **Flash size:** Displayed at end of build and in About screen (uses linker symbols)
+- **Post-build:** Automatically shows flash/RAM usage via `arm-none-eabi-size`
 
 **Build environment:** VSCode Pico SDK extension sets `PICO_SDK_PATH`, `PICO_TOOLCHAIN_PATH`, CMake, Ninja, Picotool. No test infrastructure exists.
 

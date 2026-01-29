@@ -29,6 +29,9 @@ public:
     // Initialization (returns true on success)
     bool init();
 
+    // Backlight control
+    void setBacklight(bool on);
+
     // Basic drawing
     void fillScreen(uint16_t color);
     void drawPixel(int16_t x, int16_t y, uint16_t color);
@@ -37,6 +40,8 @@ public:
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
     void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
+    void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
 
     // Text rendering
     void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);
@@ -67,4 +72,9 @@ private:
     void writeData(uint8_t data);
     void writeData16(uint16_t data);
     void setAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+
+    // Helper for fillRoundRect
+    void fillCircleHelper(int16_t x0, int16_t y0, int16_t r,
+                          uint8_t cornermask, int16_t delta, uint16_t color);
+    void drawVLine(int16_t x, int16_t y, int16_t h, uint16_t color);
 };
