@@ -308,44 +308,6 @@ void ST7789::drawString(int16_t x, int16_t y, const char* str, uint16_t color, u
     }
 }
 
-void ST7789::drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const FontDef* font) {
-    // 1. Basic Bounds Check
-    if (c < font->first_char || c > font->last_char) return;
-
-    // 2. Get the offset
-    int index = c - font->first_char;
-    // Each char has 'width' columns
-    const uint16_t* char_data = &font->data[index * font->width];
-
-    // 3. Draw
-    for (uint8_t col = 0; col < font->width; col++) {
-        uint16_t column_bits = char_data[col]; // 16 bits of vertical info
-
-        for (uint8_t row = 0; row < font->height; row++) {
-            // Check specific bit (LSB is top pixel in this format)
-            bool pixel_on = column_bits & (1 << row);
-
-            // Draw pixel (no scaling needed for native fonts!)
-            drawPixel(x + col, y + row, pixel_on ? color : bg);
-        }
-    }
-}
-
-void ST7789::drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const FontDef* font) {
-    int16_t cursor_x = x;
-    
-    while (*str) {
-        if (*str == '\n') {
-            cursor_x = x;
-            y += font->height + 2; // Line spacing
-        } else {
-            drawChar(cursor_x, y, *str, color, bg, font);
-            cursor_x += font->width; // Move cursor
-        }
-        str++;
-    }
-}
-
 // ===== Number rendering =====
 
 void ST7789::drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size) {
@@ -365,15 +327,132 @@ void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint
     drawString(x, y, buffer, color, bg, size);
 }
 
-void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, const FontDef* font) {
-    char buffer[20];
-    char format[10];
-    
-    // Create format string, e.g., "%.2f"
-    snprintf(format, sizeof(format), "%%.%df", decimals);
-    snprintf(buffer, sizeof(buffer), format, value);
-    
-    drawString(x, y, buffer, color, bg, font);
+// ===== Anti-aliased text rendering =====
+
+// Blend a single RGB565 channel using 4-bit alpha (0-15)
+static inline uint16_t blendRgb565(uint16_t fg, uint16_t bg, uint8_t alpha) {
+    if (alpha == 0) return bg;
+    if (alpha == 15) return fg;
+
+    // Extract RGB565 channels
+    uint8_t fg_r = (fg >> 11) & 0x1F;
+    uint8_t fg_g = (fg >> 5) & 0x3F;
+    uint8_t fg_b = fg & 0x1F;
+
+    uint8_t bg_r = (bg >> 11) & 0x1F;
+    uint8_t bg_g = (bg >> 5) & 0x3F;
+    uint8_t bg_b = bg & 0x1F;
+
+    // Blend: result = (fg * alpha + bg * (15 - alpha)) / 15
+    uint8_t inv = 15 - alpha;
+    uint8_t r = (fg_r * alpha + bg_r * inv) / 15;
+    uint8_t g = (fg_g * alpha + bg_g * inv) / 15;
+    uint8_t b = (fg_b * alpha + bg_b * inv) / 15;
+
+    return (r << 11) | (g << 5) | b;
+}
+
+void ST7789::drawCharAA(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const AAFont* font) {
+    if (c < font->firstChar || c > font->lastChar) return;
+
+    const AAGlyph& glyph = font->glyphs[c - font->firstChar];
+
+    // Render the full advance rectangle (xAdvance x lineHeight) in one SPI burst.
+    // Background pixels outside the glyph bitmap get bg color.
+    // Glyph pixels get alpha-blended color. No separate fillRect = no flicker.
+    int16_t adv_w = glyph.xAdvance;
+    int16_t adv_h = font->lineHeight;
+    if (adv_w <= 0 || adv_h <= 0) return;
+
+    // Clip to screen
+    int16_t draw_x1 = x + adv_w - 1;
+    int16_t draw_y1 = y + adv_h - 1;
+    if (x >= WIDTH || y >= HEIGHT || draw_x1 < 0 || draw_y1 < 0) return;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (draw_x1 >= WIDTH) draw_x1 = WIDTH - 1;
+    if (draw_y1 >= HEIGHT) draw_y1 = HEIGHT - 1;
+
+    int16_t draw_w = draw_x1 - x + 1;
+    int16_t draw_h = draw_y1 - y + 1;
+
+    // Glyph bitmap position
+    int16_t gx = x + glyph.xOffset;
+    int16_t gy = y + glyph.yOffset;
+
+    // Pre-compute bg pixel bytes
+    uint8_t bg_hi = bg >> 8;
+    uint8_t bg_lo = bg & 0xFF;
+
+    setAddressWindow(x, y, draw_x1, draw_y1);
+
+    gpio_put(_pinDC, 1);
+    gpio_put(_pinCS, 0);
+
+    uint8_t line_buf[480]; // Max 240 pixels * 2 bytes
+
+    for (int16_t row = 0; row < draw_h; row++) {
+        int16_t screen_y = y + row;
+        int16_t src_y = screen_y - gy;
+
+        for (int16_t col = 0; col < draw_w; col++) {
+            int16_t screen_x = x + col;
+            int16_t src_x = screen_x - gx;
+
+            // Check if this pixel falls within the glyph bitmap
+            if (glyph.width > 0 && glyph.height > 0 &&
+                src_x >= 0 && src_x < glyph.width &&
+                src_y >= 0 && src_y < glyph.height) {
+                // Read 4-bit alpha from packed bitmap
+                int pixel_idx = src_y * glyph.width + src_x;
+                int byte_idx = glyph.dataOffset + (pixel_idx / 2);
+                uint8_t packed = font->bitmap[byte_idx];
+                uint8_t alpha = (pixel_idx % 2 == 0) ? (packed >> 4) : (packed & 0x0F);
+
+                uint16_t pixel = blendRgb565(color, bg, alpha);
+                line_buf[col * 2]     = pixel >> 8;
+                line_buf[col * 2 + 1] = pixel & 0xFF;
+            } else {
+                // Background pixel
+                line_buf[col * 2]     = bg_hi;
+                line_buf[col * 2 + 1] = bg_lo;
+            }
+        }
+
+        spi_write_blocking(_spi, line_buf, draw_w * 2);
+    }
+
+    gpio_put(_pinCS, 1);
+}
+
+void ST7789::drawStringAA(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const AAFont* font) {
+    int16_t cursor_x = x;
+
+    while (*str) {
+        if (*str == '\n') {
+            cursor_x = x;
+            y += font->lineHeight;
+        } else {
+            drawCharAA(cursor_x, y, *str, color, bg, font);
+
+            // Advance cursor
+            if (*str >= font->firstChar && *str <= font->lastChar) {
+                cursor_x += font->glyphs[*str - font->firstChar].xAdvance;
+            }
+        }
+        str++;
+    }
+}
+
+int ST7789::getStringWidthAA(const char* str, const AAFont* font) {
+    int width = 0;
+    while (*str) {
+        if (*str >= font->firstChar && *str <= font->lastChar) {
+            width += font->glyphs[*str - font->firstChar].xAdvance;
+        }
+        str++;
+    }
+    return width;
 }
 
 // ===== Bitmap drawing =====

@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
-#include "src/drivers/display/fonts_data.h"
+#include "src/drivers/display/aa_font.h"
 
 // ST7789 LCD Driver for PD240W
 // Resolution: 240x320 (2.4" display, model HS20HS072RX)
@@ -41,13 +41,14 @@ public:
     // Text rendering
     void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, uint8_t size = 1);
-    void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const FontDef* font);
-    void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const FontDef* font);
-
     // Number rendering with formatting
     void drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size = 1);
-    void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, const FontDef* font);
+
+    // Anti-aliased text rendering (4-bit alpha blended)
+    void drawCharAA(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const AAFont* font);
+    void drawStringAA(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, const AAFont* font);
+    static int getStringWidthAA(const char* str, const AAFont* font);
 
     // Bitmap drawing
     void drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data);

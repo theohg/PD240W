@@ -86,14 +86,18 @@ SafetyStatus Safety::update() {
 
     // Critical temperature audible alarm (75C+, pre-fault)
     // Play repeating alarm when temp is critical but not yet at shutdown
+    static bool _critical_alarm_active = false;
+    
     if (_state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)) {
-        if (!hw.buzzer.isPlayingMelody()) {
+        if (!_critical_alarm_active) {
             hw.buzzer.playMelody(CRITICAL_WARNING_ALARM, CRITICAL_WARNING_ALARM_LENGTH);
+            _critical_alarm_active = true;
         }
     } else {
-        // Temperature dropped below critical - stop alarm if playing
-        if (hw.buzzer.isPlayingMelody()) {
+        // Temperature dropped below critical - stop alarm if we started it
+        if (_critical_alarm_active) {
             hw.buzzer.stopMelody();
+            _critical_alarm_active = false;
         }
     }
 

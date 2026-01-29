@@ -85,7 +85,7 @@ namespace Interrupts {
 ### State Machine
 
 ```
-BOOT ──(3s timeout)──> MAIN
+BOOT ──(2s timeout)──> MAIN
 MAIN <──(long press)──> MENU     MAIN <──(fault)──> FAULT
 MENU ──(select)──> ADJUST ──(confirm/back)──> MENU
 FAULT ──(click acknowledge)──> MAIN
@@ -97,6 +97,8 @@ Adjust modes: `PDO_SELECT`, `CURRENT_LIMIT`, `ABOUT` (see `AdjustMode` enum). Th
 
 **BTN1/BTN2 are disabled during BOOT state** — output stays off until boot completes. ISR flags are drained on BOOT→MAIN transition to prevent queued presses from firing.
 
+**Menu timeout:** Auto-returns to MAIN after 10 seconds of inactivity in MENU state.
+
 **Encoder acceleration:** In current limit adjustment, the step size is multiplied by the number of accumulated encoder ticks (`_encoder_delta`), allowing fast turns to make larger jumps.
 
 ### Input Mapping (Prusa-Style)
@@ -105,7 +107,7 @@ Adjust modes: `PDO_SELECT`, `CURRENT_LIMIT`, `ABOUT` (see `AdjustMode` enum). Th
 |---------|--------|
 | Encoder Rotate | Navigate menu / Adjust values |
 | Encoder Click | Confirm / Select |
-| Encoder Long Press (800ms) | Go Back / Exit current screen |
+| Encoder Long Press (700ms) | Go Back / Exit current screen |
 | BTN1 | Toggle Load Switch (any state except BOOT) |
 | BTN2 | Toggle 17V Buck (any state except BOOT, only if VBUS > 18V) |
 
@@ -125,7 +127,7 @@ src/
 │   ├── input/               # Button, RotaryEncoder, ADCInputs
 │   ├── buzzer/              # PWM-based melody playback
 │   ├── rgb_led/             # SK6812 via PIO
-│   ├── display/             # ST7789 LCD (SPI, 240x320)
+│   ├── display/             # ST7789 LCD (SPI, 240x320), AA font renderer & generated fonts
 │   └── power/
 │       ├── ina228/          # Power monitor (I2C 0x40, 8mΩ shunt)
 │       └── tps26750/        # USB PD controller (I2C 0x21)
@@ -140,6 +142,7 @@ src/
 │   └── tps26750_patch.c     # TPS26750 binary configuration
 └── ui/
     ├── display_manager.h/cpp  # All screen rendering (monolithic, no separate screen files)
+    ├── font_config.h          # Central font size configuration (FONT_LARGE/MEDIUM/SMALL)
     └── assets/
         └── synapticon_logo.h
 ```
@@ -172,8 +175,10 @@ PPS allows fine-grained voltage adjustment within a charger's advertised range (
 
 - INA228: Measures voltage, current, power, die temperature via I2C. Configured with 8mΩ shunt, 5A max.
 - Overcurrent: Hardware ALERT pin (active-low, latched) triggers ISR that immediately disables load switch.
-- `SafetyState` includes both NTC board temperature (`temperature_c`) and INA228 die temperature (`ina_temperature_c`).
+- `SafetyState` includes both NTC board temperature (`temperature_c`) and INA228 die temperature (`ina_temperature_c`). The max of both is used for threshold checks.
 - VBUS detection uses **ADC pre-switch measurement** (`hw.adc.getVBUS()`), not INA228 post-switch (which reads 0V when load switch is off).
+- **Temperature thresholds** (with 2°C hysteresis): Caution ≥50°C (yellow LED), Warning ≥65°C (orange LED), Critical ≥75°C (buzzer alarm), Shutdown/Fault ≥80°C (load disabled, red LED).
+- `SafetyStatus` enum: `OK`, `CAUTION`, `WARNING`, `FAULT` — drives both RGB LED color and state machine fault transitions.
 
 ### Display Rendering (DisplayManager)
 
@@ -186,6 +191,48 @@ All rendering is in `display_manager.cpp` (monolithic - no separate screen files
 **Current limit capping:** The adjustment screen uses `getEffectiveMaxCurrentMa()` to cap the user's current limit to the active contract's maximum current (or hardware max if no contract).
 
 **About screen:** Renders product name, HW/FW version, author, build date, target, max specs, and company name from `version.h` constants.
+
+### Anti-Aliased Font System
+
+Text rendering uses 4-bit alpha anti-aliased bitmap fonts generated from Inter (open-source, SIL license). Three font sizes are defined in `src/ui/font_config.h`:
+
+| Variable | Font | Size | Used For |
+|----------|------|------|----------|
+| `FONT_LARGE` | Inter Bold | 28px | Main screen power values (V, A, W) |
+| `FONT_MEDIUM` | Inter SemiBold | 20px | Headers, contract info, adjustment values |
+| `FONT_SMALL` | Inter Regular | 14px | Labels, menus, hints, secondary text |
+
+To change a font size globally, edit `font_config.h` to point to a different generated font header.
+
+**Font generation** (requires Python + Pillow in conda env `IAPR`):
+
+```bash
+cd tools
+
+# Large: Inter Bold 28px (digits + units only)
+/Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
+    fonts/Inter-Bold.ttf 28 ../src/drivers/display/font_inter_28b.h \
+    --chars digits --name font_inter_28b
+
+# Medium: Inter SemiBold 20px (full ASCII)
+/Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
+    fonts/Inter-SemiBold.ttf 20 ../src/drivers/display/font_inter_20sb.h \
+    --name font_inter_20sb
+
+# Small: Inter Regular 14px (full ASCII)
+/Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
+    fonts/Inter-Regular.ttf 14 ../src/drivers/display/font_inter_14.h \
+    --name font_inter_14
+```
+
+**Key files:**
+- `tools/generate_font.py` — TTF → C header converter (4-bit alpha packed bitmaps)
+- `tools/fonts/` — Inter TTF source files
+- `src/drivers/display/aa_font.h` — `AAGlyph`/`AAFont` structs
+- `src/drivers/display/font_inter_*.h` — Generated font data headers
+- `src/ui/font_config.h` — Central font size configuration (`FONT_LARGE`/`FONT_MEDIUM`/`FONT_SMALL`)
+
+**Rendering:** `ST7789::drawCharAA()` renders each character's full advance rectangle in a single SPI burst (background + alpha-blended glyph), eliminating flicker. `ST7789::drawStringAA()` and `getStringWidthAA()` handle proportional string rendering and width calculation.
 
 ### EEPROM Flashing (TPS26750 Config)
 
@@ -275,7 +322,7 @@ These document non-obvious gotchas. Read before modifying related code.
 - **17V Buck:** STO/SBC voltage for motor drive safety (200mA fused), enable only when VBUS > 18V
 - **ADC Voltage:** Pre-switch VBUS (150kΩ/10kΩ divider), redundant to INA228 post-switch
 - **ADC Temp:** NTC thermistor (Beta=3950, 10kΩ @ 25°C, 4.7kΩ series resistor)
-- **Current Resolution:** Target 1mA precision for user adjustment
+- **Current Limit:** 50mA–5000mA range, 50mA steps (see `AppConfig::CURRENT_LIMIT_*`)
 - **Startup:** Output disabled by default, user enables via BTN1
 - **UART:** TX=GP16, RX=GP29 @ 115200 (configured in CMakeLists.txt)
 - **I2C0:** GP4/GP5 @ 400kHz (INA228 0x40, TPS26750 0x21)

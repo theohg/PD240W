@@ -103,17 +103,32 @@ void Buzzer::playTone(uint32_t frequency, uint32_t duration_ms) {
 
 // ===== Melody Playback =====
 
-// Mario Power-Up melody: E5, G5, C6, E6, G6, C7, E7, G7
+// Mario Power-Up melody (Super Mario Bros. mushroom sound)
+// Based on the classic NES sound: ascending arpeggio E-G-E-C-D-G pattern
+// Frequencies are in the 4th and 5th octave range for a pleasant tone
 const Note MARIO_POWERUP[] = {
-    {659, 125},   // E5
-    {784, 125},   // G5
-    {1047, 125},  // C6
-    {1319, 125},  // E6
-    {1568, 125},  // G6
-    {2093, 125},  // C7
-    {2637, 125},  // E7
-    {3136, 500}   // G7 (longer final note)
+    {196, 70},   // G3
+    {247, 70},   // B3
+    {294, 70},   // D4
+    {392, 70},   // G4
+    {494, 70},   // B4
+    {587, 70},   // D5
+    {784, 70},   // G5
+    {988, 70},   // B5
+    {1175, 70},  // D6
+    {1568, 70},  // G6
+    {1976, 70},  // B6
+    {2349, 70},  // D7
+    {3136, 70}   // G7
 };
+// const Note MARIO_ONEUP[] = {
+//     {659, 75},   // E5
+//     {784, 75},   // G5
+//     {1319, 75},  // E6 (Jumps up high)
+//     {1047, 75},  // C6
+//     {1175, 75},  // D6
+//     {1568, 75}   // G6 (Highest note)
+// };
 
 const uint8_t MARIO_POWERUP_LENGTH = sizeof(MARIO_POWERUP) / sizeof(Note);
 

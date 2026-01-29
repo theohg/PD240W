@@ -12,28 +12,26 @@
 StateMachine stateMachine;
 
 // ============================================================================
-// Boot Stage Messages
+// Boot Stage Configuration
 // ============================================================================
+// Simplified boot sequence:
+//   Stage 0 (0ms):    Logo displayed, melody plays
+//   Stage 1 (500ms):  Read USB-PD contracts, show "Reading USB-PD..."
+//   Stage 2 (1500ms): Show "Ready"
+//   At 2000ms:        Transition to MAIN
+
 static const char* BOOT_MESSAGES[] = {
-    "",                    // 0: Logo only
-    "PD240W",              // 1: Product name
-    "",                    // 2: Reading PD
-    "Reading USB-PD...",   // 3: Playing melody
-    "Reading USB-PD...",   // 4: Reading PD
-    "Reading USB-PD...",   // 5: Show contracts
-    "Ready"                // 6: Complete
+    "",                    // 0: Logo only (melody plays)
+    "Reading USB-PD...",   // 1: Reading PD contracts
+    "Ready"                // 2: Complete
 };
-static constexpr uint8_t BOOT_STAGE_COUNT = 7;
+static constexpr uint8_t BOOT_STAGE_COUNT = 3;
 
 // Boot stage timing (cumulative milliseconds)
 static const uint32_t BOOT_STAGE_TIMES[] = {
-    0,      // 0: Logo
-    100,    // 1: Product name
-    200,    // 2: Subtitle
-    300,    // 3: Start melody
-    500,    // 4: Reading PD
-    1500,   // 5: Show contracts
-    2000    // 6: Complete -> transition to MAIN
+    0,      // 0: Logo + start melody
+    500,    // 1: Read USB-PD
+    1500    // 2: Ready
 };
 
 // Storage for PDO list (shared with display)
@@ -84,6 +82,9 @@ void StateMachine::init() {
     _state_enter_time = get_absolute_time();
     _last_activity_time = get_absolute_time();
     _last_encoder_ticks = hw.encoder.getTicks();
+
+    // Start Mario power-up melody at boot
+    hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
 
     LOG_INFO("State machine initialized, starting BOOT sequence");
 }
@@ -171,34 +172,34 @@ void StateMachine::handleBootState() {
 }
 
 void StateMachine::handleMainState(EncoderEvent event) {
-    // Long press enters menu
-    if (event == EncoderEvent::LONG_PRESS) {
+    // Long press or click enters menu
+    if (event == EncoderEvent::LONG_PRESS || event == EncoderEvent::CLICK) {
         transitionTo(AppState::MENU);
     }
-    // Click could toggle output (alternative to BTN1)
-    // For now, we keep BTN1 as primary
 }
 
 void StateMachine::handleMenuState(EncoderEvent event) {
     switch (event) {
         case EncoderEvent::ROTATE_CW:
-            // Move down in menu
+            // Move down in menu (with wrap-around)
             {
                 int next = static_cast<int>(_selected_menu_item) + 1;
-                if (next < static_cast<int>(MenuItem::MENU_COUNT)) {
-                    _selected_menu_item = static_cast<MenuItem>(next);
+                if (next >= static_cast<int>(MenuItem::MENU_COUNT)) {
+                    next = 0;  // Wrap to first item
                 }
+                _selected_menu_item = static_cast<MenuItem>(next);
             }
             _last_activity_time = get_absolute_time();
             break;
 
         case EncoderEvent::ROTATE_CCW:
-            // Move up in menu
+            // Move up in menu (with wrap-around)
             {
                 int prev = static_cast<int>(_selected_menu_item) - 1;
-                if (prev >= 0) {
-                    _selected_menu_item = static_cast<MenuItem>(prev);
+                if (prev < 0) {
+                    prev = static_cast<int>(MenuItem::MENU_COUNT) - 1;  // Wrap to last item
                 }
+                _selected_menu_item = static_cast<MenuItem>(prev);
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -316,6 +317,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
                 if (_selected_pdo_index < _num_pdos - 1) {
                     _selected_pdo_index++;
+                } else {
+                    _selected_pdo_index = 0;  // Wrap to first
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
                 // Velocity-based acceleration for current limit (smaller range: 0-5A)
@@ -348,6 +351,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
                 if (_selected_pdo_index > 0) {
                     _selected_pdo_index--;
+                } else {
+                    _selected_pdo_index = _num_pdos - 1;  // Wrap to last
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
                 // Velocity-based acceleration for current limit (smaller range: 0-5A)
@@ -625,12 +630,7 @@ void StateMachine::setFault(FaultType fault) {
 
 void StateMachine::advanceBootStage() {
     switch (_boot_stage) {
-        case 3:
-            // Start Mario power-up melody
-            //hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
-            break;
-
-        case 4:
+        case 1:
             // Read USB-PD source capabilities
             loadPdoList();
             break;

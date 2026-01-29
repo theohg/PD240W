@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include "ui/assets/synapticon_logo.h"
+#include "ui/font_config.h"
 
 // Global instance
 DisplayManager displayManager;
@@ -162,10 +163,10 @@ void DisplayManager::renderMenuScreen() {
 
     // Draw hints only on full redraw
     if (_needs_full_redraw) {
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
-                              "Click: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                              "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                              "Click: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                              "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -221,8 +222,8 @@ void DisplayManager::drawHeader(const char* title) {
     // Clear header area
     hw.display.fillRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, UIColors::BACKGROUND);
 
-    // Draw title centered
-    drawCenteredString(10, title, UIColors::TEXT_PRIMARY, 2);
+    // Draw title centered using AA font
+    drawCenteredStringAA(10, title, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
 
     // Draw separator line
     hw.display.drawLine(MARGIN, HEADER_HEIGHT - 2, SCREEN_WIDTH - MARGIN, HEADER_HEIGHT - 2, UIColors::HEADER_LINE);
@@ -254,18 +255,18 @@ void DisplayManager::drawBootText() {
     // Static text below the 220x220 logo (logo occupies y=5 to y=225)
     if (_needs_full_redraw) {
         // Product name
-        drawCenteredString(200, Version::PRODUCT_NAME, UIColors::TEXT_PRIMARY, 3);
+        drawCenteredStringAA(200, Version::PRODUCT_NAME, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
 
         // Version
-        drawCenteredString(230, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, 2);
+        drawCenteredStringAA(225, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, FONT_SMALL);
     }
 
     // Stage message - only redraw when message changes (prevents flicker)
     const char* stage_msg = stateMachine.getBootStageMessage();
     if (stage_msg != _last_boot_message) {
-        hw.display.fillRect(0, 260, SCREEN_WIDTH, 12, UIColors::BACKGROUND);
+        hw.display.fillRect(0, 260, SCREEN_WIDTH, 16, UIColors::BACKGROUND);
         if (stage_msg && stage_msg[0] != '\0') {
-            drawCenteredString(262, stage_msg, UIColors::TEXT_PRIMARY, 1);
+            drawCenteredStringAA(262, stage_msg, UIColors::TEXT_PRIMARY, FONT_SMALL);
         }
         _last_boot_message = stage_msg;
     }
@@ -283,10 +284,14 @@ void DisplayManager::drawBootProgress() {
 void DisplayManager::drawActiveContract() {
     int y = CONTENT_Y_START + 5;
 
+    // Static tracking for PPS badge to prevent flicker
+    static bool last_is_pps = false;
+
     // Only clear on full redraw
     if (_needs_full_redraw) {
-        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, 45, UIColors::BACKGROUND);
-        hw.display.drawString(MARGIN, y, "Contract:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, 50, UIColors::BACKGROUND);
+        hw.display.drawStringAA(MARGIN, y, "Contract:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        last_is_pps = false;  // Reset tracking on full redraw
     }
 
     // Get active contract
@@ -298,79 +303,113 @@ void DisplayManager::drawActiveContract() {
         snprintf(line1, sizeof(line1), "%5.1fV @ %5.2fA  ",
                  contract.voltage_mv / 1000.0f,
                  contract.current_ma / 1000.0f);
-        hw.display.drawString(MARGIN, y + 15, line1, UIColors::ACCENT, UIColors::BACKGROUND, 2);
+        hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
 
-        // Show PPS indicator if active
+        // Show PPS indicator if active - only redraw when state changes
         if (contract.is_pps) {
-            // Draw "PPS" badge in accent color to the right of contract info
-            int badge_x = SCREEN_WIDTH - MARGIN - 30;
-            hw.display.fillRect(badge_x - 2, y - 2, 34, 16, UIColors::ACCENT);
-            hw.display.drawString(badge_x, y, "PPS", UIColors::BACKGROUND, UIColors::ACCENT, 1);
+            if (!last_is_pps || _needs_full_redraw) {
+                // Draw "PPS" badge in accent color to the right of contract info
+                int badge_x = SCREEN_WIDTH - MARGIN - 32;
+                int badge_y = y - 2;
+                int badge_w = 36;
+                int badge_h = 18;
+                // Draw filled rectangle first
+                hw.display.fillRect(badge_x, badge_y, badge_w, badge_h, UIColors::ACCENT);
+                // Draw text centered in badge
+                int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("PPS", FONT_SMALL)) / 2;
+                int text_y = badge_y + (badge_h - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(text_x, text_y, "PPS", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
+                last_is_pps = true;
+            }
         } else {
-            // Clear PPS badge area when not in PPS mode
-            hw.display.fillRect(SCREEN_WIDTH - MARGIN - 32, y - 2, 34, 16, UIColors::BACKGROUND);
+            if (last_is_pps || _needs_full_redraw) {
+                // Clear PPS badge area when not in PPS mode
+                hw.display.fillRect(SCREEN_WIDTH - MARGIN - 34, y - 3, 38, 20, UIColors::BACKGROUND);
+                last_is_pps = false;
+            }
         }
     } else {
         // Non-PD charger or no contract: show USB default
-        hw.display.drawString(MARGIN, y + 15, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, 2);
+        hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
         // Clear PPS badge area
-        hw.display.fillRect(SCREEN_WIDTH - MARGIN - 32, y - 2, 34, 16, UIColors::BACKGROUND);
+        if (last_is_pps || _needs_full_redraw) {
+            hw.display.fillRect(SCREEN_WIDTH - MARGIN - 32, y - 2, 34, 16, UIColors::BACKGROUND);
+            last_is_pps = false;
+        }
     }
 }
 
 void DisplayManager::drawPowerReadings() {
     // Start slightly lower to give breathing room from the Contract info
-    int y = CONTENT_Y_START + 55;
-    
+    int y = CONTENT_Y_START + 50;
+
     // Layout Constants
     const int LABEL_X = MARGIN;
-    const int VALUE_X = MARGIN + 35; // Align all big numbers here
-    
+    const int VALUE_X = MARGIN + 40; // Align all big numbers here
+    const int UNIT_X  = 163;         // Fixed X for unit letters (V, A, W) — prevents shifting
+
     const SafetyState& state = safety.getState();
     char buf[32];
 
     // --- Voltage Section ---
-    // Primary: Output Voltage
-    hw.display.drawString(LABEL_X, y + 5, "Vout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    snprintf(buf, sizeof(buf), "%.3f V", state.ina_voltage_v);
-    hw.display.drawString(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
-    
-    // Secondary: Input Voltage (Moved below Vout as requested)
-    y += 22; 
+    // Primary: Output Voltage (number and unit rendered separately for stable layout)
+    hw.display.drawStringAA(LABEL_X, y + 8, "Vout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%.3f", state.ina_voltage_v);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+    int num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    if (VALUE_X + num_w < UNIT_X)
+        hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(UNIT_X, y, "V", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+
+    // Secondary: Input Voltage
+    y += 32;
     snprintf(buf, sizeof(buf), "Vin: %.2f V", state.vbus_voltage_v);
-    hw.display.drawString(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
     // --- Current Section ---
-    y += 20; // Gap between sections
-    
-    // Primary: Output Current
-    hw.display.drawString(LABEL_X, y + 5, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    snprintf(buf, sizeof(buf), "%.3f A", state.current_a);
-    hw.display.drawString(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
+    y += 16; // Gap between sections
 
-    // Secondary: Current Limit (New feature)
-    y += 22;
+    // Primary: Output Current (number and unit rendered separately)
+    hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%.3f", state.current_a);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+    num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    if (VALUE_X + num_w < UNIT_X)
+        hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(UNIT_X, y, "A", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+
+    // Secondary: Current Limit
+    y += 32;
     float limit_a = stateMachine.getCurrentLimitMa() / 1000.0f;
     snprintf(buf, sizeof(buf), "Lim: %.2f A", limit_a);
-    // drawn in dark grey (MUTED) as requested
-    hw.display.drawString(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
     // --- Power Section ---
-    y += 20; // Gap between sections
-    
-    // Primary: Power
-    hw.display.drawString(LABEL_X, y + 5, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    snprintf(buf, sizeof(buf), "%.2f W", state.power_w);
-    hw.display.drawString(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, 2);
+    y += 16; // Gap between sections
+
+    // Primary: Power (number and unit rendered separately)
+    hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%.2f", state.power_w);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+    num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    if (VALUE_X + num_w < UNIT_X)
+        hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(UNIT_X, y, "W", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 }
 
 void DisplayManager::drawTemperature() {
-    int y = CONTENT_Y_START + 170;
+    int y = CONTENT_Y_START + 185;
     const SafetyState& state = safety.getState();
+
+    // Static tracking for flicker prevention
+    static float last_ntc_temp = -999.0f;
+    static float last_ina_temp = -999.0f;
+    static bool last_blink_hide = false;
 
     // 1. Determine the dynamic color for the values
     uint16_t val_color = UIColors::TEXT_PRIMARY;
-    
+    bool blink_hide = false;
+
     if (state.temp_status == SafetyStatus::CAUTION) {
         val_color = UIColors::CAUTION;
     } else if (state.temp_status == SafetyStatus::WARNING) {
@@ -384,58 +423,82 @@ void DisplayManager::drawTemperature() {
         uint32_t ms = to_ms_since_boot(get_absolute_time());
         // Blink fast (250ms interval) & make a beeping sound
         if ((ms / 250) % 2 == 1) {
-            val_color = UIColors::BACKGROUND; // Hide text
+            blink_hide = true;
         }
     }
 
-    // 2. Draw the components separately
-    const int CHAR_W = 6; 
-    int current_x = MARGIN;
+    // Only redraw if values or blink state changed
+    bool ntc_changed = (state.temperature_c != last_ntc_temp) || (blink_hide != last_blink_hide) || _needs_full_redraw;
+    bool ina_changed = (state.ina_temperature_c != last_ina_temp) || (blink_hide != last_blink_hide) || _needs_full_redraw;
+
+    // 2. Draw using AA font with fixed X positions to prevent flicker
     char buf[16];
 
-    // --- First Pair (NTC) ---
-    
-    // Draw Label: "NTC:" (4 chars)
-    hw.display.drawString(current_x, y, "NTC:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    current_x += (4 * CHAR_W);
+    // Fixed layout positions (avoids shifting when values change width)
+    const int NTC_LABEL_X = MARGIN;
+    const int NTC_VALUE_X = MARGIN + 32;
+    const int NTC_UNIT_X = NTC_VALUE_X + 42;  // Fixed position for "C"
+    const int INA_LABEL_X = 125;
+    const int INA_VALUE_X = INA_LABEL_X + 32;
+    const int INA_UNIT_X = INA_VALUE_X + 42;  // Fixed position for "C"
+    const int VALUE_WIDTH = 40;  // Width for numeric value only
 
-    // Draw Value: " 25.0C" (6 chars)
-    snprintf(buf, sizeof(buf), "%5.1fC", state.temperature_c);
-    hw.display.drawString(current_x, y, buf, val_color, UIColors::BACKGROUND, 1);
-    current_x += (6 * CHAR_W);
+    // --- NTC temperature ---
+    if (_needs_full_redraw) {
+        hw.display.drawStringAA(NTC_LABEL_X, y, "NTC:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(NTC_UNIT_X, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    }
+    if (ntc_changed) {
+        if (blink_hide) {
+            hw.display.fillRect(NTC_VALUE_X, y, VALUE_WIDTH, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        } else {
+            snprintf(buf, sizeof(buf), "%5.1f", state.temperature_c);
+            hw.display.drawStringAA(NTC_VALUE_X, y, buf, val_color, UIColors::BACKGROUND, FONT_SMALL);
+        }
+        last_ntc_temp = state.temperature_c;
+    }
 
-    // --- Second Pair (INA) ---
+    // --- INA temperature ---
+    if (_needs_full_redraw) {
+        hw.display.drawStringAA(INA_LABEL_X, y, "INA:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(INA_UNIT_X, y, "C", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    }
+    if (ina_changed) {
+        if (blink_hide) {
+            hw.display.fillRect(INA_VALUE_X, y, VALUE_WIDTH, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        } else {
+            snprintf(buf, sizeof(buf), "%5.1f", state.ina_temperature_c);
+            hw.display.drawStringAA(INA_VALUE_X, y, buf, val_color, UIColors::BACKGROUND, FONT_SMALL);
+        }
+        last_ina_temp = state.ina_temperature_c;
+    }
 
-    // Draw Label: "  INA:" (6 chars including padding spaces)
-    hw.display.drawString(current_x, y, "  INA:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    current_x += (6 * CHAR_W);
-
-    // Draw Value: " 25.0C" (6 chars)
-    snprintf(buf, sizeof(buf), "%5.1fC", state.ina_temperature_c);
-    hw.display.drawString(current_x, y, buf, val_color, UIColors::BACKGROUND, 1);
+    last_blink_hide = blink_hide;
 }
 
 void DisplayManager::drawOutputStatus() {
-    int y = CONTENT_Y_START + 195;
+    int y = CONTENT_Y_START + 210;
 
     // Only draw labels on full redraw
     if (_needs_full_redraw) {
-        hw.display.drawString(MARGIN, y, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, y + 20, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, y + 45, "Long press: Menu", UIColors::MUTED, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN, y, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, y + 20, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
     }
 
     // Load switch status - use fixed width "ON " or "OFF"
     bool load_on = hw.loadSwitch.read();
-    hw.display.drawString(MARGIN + 90, y, load_on ? "ON " : "OFF",
+    int status_x = MARGIN + ST7789::getStringWidthAA("Load Switch: ", FONT_SMALL);
+    hw.display.drawStringAA(status_x, y, load_on ? "ON " : "OFF",
                           load_on ? UIColors::ACCENT : UIColors::ERROR,
-                          UIColors::BACKGROUND, 1);
+                          UIColors::BACKGROUND, FONT_SMALL);
 
     // 17V buck status
     bool buck_on = hw.EN_17V.read();
-    hw.display.drawString(MARGIN + 90, y + 20, buck_on ? "ON " : "OFF",
+    int buck_status_x = MARGIN + ST7789::getStringWidthAA("17V Buck: ", FONT_SMALL);
+    hw.display.drawStringAA(buck_status_x, y + 20, buck_on ? "ON " : "OFF",
                           buck_on ? UIColors::ACCENT : UIColors::MUTED,
-                          UIColors::BACKGROUND, 1);
+                          UIColors::BACKGROUND, FONT_SMALL);
 }
 
 // ============================================================================
@@ -449,8 +512,8 @@ void DisplayManager::drawMenuItem(int y, const char* text, bool selected) {
     // Single fill with correct background (avoids flicker from clear+highlight)
     hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
 
-    hw.display.drawString(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, 1);
-    hw.display.drawString(MARGIN + 20, y + 5, text, fg, bg, 1);
+    hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
+    hw.display.drawStringAA(MARGIN + 20, y + 5, text, fg, bg, FONT_SMALL);
 }
 
 void DisplayManager::drawPdoList() {
@@ -470,14 +533,14 @@ void DisplayManager::drawPdoList() {
 
     // No contracts found - show informational message
     if (count == 0) {
-        drawCenteredString(y + 30, "No PD contracts", UIColors::WARNING, 2);
-        drawCenteredString(y + 70, "The connected charger may", UIColors::TEXT_SECONDARY, 1);
-        drawCenteredString(y + 85, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, 1);
-        drawCenteredString(y + 110, "Try a USB-C PD charger.", UIColors::MUTED, 1);
+        drawCenteredStringAA(y + 30, "No PD contracts", UIColors::WARNING, FONT_MEDIUM);
+        drawCenteredStringAA(y + 60, "The connected charger may", UIColors::TEXT_SECONDARY, FONT_SMALL);
+        drawCenteredStringAA(y + 78, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, FONT_SMALL);
+        drawCenteredStringAA(y + 105, "Try a USB-C PD charger.", UIColors::MUTED, FONT_SMALL);
 
         if (_needs_full_redraw) {
-            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                                  "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                  "Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         }
         return;
     }
@@ -519,8 +582,8 @@ void DisplayManager::drawPdoList() {
                      (unsigned)pdos[i].max_current_ma);
         }
 
-        hw.display.drawString(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, 1);
-        hw.display.drawString(MARGIN + 20, y + 5, line, fg, bg, 1);
+        hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN + 20, y + 5, line, fg, bg, FONT_SMALL);
 
         y += MENU_ITEM_HEIGHT;
     }
@@ -533,10 +596,10 @@ void DisplayManager::drawPdoList() {
 
     // Draw hints only on full redraw
     if (_needs_full_redraw) {
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
-                              "Click: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                              "Long press: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                              "Click: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                              "Long press: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -557,13 +620,24 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
     }
 
-    // Draw current value - fixed width format
+    // Draw current value with A unit at fixed position
+    // Value right-aligned, A at fixed position for stable layout
     char buf[32];
-    snprintf(buf, sizeof(buf), "%5.2f A", current_ma / 1000.0f);
-    drawCenteredString(y, buf, UIColors::ACCENT, 3);
+    snprintf(buf, sizeof(buf), "%5.2f", current_ma / 1000.0f);
+    
+    // Fixed layout: center point at screen middle, A after the number area
+    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;  // Fixed position for "A"
+    const int VALUE_RIGHT = UNIT_X - 8;  // Right edge of value area
+    int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    int value_x = VALUE_RIGHT - value_width;
+    
+    // Clear value area and redraw
+    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    hw.display.drawStringAA(UNIT_X, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to effective max)
-    y += 60;
+    y += 50;
     uint32_t range = max_ma - AppConfig::CURRENT_LIMIT_MIN_MA;
     uint8_t percent = (range > 0)
         ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
@@ -577,17 +651,17 @@ void DisplayManager::drawCurrentLimitAdjust() {
         snprintf(min_str, sizeof(min_str), "%.1fA", AppConfig::CURRENT_LIMIT_MIN_MA / 1000.0f);
         snprintf(max_str, sizeof(max_str), "%.1fA (max)", max_ma / 1000.0f);
 
-        hw.display.drawString(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
         // Right-align max
-        int max_width = strlen(max_str) * 6;
-        hw.display.drawString(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
-                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        int max_width = ST7789::getStringWidthAA(max_str, FONT_SMALL);
+        hw.display.drawStringAA(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
+                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
-                              "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                              "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -610,20 +684,30 @@ void DisplayManager::drawPpsVoltageAdjust() {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
 
         // Draw "PPS" badge
-        drawCenteredString(y, "Programmable Power", UIColors::SYNAPTICON_PINK, 1);
-        y += 15;
+        drawCenteredStringAA(y, "Programmable Power", UIColors::SYNAPTICON_PINK, FONT_SMALL);
+        y += 18;
     } else {
-        y += 15;
+        y += 18;
     }
 
-    // Draw target voltage - large display
+    // Draw target voltage - large display with V at fixed position
     y += 10;
     char buf[32];
-    snprintf(buf, sizeof(buf), "%5.2f V", target_mv / 1000.0f);
-    drawCenteredString(y, buf, UIColors::ACCENT, 3);
+    snprintf(buf, sizeof(buf), "%5.2f", target_mv / 1000.0f);
+    
+    // Fixed layout: center point at screen middle, V after the number area
+    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;  // Fixed position for "V"
+    const int VALUE_RIGHT = UNIT_X - 8;  // Right edge of value area
+    int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    int value_x = VALUE_RIGHT - value_width;
+    
+    // Clear value area and redraw
+    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to PPS range)
-    y += 60;
+    y += 50;
     uint32_t range = max_mv - min_mv;
     uint8_t percent = (range > 0)
         ? ((target_mv - min_mv) * 100) / range
@@ -637,23 +721,23 @@ void DisplayManager::drawPpsVoltageAdjust() {
         snprintf(min_str, sizeof(min_str), "%.1fV", min_mv / 1000.0f);
         snprintf(max_str, sizeof(max_str), "%.1fV", max_mv / 1000.0f);
 
-        hw.display.drawString(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
         // Right-align max
-        int max_width = strlen(max_str) * 6;
-        hw.display.drawString(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
-                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        int max_width = ST7789::getStringWidthAA(max_str, FONT_SMALL);
+        hw.display.drawStringAA(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
+                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
         // Show max current available
         y += 25;
         snprintf(buf, sizeof(buf), "Max current: %umA", (unsigned)max_current);
-        drawCenteredString(y, buf, UIColors::TEXT_SECONDARY, 1);
+        drawCenteredStringAA(y, buf, UIColors::TEXT_SECONDARY, FONT_SMALL);
 
         // Hints
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
-                              "Rotate: 20mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-        hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                              "Rotate: 20mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -683,20 +767,19 @@ void DisplayManager::drawEepromFlashScreen() {
 
     switch (stage) {
         case 0:  // Comparing (initializing)
-            drawCenteredString(y, "Checking EEPROM...", UIColors::TEXT_PRIMARY, 2);
-            y += 40;
-            // Spinning indicator would be nice here, but simple dots work
-            drawCenteredString(y, "Please wait", UIColors::TEXT_SECONDARY, 1);
+            drawCenteredStringAA(y, "Checking EEPROM...", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+            y += 35;
+            drawCenteredStringAA(y, "Please wait", UIColors::TEXT_SECONDARY, FONT_SMALL);
             break;
 
         case 1:  // Confirm stage - show result and Yes/No
             if (message) {
-                drawCenteredString(y, message, UIColors::CAUTION, 2);
+                drawCenteredStringAA(y, message, UIColors::CAUTION, FONT_MEDIUM);
             }
-            y += 35;
+            y += 30;
 
-            drawCenteredString(y, "Proceed with flash?", UIColors::TEXT_PRIMARY, 1);
-            y += 40;
+            drawCenteredStringAA(y, "Proceed with flash?", UIColors::TEXT_PRIMARY, FONT_SMALL);
+            y += 35;
 
             // Draw Yes/No buttons
             {
@@ -711,34 +794,36 @@ void DisplayManager::drawEepromFlashScreen() {
                 uint16_t no_fg = confirm_yes ? UIColors::TEXT_SECONDARY : UIColors::HIGHLIGHT_FG;
                 hw.display.fillRect(start_x, y, btn_width, btn_height, no_bg);
                 hw.display.drawRect(start_x, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
-                hw.display.drawString(start_x + (btn_width - 18) / 2, y + 8, "No", no_fg, no_bg, 2);
+                int no_x = start_x + (btn_width - ST7789::getStringWidthAA("No", FONT_MEDIUM)) / 2;
+                hw.display.drawStringAA(no_x, y + 5, "No", no_fg, no_bg, FONT_MEDIUM);
 
                 // "Yes" button (right)
                 uint16_t yes_bg = confirm_yes ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
                 uint16_t yes_fg = confirm_yes ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_SECONDARY;
                 hw.display.fillRect(start_x + btn_width + spacing, y, btn_width, btn_height, yes_bg);
                 hw.display.drawRect(start_x + btn_width + spacing, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
-                hw.display.drawString(start_x + btn_width + spacing + (btn_width - 24) / 2, y + 8, "Yes", yes_fg, yes_bg, 2);
+                int yes_x = start_x + btn_width + spacing + (btn_width - ST7789::getStringWidthAA("Yes", FONT_MEDIUM)) / 2;
+                hw.display.drawStringAA(yes_x, y + 5, "Yes", yes_fg, yes_bg, FONT_MEDIUM);
 
                 last_confirm_yes = confirm_yes;
             }
 
-            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 30,
-                                  "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                                  "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                                  "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                  "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
             break;
 
         case 2:  // Flashing - show progress
             if (message) {
-                drawCenteredString(y, message, UIColors::ACCENT, 2);
+                drawCenteredStringAA(y, message, UIColors::ACCENT, FONT_MEDIUM);
             }
-            y += 40;
+            y += 35;
 
             // Phase label
             {
                 const char* phase_label = (phase == 0) ? "Writing to EEPROM..." : "Verifying...";
-                drawCenteredString(y, phase_label, UIColors::TEXT_SECONDARY, 1);
+                drawCenteredStringAA(y, phase_label, UIColors::TEXT_SECONDARY, FONT_SMALL);
             }
             y += 25;
 
@@ -753,41 +838,41 @@ void DisplayManager::drawEepromFlashScreen() {
             {
                 char buf[16];
                 snprintf(buf, sizeof(buf), "%d%%", progress);
-                drawCenteredString(y, buf, UIColors::TEXT_PRIMARY, 2);
+                drawCenteredStringAA(y, buf, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
             }
 
             y += 30;
-            drawCenteredString(y, "Do not disconnect power!", UIColors::WARNING, 1);
+            drawCenteredStringAA(y, "Do not disconnect power!", UIColors::WARNING, FONT_SMALL);
             break;
 
         case 3:  // Done - show result
             if (result) {
-                drawCenteredString(y, "Success!", UIColors::ACCENT, 3);
-                y += 50;
-                drawCenteredString(y, "EEPROM programmed", UIColors::TEXT_PRIMARY, 1);
+                drawCenteredStringAA(y, "Success!", UIColors::ACCENT, FONT_MEDIUM);
+                y += 35;
+                drawCenteredStringAA(y, "EEPROM programmed", UIColors::TEXT_PRIMARY, FONT_SMALL);
                 y += 20;
-                drawCenteredString(y, "Power cycle the board", UIColors::CAUTION, 1);
-                y += 15;
-                drawCenteredString(y, "to load new config", UIColors::CAUTION, 1);
+                drawCenteredStringAA(y, "Power cycle the board", UIColors::CAUTION, FONT_SMALL);
+                y += 18;
+                drawCenteredStringAA(y, "to load new config", UIColors::CAUTION, FONT_SMALL);
             } else {
                 // Check if it was "already identical"
                 if (message && strstr(message, "identical")) {
-                    drawCenteredString(y, "Already Up-to-Date", UIColors::ACCENT, 2);
-                    y += 40;
-                    drawCenteredString(y, "EEPROM config matches", UIColors::TEXT_SECONDARY, 1);
-                    y += 15;
-                    drawCenteredString(y, "No flash needed", UIColors::TEXT_SECONDARY, 1);
+                    drawCenteredStringAA(y, "Already Up-to-Date", UIColors::ACCENT, FONT_MEDIUM);
+                    y += 35;
+                    drawCenteredStringAA(y, "EEPROM config matches", UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    y += 18;
+                    drawCenteredStringAA(y, "No flash needed", UIColors::TEXT_SECONDARY, FONT_SMALL);
                 } else {
-                    drawCenteredString(y, "Failed!", UIColors::ERROR, 3);
-                    y += 50;
+                    drawCenteredStringAA(y, "Failed!", UIColors::ERROR, FONT_MEDIUM);
+                    y += 35;
                     if (message) {
-                        drawCenteredString(y, message, UIColors::TEXT_SECONDARY, 1);
+                        drawCenteredStringAA(y, message, UIColors::TEXT_SECONDARY, FONT_SMALL);
                     }
                 }
             }
 
-            hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                                  "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                  "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
             break;
     }
 }
@@ -797,73 +882,67 @@ void DisplayManager::drawEepromFlashScreen() {
 // ============================================================================
 
 void DisplayManager::drawAboutScreen() {
-    const int LINE_H = 16;
+    const int LINE_H = 18;
 
-    // Small scaled Synapticon logo (44x44, scaled from 220x220)
+    // Logo on left, product name on right
     int logo_size = 44;
-    int logo_x = (SCREEN_WIDTH - logo_size) / 2;
-    int y = CONTENT_Y_START + 5;
-    hw.display.drawBitmapScaled(logo_x, y, logo_size, logo_size,
+    int logo_x = MARGIN + 5;
+    int logo_y = CONTENT_Y_START + 5;
+    hw.display.drawBitmapScaled(logo_x, logo_y, logo_size, logo_size,
                                  SYNAPTICON_WIDTH, SYNAPTICON_HEIGHT, synapticon_data);
-    y += logo_size + 4;
 
-    // Product name
-    drawCenteredString(y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, 2);
-    y += 18;
+    // Text to the right of logo
+    int text_x = MARGIN + 73;
+    int text_y = logo_y;  // Vertically center text with logo
+    hw.display.drawStringAA(text_x, text_y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, UIColors::BACKGROUND, FONT_MEDIUM);
+    hw.display.drawStringAA(text_x, text_y + 22, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
 
-    // Subtitle
-    drawCenteredString(y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, 1);
-    y += 14;
+    // Start info section below logo
+    int y = logo_y + logo_size + 10;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
     y += 10;
 
-    // Info lines
-    const int LABEL_X = MARGIN * 2;
-    const int VALUE_X = LABEL_X + 80;
+    // Info lines — compact two-column layout to fit 240px width
+    const int LABEL_X = MARGIN + 5;
+    const int VALUE_X = LABEL_X + 68;
     char buf[40];
 
-    // HW Version
-    hw.display.drawString(LABEL_X, y, "HW Version:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, Version::HARDWARE_VERSION, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    // HW / FW on one line
+    hw.display.drawStringAA(LABEL_X, y, "HW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::HARDWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // FW Version
-    hw.display.drawString(LABEL_X, y, "FW Version:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(LABEL_X, y, "FW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::FIRMWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // Author
-    hw.display.drawString(LABEL_X, y, "Author:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, Version::AUTHOR, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(LABEL_X, y, "Author:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::AUTHOR, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // Built
-    snprintf(buf, sizeof(buf), "%s %s", BUILD_DATE, BUILD_TIME);
-    hw.display.drawString(LABEL_X, y, "Built:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, buf, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(LABEL_X, y, "Built:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, BUILD_DATE, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // Target
-    hw.display.drawString(LABEL_X, y, "Target:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, Version::TARGET, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(LABEL_X, y, "Target:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::TARGET, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // Max
-    hw.display.drawString(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
-    hw.display.drawString(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H + 6;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
     y += 10;
 
-    drawCenteredString(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, 1);
+    drawCenteredStringAA(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
 
     // Navigation hint
-    hw.display.drawString(MARGIN, SCREEN_HEIGHT - 15,
-                          "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, 1);
+    hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                          "Click or Long press: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 }
 
 // ============================================================================
@@ -878,11 +957,11 @@ void DisplayManager::drawFaultIcon() {
     // Red background
     hw.display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, UIColors::BACKGROUND);
 
-    // Draw "!" symbol
+    // Draw "!" symbol using large font
     hw.display.drawString(cx - 10, cy - 20, "!", UIColors::ERROR, UIColors::BACKGROUND, 4);
 
     // Draw FAULT header
-    drawCenteredString(cy + 30, "FAULT", UIColors::ERROR, 3);
+    drawCenteredStringAA(cy + 30, "FAULT", UIColors::ERROR, FONT_MEDIUM);
 }
 
 void DisplayManager::drawFaultDetails() {
@@ -919,35 +998,34 @@ void DisplayManager::drawFaultDetails() {
             break;
     }
 
-    drawCenteredString(y, fault_name, UIColors::ERROR, 2);
+    drawCenteredStringAA(y, fault_name, UIColors::ERROR, FONT_MEDIUM);
 
-    y += 40;
+    y += 35;
     if (detail1[0]) {
-        drawCenteredString(y, detail1, UIColors::TEXT_PRIMARY, 1);
+        drawCenteredStringAA(y, detail1, UIColors::TEXT_PRIMARY, FONT_SMALL);
         y += 20;
     }
     if (detail2[0]) {
-        drawCenteredString(y, detail2, UIColors::TEXT_PRIMARY, 1);
+        drawCenteredStringAA(y, detail2, UIColors::TEXT_PRIMARY, FONT_SMALL);
         y += 20;
     }
 
     // Live temperature line (updated dynamically by drawFaultLiveTemperature)
     if (fault == FaultType::OVERTEMPERATURE) {
         y += 5;
-        drawCenteredString(y, "Now:      ", UIColors::WARNING, 1);
+        drawCenteredStringAA(y, "Now:      ", UIColors::WARNING, FONT_SMALL);
         y += 20;
     }
 
     y += 20;
-    drawCenteredString(y, "Load switch disabled", UIColors::WARNING, 1);
+    drawCenteredStringAA(y, "Load switch disabled", UIColors::WARNING, FONT_SMALL);
 
     // Draw acknowledge hint
-    drawCenteredString(SCREEN_HEIGHT - 30, "[Press knob to acknowledge]", UIColors::TEXT_SECONDARY, 1);
+    drawCenteredStringAA(SCREEN_HEIGHT - 30, "[Press knob to acknowledge]", UIColors::TEXT_SECONDARY, FONT_SMALL);
 }
 
 void DisplayManager::drawFaultLiveTemperature() {
     // Live temperature reading at fixed position on fault screen
-    // Position: after "Trigger:" and "Limit:" lines (y=140 + 0 + 40 + 20 + 20 + 5 = 225)
     const int y = 225;
     const SafetyState& state = safety.getState();
 
@@ -955,7 +1033,7 @@ void DisplayManager::drawFaultLiveTemperature() {
     snprintf(buf, sizeof(buf), "Now: %5.1fC", state.max_temperature_c);
 
     // Use fixed-width format to overwrite previous value without clearing
-    drawCenteredString(y, buf, UIColors::WARNING, 1);
+    drawCenteredStringAA(y, buf, UIColors::WARNING, FONT_SMALL);
 }
 
 // ============================================================================
@@ -975,4 +1053,12 @@ void DisplayManager::drawCenteredString(int y, const char* text, uint16_t color,
     if (x < 0) x = 0;
 
     hw.display.drawString(x, y, text, color, UIColors::BACKGROUND, size);
+}
+
+void DisplayManager::drawCenteredStringAA(int y, const char* text, uint16_t color, const AAFont* font) {
+    int text_width = ST7789::getStringWidthAA(text, font);
+    int x = (SCREEN_WIDTH - text_width) / 2;
+    if (x < 0) x = 0;
+
+    hw.display.drawStringAA(x, y, text, color, UIColors::BACKGROUND, font);
 }

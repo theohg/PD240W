@@ -4,6 +4,7 @@
 #include "logic/state_machine.h"
 #include "logic/safety.h"
 #include "drivers/power/tps26750/tps26750.h"
+#include "drivers/display/aa_font.h"
 
 // ============================================================================
 // Display Manager
@@ -98,6 +99,7 @@ private:
     // Helper functions
     void clearScreen();
     void drawCenteredString(int y, const char* text, uint16_t color, uint8_t size);
+    void drawCenteredStringAA(int y, const char* text, uint16_t color, const AAFont* font);
 
     // Tracking for flicker reduction (skip redraw when unchanged)
     int8_t _last_menu_selection;
