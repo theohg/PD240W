@@ -66,21 +66,17 @@ private:
 
     // Common UI elements
     void drawHeader(const char* title);
-    void drawStatusBar();
     void drawProgressBar(int x, int y, int width, int height, uint8_t percent, uint16_t color);
 
     // Boot screen elements
-    void drawLogo();
     void drawBootText();
     void drawBootProgress();
 
     // Main screen elements
     void drawActiveContract();
     void drawPowerReadings();
-    void drawTemperature();       // Legacy text-only temperature display
+    void drawTemperature();
     void drawOutputStatus();
-    void drawThermometer();       // Graphical thermometer widget (right side)
-    void fillCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color);
 
     // Menu elements
     void drawMenuItem(int y, const char* text, bool selected);
@@ -93,8 +89,6 @@ private:
     void drawSettingsMenu();
     void drawSettingsItem(int y, const char* label, bool is_on, bool selected, bool is_toggle);
     void drawBrightnessItem(int y, bool selected);
-    void drawBrightnessAdjust();
-    void drawSunIcon(int x, int y, uint16_t color, bool visible);
 
     // EEPROM flash screen elements
     void drawEepromFlashScreen();
@@ -120,9 +114,6 @@ private:
     uint32_t _last_pps_voltage;
     uint8_t _last_brightness_value;
     const char* _last_boot_message;
-    
-    // Brightness sun blink timing
-    absolute_time_t _sun_blink_time;
 };
 
 // Global instance

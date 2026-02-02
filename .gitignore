@@ -1,5 +1,5 @@
 # ============================================================================
-# Build outputs (YES, exclude these - they're auto-generated)
+# Build outputs (exclude these as they're auto-generated)
 # ============================================================================
 build/
 *.elf
@@ -26,28 +26,6 @@ compile_commands.json
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# Icon must end with two \r
-Icon
-
-# Thumbnails
-._*
-
-# Files that might appear in the root of a volume
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-
-# Directories potentially created on remote AFP share
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
 
 # ============================================================================
 # VSCode (Ignore everything except extensions.json)
@@ -110,13 +88,18 @@ cmake-build-*/
 # ============================================================================
 # Pico SDK specific
 # ============================================================================
-# Keep pico_sdk_import.cmake if you have it in the repo
+# Keep pico_sdk_import.cmake
 # generated/  # Uncomment if you have auto-generated files
 
 # ============================================================================
-# Custom project files (add as needed)
+# CLAUDE Code & Agent
 # ============================================================================
-# Uncomment if you have private configuration files
-# config_local.h
-# secrets.h
-# credentials.json
+CLAUDE.md
+DEVELOPMENT_PLAN.md
+
+# ============================================================================
+# Custom project files
+# ============================================================================
+tools/clean_logo.py
+tools/convert_png_to_c.py
+PCB_files/

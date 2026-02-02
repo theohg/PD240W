@@ -51,8 +51,7 @@ enum class AdjustMode {
     PPS_VOLTAGE,        // Adjusting PPS voltage within range
     EEPROM_FLASH,       // EEPROM flash workflow
     ABOUT,              // Displaying about screen (read-only)
-    SETTINGS_MENU,      // Settings submenu navigation
-    BRIGHTNESS_ADJUST   // Adjusting brightness value
+    SETTINGS_MENU       // Settings submenu navigation
 };
 
 // Fault types
@@ -161,14 +160,6 @@ private:
     uint32_t _pps_max_current_ma;       // Max current from PPS PDO
     uint8_t _pps_pdo_index;             // Index of selected PPS PDO
 
-    // EEPROM flash state
-    uint8_t _eeprom_stage;        // 0=compare, 1=confirm, 2=flashing, 3=done
-    uint8_t _eeprom_phase;        // 0=write, 1=verify
-    uint8_t _eeprom_progress;     // 0-100%
-    bool _eeprom_result;          // true=success, false=failure
-    bool _eeprom_confirm_yes;     // Yes/No selection
-    const char* _eeprom_message;  // Status message for display
-
     // State handlers
     void handleBootState();
     void handleMainState(EncoderEvent event);
@@ -193,32 +184,14 @@ private:
     void applyPpsVoltage();
     void handleSettingsMenuState(EncoderEvent event);
 
-    // EEPROM flash helpers
-    void startEepromCompare();
-    void executeEepromFlash();
-
     // Brightness adjustment state
     uint8_t _brightness_value;      // Current brightness during adjustment
-    bool _brightness_sun_visible;   // For blinking sun icon
     bool _brightness_adjusting;     // True when in brightness adjust mode (click to toggle)
 
 public:
     // Brightness state accessors (for display manager)
     uint8_t getBrightnessValue() const { return _brightness_value; }
-    bool isBrightnessSunVisible() const { return _brightness_sun_visible; }
     bool isBrightnessAdjusting() const { return _brightness_adjusting; }
-    void toggleBrightnessSunBlink();  // Called from display update for blinking
-
-    // EEPROM flash state accessors (for display manager)
-    uint8_t getEepromStage() const { return _eeprom_stage; }
-    uint8_t getEepromPhase() const { return _eeprom_phase; }
-    uint8_t getEepromProgress() const { return _eeprom_progress; }
-    bool getEepromResult() const { return _eeprom_result; }
-    bool getEepromConfirmYes() const { return _eeprom_confirm_yes; }
-    const char* getEepromMessage() const { return _eeprom_message; }
-
-    // EEPROM progress callback (called from eeprom_loader)
-    void setEepromProgress(uint8_t phase, uint8_t progress);
 
     // PPS state accessors (for display manager)
     uint32_t getPpsTargetVoltageMv() const { return _pps_target_voltage_mv; }

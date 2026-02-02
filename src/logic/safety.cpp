@@ -241,6 +241,17 @@ void Safety::updateVoltage() {
         // Just connected
         LOG_INFO("USB-PD connected (VBUS=%.2fV)", _state.vbus_voltage_v);
     }
+
+    // Auto-disable 17V buck if VBUS drops below minimum (e.g., new contract < 18V)
+    // This handles the case where user enables 17V at 20V, then negotiates a lower voltage
+    if (hw.EN_17V.read()) {
+        uint32_t vbus_mv = static_cast<uint32_t>(_state.vbus_voltage_v * 1000.0f);
+        if (vbus_mv < AppConfig::MIN_VBUS_FOR_17V_MV) {
+            hw.EN_17V.off();
+            LOG_WARN("17V buck auto-disabled: VBUS=%.1fV < 18V", _state.vbus_voltage_v);
+            hw.buzzer.playTone(200, 100);  // Warning beep
+        }
+    }
 }
 
 // ============================================================================

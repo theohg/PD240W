@@ -21,6 +21,8 @@ static constexpr uint32_t FLASH_TARGET_OFFSET = (2 * 1024 * 1024) - FLASH_SECTOR
 
 Settings::Settings()
     : _dirty(false)
+    , _save_pending(false)
+    , _save_scheduled(nil_time)
 {
     // Zero-initialize settings struct
     memset(&_settings, 0, sizeof(_settings));
@@ -130,7 +132,27 @@ void Settings::setAutoPpsEnabled(bool enabled) {
 // Persistence
 // ============================================================================
 
+void Settings::requestSave() {
+    // Schedule a save after debounce delay
+    // Each call resets the timer, so rapid changes only result in one flash write
+    _save_pending = true;
+    _save_scheduled = make_timeout_time_ms(SETTINGS_SAVE_DEBOUNCE_MS);
+}
+
+void Settings::update() {
+    // Check if a debounced save is due
+    if (_save_pending && absolute_time_diff_us(_save_scheduled, get_absolute_time()) >= 0) {
+        _save_pending = false;
+        if (_dirty) {
+            saveToFlash();
+        }
+    }
+}
+
 bool Settings::saveToFlash() {
+    // Cancel any pending debounced save
+    _save_pending = false;
+    
     // Update CRC before saving
     _settings.crc32 = calculateCrc32();
     

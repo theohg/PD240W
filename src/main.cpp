@@ -96,7 +96,13 @@ int main() {
         pdManager.update();
 
         // ---------------------------------------------------------------------
-        // 4. Update Display
+        // 4. Update Settings (Debounced Flash Save)
+        // ---------------------------------------------------------------------
+        // Handles deferred flash saves to reduce wear
+        settings.update();
+
+        // ---------------------------------------------------------------------
+        // 5. Update Display
         // ---------------------------------------------------------------------
         // Render at fixed rate (100ms) or when state changes
         if (needs_display_update ||
@@ -107,7 +113,7 @@ int main() {
         }
 
         // ---------------------------------------------------------------------
-        // 5. Update Hardware
+        // 6. Update Hardware
         // ---------------------------------------------------------------------
         // Required for RGB LED blinking and other timed operations
         hw.update();

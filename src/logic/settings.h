@@ -1,17 +1,24 @@
 #pragma once
 
 #include <cstdint>
+#include "pico/stdlib.h"
 
 // ============================================================================
 // User Settings Manager
 // ============================================================================
 // Manages user-configurable settings for the power supply.
 // Settings are stored in RP2040 flash for persistence across power cycles.
+//
+// Flash wear reduction: Uses debounced saves (2 second delay after last change)
+// Call update() in main loop to process pending saves.
 // ============================================================================
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
 constexpr uint8_t SETTINGS_VERSION = 1;
+
+// Debounce delay for flash writes (reduces wear)
+constexpr uint32_t SETTINGS_SAVE_DEBOUNCE_MS = 2000;
 
 struct UserSettings {
     // Magic number for validation
@@ -75,13 +82,17 @@ public:
     bool isAutoPpsEnabled() const { return _settings.auto_pps_enabled; }
 
     // Persistence
-    bool saveToFlash();
+    void requestSave();      // Request a debounced save (will save after 2s delay)
+    void update();           // Call in main loop to process pending saves
+    bool saveToFlash();      // Force immediate save (bypasses debounce)
     bool loadFromFlash();
     void resetToDefaults();
 
 private:
     UserSettings _settings;
-    bool _dirty;  // True if settings changed since last save
+    bool _dirty;                        // True if settings changed since last save
+    bool _save_pending;                 // True if a debounced save is scheduled
+    absolute_time_t _save_scheduled;    // When to execute the pending save
     
     // CRC32 calculation for data integrity
     uint32_t calculateCrc32() const;

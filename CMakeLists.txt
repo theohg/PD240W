@@ -61,6 +61,7 @@ add_executable(PD240W
         src/logic/settings.cpp
         src/logic/safety.cpp
         src/logic/pd_manager.cpp
+        src/logic/eeprom_workflow.cpp
 
         # UI
         src/ui/display_manager.cpp

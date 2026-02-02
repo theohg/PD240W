@@ -7,6 +7,7 @@
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
 #include "settings.h"
+#include "eeprom_workflow.h"
 #include "ui/display_manager.h"
 
 // Global instance
@@ -67,14 +68,7 @@ StateMachine::StateMachine()
     , _pps_max_voltage_mv(0)
     , _pps_max_current_ma(0)
     , _pps_pdo_index(0)
-    , _eeprom_stage(0)
-    , _eeprom_phase(0)
-    , _eeprom_progress(0)
-    , _eeprom_result(false)
-    , _eeprom_confirm_yes(false)
-    , _eeprom_message(nullptr)
     , _brightness_value(100)
-    , _brightness_sun_visible(true)
     , _brightness_adjusting(false)
     , _screen_dimmed(false)
 {
@@ -328,48 +322,19 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         return;
     }
 
-    // Brightness adjustment mode removed - now handled inline in settings menu
-
-    // EEPROM flash mode: special handling based on stage
+    // EEPROM flash mode: delegate to workflow controller
     if (_adjust_mode == AdjustMode::EEPROM_FLASH) {
-        switch (_eeprom_stage) {
-            case 0:  // Compare stage - show result, no interaction yet
-                // Handled by startEepromCompare(), wait for it to set stage=1
-                break;
-
-            case 1:  // Confirm stage - Yes/No selection
-                if (event == EncoderEvent::ROTATE_CW || event == EncoderEvent::ROTATE_CCW) {
-                    _eeprom_confirm_yes = !_eeprom_confirm_yes;
-                    _last_activity_time = get_absolute_time();
-                } else if (event == EncoderEvent::CLICK) {
-                    if (_eeprom_confirm_yes) {
-                        // User confirmed - start flash
-                        _eeprom_stage = 2;  // Flashing
-                        _eeprom_message = "Flashing...";
-                        _eeprom_progress = 0;
-                        executeEepromFlash();
-                    } else {
-                        // User cancelled - return to settings menu
-                        eepromDeinit();
-                        _adjust_mode = AdjustMode::SETTINGS_MENU;
-                        displayManager.invalidate();
-                    }
-                    _last_activity_time = get_absolute_time();
-                }
-                break;
-
-            case 2:  // Flashing stage - no user interaction (blocking)
-                // Progress updates come from the callback
-                break;
-
-            case 3:  // Done stage - show result, click to exit
-                if (event == EncoderEvent::CLICK) {
-                    eepromDeinit();
-                    // Return to settings menu, not main menu
-                    _adjust_mode = AdjustMode::SETTINGS_MENU;
-                    displayManager.invalidate();
-                }
-                break;
+        bool rotate = (event == EncoderEvent::ROTATE_CW || event == EncoderEvent::ROTATE_CCW);
+        bool click = (event == EncoderEvent::CLICK);
+        
+        if (rotate || click) {
+            _last_activity_time = get_absolute_time();
+        }
+        
+        if (eepromWorkflow.handleInput(rotate, click)) {
+            // Workflow complete - return to settings menu
+            _adjust_mode = AdjustMode::SETTINGS_MENU;
+            displayManager.invalidate();
         }
         return;
     }
@@ -820,9 +785,8 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     _brightness_value = 5;  // Minimum 5% to keep screen visible
                 }
                 settings.setLcdBrightness(_brightness_value);
-                settings.saveToFlash();
+                settings.requestSave();  // Debounced save (reduces flash wear)
                 hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
-                // Display manager detects brightness change and redraws only that line
                 playNavBeep();
             } else {
                 // Move down in settings menu (with wrap-around)
@@ -843,9 +807,8 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     _brightness_value += 5;
                     if (_brightness_value > 100) _brightness_value = 100;
                     settings.setLcdBrightness(_brightness_value);
-                    settings.saveToFlash();
+                    settings.requestSave();  // Debounced save (reduces flash wear)
                     hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
-                    // Display manager detects brightness change and redraws only that line
                 }
                 playNavBeep();
             } else {
@@ -864,33 +827,28 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
             switch (_selected_settings_item) {
                 case SettingsItem::FLASH_EEPROM:
                     _adjust_mode = AdjustMode::EEPROM_FLASH;
-                    _eeprom_stage = 0;
-                    _eeprom_message = "Initializing...";
-                    _eeprom_progress = 0;
-                    _eeprom_result = false;
-                    _eeprom_confirm_yes = false;
                     displayManager.invalidate();
-                    startEepromCompare();
+                    eepromWorkflow.start();
                     break;
 
                 case SettingsItem::AUTO_PPS:
                     // Toggle Auto PPS setting
                     settings.setAutoPpsEnabled(!settings.isAutoPpsEnabled());
-                    settings.saveToFlash();
-                    displayManager.invalidate();  // Force immediate redraw
+                    settings.requestSave();  // Debounced save
+                    displayManager.invalidate();
                     break;
 
                 case SettingsItem::BRIGHTNESS:
                     // Toggle brightness adjustment mode
                     _brightness_adjusting = !_brightness_adjusting;
-                    displayManager.invalidate();  // Redraw to show/hide indicator
+                    displayManager.invalidate();
                     break;
 
                 case SettingsItem::SOUNDS:
                     // Toggle Sounds setting
                     settings.setSoundsEnabled(!settings.isSoundsEnabled());
-                    settings.saveToFlash();
-                    displayManager.invalidate();  // Force immediate redraw
+                    settings.requestSave();  // Debounced save
+                    displayManager.invalidate();
                     break;
 
                 case SettingsItem::BACK:
@@ -912,14 +870,6 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
     }
 }
 
-void StateMachine::toggleBrightnessSunBlink() {
-    if (_adjust_mode == AdjustMode::BRIGHTNESS_ADJUST) {
-        _brightness_sun_visible = !_brightness_sun_visible;
-    } else {
-        _brightness_sun_visible = true;
-    }
-}
-
 uint32_t StateMachine::getEffectiveMaxCurrentMa() const {
     const ActiveContract& contract = pdManager.getActiveContract();
     if (contract.valid && contract.current_ma > 0) {
@@ -932,117 +882,3 @@ uint32_t StateMachine::getEffectiveMaxCurrentMa() const {
     return AppConfig::CURRENT_LIMIT_NON_PD_MAX_MA;
 }
 
-// Expose PDO list for display manager
-const SourceCapability* getPdoList() {
-    return s_pdo_list;
-}
-
-uint8_t getPdoCount() {
-    return stateMachine.getSelectedPdoIndex() >= 0 ?
-           static_cast<uint8_t>(stateMachine.getSelectedPdoIndex() + 1) : 0;
-}
-
-// ============================================================================
-// EEPROM Flash Helpers
-// ============================================================================
-
-// Static callback for EEPROM progress updates
-static void eepromProgressCallback(uint8_t phase, uint8_t progress, void* user_data) {
-    StateMachine* sm = static_cast<StateMachine*>(user_data);
-    sm->setEepromProgress(phase, progress);
-}
-
-void StateMachine::setEepromProgress(uint8_t phase, uint8_t progress) {
-    _eeprom_phase = phase;
-    _eeprom_progress = progress;
-    if (phase == 0) {
-        _eeprom_message = "Writing...";
-    } else {
-        _eeprom_message = "Verifying...";
-    }
-}
-
-void StateMachine::startEepromCompare() {
-    LOG_INFO("Starting EEPROM compare...");
-
-    // Initialize I2C1 for EEPROM access
-    if (!eepromInit()) {
-        _eeprom_message = "I2C init failed";
-        _eeprom_stage = 3;  // Done with failure
-        _eeprom_result = false;
-        return;
-    }
-
-    // Probe for device
-    if (!eepromProbe()) {
-        _eeprom_message = "EEPROM not found";
-        _eeprom_stage = 3;  // Done with failure
-        _eeprom_result = false;
-        return;
-    }
-
-    // Compare EEPROM against firmware
-    EepromCompareResult result = eepromCompare();
-
-    switch (result) {
-        case EepromCompareResult::IDENTICAL:
-            _eeprom_message = "Config identical";
-            _eeprom_stage = 3;  // Done - no need to flash
-            _eeprom_result = false;  // No flash was performed
-            eepromDeinit();  // Release I2C resources
-            break;
-
-        case EepromCompareResult::EMPTY:
-            _eeprom_message = "EEPROM empty";
-            _eeprom_stage = 1;  // Ask for confirmation
-            break;
-
-        case EepromCompareResult::DIFFERENT:
-            _eeprom_message = "Different config";
-            _eeprom_stage = 1;  // Ask for confirmation
-            break;
-
-        case EepromCompareResult::NO_DEVICE:
-            _eeprom_message = "No EEPROM found";
-            _eeprom_stage = 3;  // Done with failure
-            _eeprom_result = false;
-            eepromDeinit();  // Release I2C resources
-            break;
-
-        case EepromCompareResult::READ_ERROR:
-        default:
-            _eeprom_message = "Read error";
-            _eeprom_stage = 3;  // Done with failure
-            _eeprom_result = false;
-            eepromDeinit();  // Release I2C resources
-            break;
-    }
-}
-
-void StateMachine::executeEepromFlash() {
-    LOG_INFO("Starting EEPROM flash...");
-
-    // Disable interrupts that might interfere with the long blocking operation
-    // (The I2C EEPROM write is blocking with delays)
-
-    // Execute flash with progress callback
-    _eeprom_result = eepromFlash(eepromProgressCallback, this);
-
-    // Move to done stage
-    _eeprom_stage = 3;
-
-    if (_eeprom_result) {
-        _eeprom_message = "Success! Power cycle";
-        // Ta-da! success melody
-        hw.buzzer.playTone(880, 80);   // A5
-        sleep_ms(80);
-        hw.buzzer.playTone(1175, 80);  // D6
-        sleep_ms(80);
-        hw.buzzer.playTone(1397, 150); // F6
-        LOG_INFO("EEPROM flash successful");
-    } else {
-        _eeprom_message = "Flash failed!";
-        hw.buzzer.playTone(200, 300);  // Error beep
-        LOG_ERROR("EEPROM flash failed");
-    }
-}

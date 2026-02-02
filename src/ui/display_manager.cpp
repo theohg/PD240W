@@ -1,6 +1,7 @@
 #include "display_manager.h"
 #include "hardware.h"
 #include "logic/state_machine.h"
+#include "logic/eeprom_workflow.h"
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
@@ -43,7 +44,6 @@ DisplayManager::DisplayManager()
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
     , _backlight_on(false)
-    , _sun_blink_time(nil_time)
 {
 }
 
@@ -217,11 +217,6 @@ void DisplayManager::renderAdjustScreen() {
             drawHeader("Settings");
         }
         drawSettingsMenu();
-    } else if (mode == AdjustMode::BRIGHTNESS_ADJUST) {
-        if (_needs_full_redraw) {
-            drawHeader("Brightness");
-        }
-        drawBrightnessAdjust();
     }
 }
 
@@ -757,7 +752,7 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
                               "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                              "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -833,7 +828,7 @@ void DisplayManager::drawPpsVoltageAdjust() {
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
                               "Rotate: 20mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                              "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
 
@@ -969,128 +964,13 @@ void DisplayManager::drawBrightnessItem(int y, bool selected) {
     }
 }
 
-void DisplayManager::drawSunIcon(int cx, int cy, uint16_t color, bool visible) {
-    if (!visible) {
-        // Clear the sun area
-        hw.display.fillRect(cx - 8, cy - 8, 16, 16, UIColors::BACKGROUND);
-        return;
-    }
-
-    // Draw a simple sun: empty circle with ray lines
-    const int RADIUS = 4;
-    const int RAY_LEN = 3;
-    
-    // Draw the circle outline (approximated with points)
-    // Top and bottom
-    hw.display.drawPixel(cx, cy - RADIUS, color);
-    hw.display.drawPixel(cx, cy + RADIUS, color);
-    // Left and right
-    hw.display.drawPixel(cx - RADIUS, cy, color);
-    hw.display.drawPixel(cx + RADIUS, cy, color);
-    // Diagonals
-    hw.display.drawPixel(cx - 3, cy - 3, color);
-    hw.display.drawPixel(cx + 3, cy - 3, color);
-    hw.display.drawPixel(cx - 3, cy + 3, color);
-    hw.display.drawPixel(cx + 3, cy + 3, color);
-    
-    // Draw rays (short lines extending from the circle)
-    // Top ray
-    hw.display.drawLine(cx, cy - RADIUS - 1, cx, cy - RADIUS - RAY_LEN, color);
-    // Bottom ray
-    hw.display.drawLine(cx, cy + RADIUS + 1, cx, cy + RADIUS + RAY_LEN, color);
-    // Left ray
-    hw.display.drawLine(cx - RADIUS - 1, cy, cx - RADIUS - RAY_LEN, cy, color);
-    // Right ray
-    hw.display.drawLine(cx + RADIUS + 1, cy, cx + RADIUS + RAY_LEN, cy, color);
-    // Diagonal rays (shorter)
-    hw.display.drawLine(cx - 4, cy - 4, cx - 6, cy - 6, color);
-    hw.display.drawLine(cx + 4, cy - 4, cx + 6, cy - 6, color);
-    hw.display.drawLine(cx - 4, cy + 4, cx - 6, cy + 6, color);
-    hw.display.drawLine(cx + 4, cy + 4, cx + 6, cy + 6, color);
-}
-
-void DisplayManager::drawBrightnessAdjust() {
-    uint8_t brightness = stateMachine.getBrightnessValue();
-    bool sun_visible = stateMachine.isBrightnessSunVisible();
-
-    // Handle sun blinking (250ms interval)
-    if (absolute_time_diff_us(_sun_blink_time, get_absolute_time()) >= 250000) {
-        stateMachine.toggleBrightnessSunBlink();
-        _sun_blink_time = get_absolute_time();
-    }
-
-    // Skip redraw if value hasn't changed (except for sun blink)
-    static uint8_t last_brightness = 255;
-    static bool last_sun_visible = true;
-    
-    bool value_changed = (brightness != last_brightness);
-    bool sun_changed = (sun_visible != last_sun_visible);
-
-    if (!_needs_full_redraw && !value_changed && !sun_changed) {
-        return;
-    }
-
-    int y = CONTENT_Y_START + 40;
-
-    // Only clear content area on full redraw
-    if (_needs_full_redraw) {
-        hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
-    }
-
-    // Draw sun icon (blinking) - centered above the value
-    int sun_x = SCREEN_WIDTH / 2;
-    int sun_y = y;
-    if (_needs_full_redraw || sun_changed) {
-        // Clear sun area first
-        hw.display.fillRect(sun_x - 12, sun_y - 12, 24, 24, UIColors::BACKGROUND);
-        drawSunIcon(sun_x, sun_y, UIColors::TEXT_PRIMARY, sun_visible);
-        last_sun_visible = sun_visible;
-    }
-
-    // Draw brightness value
-    y += 25;
-    if (_needs_full_redraw || value_changed) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%3d", brightness);
-        
-        // Center the value
-        int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
-        int value_x = (SCREEN_WIDTH - value_width) / 2;
-        
-        // Clear value area
-        hw.display.fillRect(value_x - 20, y, value_width + 40, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-        hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
-        last_brightness = brightness;
-    }
-
-    // Draw progress bar
-    y += 50;
-    uint8_t percent = brightness;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
-
-    // Draw min/max labels and hints only on full redraw
-    if (_needs_full_redraw) {
-        y += 30;
-        hw.display.drawStringAA(MARGIN * 2, y, "0", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-
-        int max_width = ST7789::getStringWidthAA("100", FONT_SMALL);
-        hw.display.drawStringAA(SCREEN_WIDTH - MARGIN * 2 - max_width, y,
-                              "100", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-
-        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
-                              "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                              "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    }
-}
-
 void DisplayManager::drawEepromFlashScreen() {
-    uint8_t stage = stateMachine.getEepromStage();
-    uint8_t phase = stateMachine.getEepromPhase();
-    uint8_t progress = stateMachine.getEepromProgress();
-    bool result = stateMachine.getEepromResult();
-    bool confirm_yes = stateMachine.getEepromConfirmYes();
-    const char* message = stateMachine.getEepromMessage();
+    uint8_t stage = static_cast<uint8_t>(eepromWorkflow.getStage());
+    uint8_t phase = eepromWorkflow.getPhase();
+    uint8_t progress = eepromWorkflow.getProgress();
+    bool result = eepromWorkflow.getResult();
+    bool confirm_yes = eepromWorkflow.isConfirmYes();
+    const char* message = eepromWorkflow.getMessage();
 
     // Clear content area on full redraw or stage change
     static uint8_t last_stage = 255;
@@ -1154,7 +1034,7 @@ void DisplayManager::drawEepromFlashScreen() {
             hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
                                   "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
             hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                                  "Click: Confirm  Long: Cancel", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                                  "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
             break;
 
         case 2:  // Flashing - show progress
