@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // ============================================================================
-// EEPROM Flash Workflow Controller
+// TPS26750 EEPROM Flash Workflow Controller
 // ============================================================================
 // Manages the TPS26750 EEPROM flashing workflow with a simple state machine.
 // Extracted from state_machine.cpp for better separation of concerns.
@@ -16,16 +16,16 @@
 // ============================================================================
 
 // Workflow stages (exposed for display manager)
-enum class EepromWorkflowStage : uint8_t {
+enum class TpsEepromWorkflowStage : uint8_t {
     COMPARING = 0,  // Initializing and comparing
     CONFIRM = 1,    // Awaiting user confirmation
     FLASHING = 2,   // Write/verify in progress
     DONE = 3        // Complete, awaiting dismissal
 };
 
-class EepromWorkflow {
+class TpsEepromWorkflow {
 public:
-    EepromWorkflow();
+    TpsEepromWorkflow();
 
     // Start the workflow (call when entering EEPROM flash mode)
     void start();
@@ -38,7 +38,7 @@ public:
     bool isActive() const { return _active; }
 
     // Get current stage for display
-    EepromWorkflowStage getStage() const { return _stage; }
+    TpsEepromWorkflowStage getStage() const { return _stage; }
 
     // Get current phase (0=write, 1=verify) during FLASHING stage
     uint8_t getPhase() const { return _phase; }
@@ -63,7 +63,7 @@ public:
 
 private:
     bool _active;
-    EepromWorkflowStage _stage;
+    TpsEepromWorkflowStage _stage;
     uint8_t _phase;
     uint8_t _progress;
     bool _result;
@@ -76,4 +76,4 @@ private:
 };
 
 // Global instance
-extern EepromWorkflow eepromWorkflow;
+extern TpsEepromWorkflow tpsEepromWorkflow;

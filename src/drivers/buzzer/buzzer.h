@@ -10,12 +10,23 @@ struct Note {
     uint16_t duration;   // Duration in milliseconds
 };
 
-// Mario Power-Up melody
+// Startup melodies
 extern const Note MARIO_POWERUP[];
 extern const uint8_t MARIO_POWERUP_LENGTH;
 
+extern const Note ASCENDING_CHIME[];
+extern const uint8_t ASCENDING_CHIME_LENGTH;
+
+extern const Note TWO_TONE_BEEP[];
+extern const uint8_t TWO_TONE_BEEP_LENGTH;
+
 extern const Note CRITICAL_WARNING_ALARM[];
 extern const uint8_t CRITICAL_WARNING_ALARM_LENGTH;
+
+// Startup melody helpers (index: 0=Silent, 1=Mario, 2=Chime, 3=TwoTone)
+const Note* getStartupMelody(uint8_t index);
+uint8_t getStartupMelodyLength(uint8_t index);
+const char* getStartupMelodyName(uint8_t index);
 
 class Buzzer {
 private:

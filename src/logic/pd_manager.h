@@ -69,6 +69,10 @@ public:
     // Get TPS26750 mode string
     bool getMode(char* mode_str);
 
+    // Get PD revision string based on source capabilities
+    // Returns "PD3.1" for AVS/EPR, "PD3.0" for PPS, "PD2.0" for fixed-only, "" for no PDOs
+    const char* getPdRevision() const { return _pd_revision; }
+
 private:
     // Negotiation state
     NegotiationState _negotiation_state;
@@ -92,6 +96,12 @@ private:
     uint32_t _pps_current_ma;           // Last requested PPS current
     absolute_time_t _pps_last_refresh;  // Time of last PPS request
     static constexpr uint32_t PPS_REFRESH_INTERVAL_MS = 7000;  // Refresh every 7s (spec requires <10s)
+
+    // PD revision string (cached)
+    char _pd_revision[8];
+
+    // Detect PD revision from cached PDOs
+    void detectPdRevision();
 
     // Process PD interrupt events
     void handlePdInterrupt();

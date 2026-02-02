@@ -44,6 +44,10 @@ int main() {
     // Initialize settings
     settings.init();
 
+    // Reset INA228 energy/charge accumulators for energy tracking since boot
+    hw.powerMonitor.setAccumulation(1);  // Clear accumulators
+    hw.powerMonitor.setAccumulation(0);  // Resume normal accumulation
+
     // Initialize safety monitoring
     safety.init();
 

@@ -15,7 +15,7 @@
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 1;
+constexpr uint8_t SETTINGS_VERSION = 2;
 
 // Debounce delay for flash writes (reduces wear)
 constexpr uint32_t SETTINGS_SAVE_DEBOUNCE_MS = 2000;
@@ -46,9 +46,21 @@ struct UserSettings {
     // Auto PPS tuning
     bool auto_pps_enabled;   // ON/OFF for automatic PPS voltage calibration
 
+    // Auto-dim timeout (minutes)
+    uint8_t auto_dim_minutes;  // 1-10, default 1
+
+    // Startup melody selection
+    uint8_t startup_melody;    // 0=Silent, 1=Mario, 2=Chime, 3=TwoTone
+
+    // Auto output on boot
+    bool auto_output;          // If true, enable output after boot completes
+
+    // Last PPS voltage for restore on boot
+    uint32_t last_pps_voltage_mv;  // 0 = not set
+
     // Reserved for future use
-    uint8_t reserved[12];
-    
+    uint8_t reserved[4];
+
     // CRC32 for data integrity
     uint32_t crc32;
 };
@@ -71,6 +83,10 @@ public:
     void setLcdBrightness(uint8_t brightness);
     void setSoundsEnabled(bool enabled);
     void setAutoPpsEnabled(bool enabled);
+    void setAutoDimMinutes(uint8_t minutes);
+    void setStartupMelody(uint8_t melody);
+    void setAutoOutput(bool enabled);
+    void setLastPpsVoltageMv(uint32_t voltage_mv);
 
     // Accessors
     uint32_t getCurrentLimit() const { return _settings.current_limit_ma; }
@@ -80,6 +96,10 @@ public:
     uint8_t getLcdBrightness() const { return _settings.lcd_brightness; }
     bool isSoundsEnabled() const { return _settings.sounds_enabled; }
     bool isAutoPpsEnabled() const { return _settings.auto_pps_enabled; }
+    uint8_t getAutoDimMinutes() const { return _settings.auto_dim_minutes; }
+    uint8_t getStartupMelody() const { return _settings.startup_melody; }
+    bool isAutoOutput() const { return _settings.auto_output; }
+    uint32_t getLastPpsVoltageMv() const { return _settings.last_pps_voltage_mv; }
 
     // Persistence
     void requestSave();      // Request a debounced save (will save after 2s delay)

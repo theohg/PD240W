@@ -132,6 +132,55 @@ const Note MARIO_POWERUP[] = {
 
 const uint8_t MARIO_POWERUP_LENGTH = sizeof(MARIO_POWERUP) / sizeof(Note);
 
+// Ascending Chime: C5-E5-G5-C6 (bright, clean)
+const Note ASCENDING_CHIME[] = {
+    {523, 100},   // C5
+    {0,   30},    // brief silence
+    {659, 100},   // E5
+    {0,   30},
+    {784, 100},   // G5
+    {0,   30},
+    {1047, 150},  // C6
+};
+const uint8_t ASCENDING_CHIME_LENGTH = sizeof(ASCENDING_CHIME) / sizeof(Note);
+
+// Two-Tone Beep: A5-C6 (simple, professional)
+const Note TWO_TONE_BEEP[] = {
+    {880, 120},   // A5
+    {0,   40},    // brief silence
+    {1047, 160},  // C6
+};
+const uint8_t TWO_TONE_BEEP_LENGTH = sizeof(TWO_TONE_BEEP) / sizeof(Note);
+
+// Startup melody helpers
+const Note* getStartupMelody(uint8_t index) {
+    switch (index) {
+        case 1: return MARIO_POWERUP;
+        case 2: return ASCENDING_CHIME;
+        case 3: return TWO_TONE_BEEP;
+        default: return nullptr;  // 0 = Silent
+    }
+}
+
+uint8_t getStartupMelodyLength(uint8_t index) {
+    switch (index) {
+        case 1: return MARIO_POWERUP_LENGTH;
+        case 2: return ASCENDING_CHIME_LENGTH;
+        case 3: return TWO_TONE_BEEP_LENGTH;
+        default: return 0;
+    }
+}
+
+const char* getStartupMelodyName(uint8_t index) {
+    switch (index) {
+        case 0: return "Silent";
+        case 1: return "Mario";
+        case 2: return "Chime";
+        case 3: return "Two-Tone";
+        default: return "Unknown";
+    }
+}
+
 // Critical Warning Alarm: Beep-Beep-Pause (Repeatable)
 // High pitch (3000Hz) cuts through noise better than low pitch
 const Note CRITICAL_WARNING_ALARM[] = {

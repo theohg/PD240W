@@ -48,4 +48,10 @@ namespace AppConfig {
     constexpr uint32_t AUTO_DIM_TIMEOUT_MS = 60000;    // Auto-dim after inactivity [ms] (1 minute)
     constexpr uint16_t LCD_WIDTH = 240;
     constexpr uint16_t LCD_HEIGHT = 320;
+
+    // -------------------------------------------------------------------------
+    // RGB LED Settings
+    // -------------------------------------------------------------------------
+    constexpr uint8_t RGB_LED_BRIGHTNESS_NORMAL = 50;  // Normal brightness (%)
+    constexpr uint8_t RGB_LED_BRIGHTNESS_DIM = 2;      // Dimmed brightness (%)
 }

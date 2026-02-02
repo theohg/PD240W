@@ -128,6 +128,37 @@ void Settings::setAutoPpsEnabled(bool enabled) {
     }
 }
 
+void Settings::setAutoDimMinutes(uint8_t minutes) {
+    if (minutes < 1) minutes = 1;
+    if (minutes > 10) minutes = 10;
+    if (_settings.auto_dim_minutes != minutes) {
+        _settings.auto_dim_minutes = minutes;
+        _dirty = true;
+    }
+}
+
+void Settings::setStartupMelody(uint8_t melody) {
+    if (melody > 3) melody = 3;
+    if (_settings.startup_melody != melody) {
+        _settings.startup_melody = melody;
+        _dirty = true;
+    }
+}
+
+void Settings::setAutoOutput(bool enabled) {
+    if (_settings.auto_output != enabled) {
+        _settings.auto_output = enabled;
+        _dirty = true;
+    }
+}
+
+void Settings::setLastPpsVoltageMv(uint32_t voltage_mv) {
+    if (_settings.last_pps_voltage_mv != voltage_mv) {
+        _settings.last_pps_voltage_mv = voltage_mv;
+        _dirty = true;
+    }
+}
+
 // ============================================================================
 // Persistence
 // ============================================================================
@@ -221,6 +252,10 @@ void Settings::resetToDefaults() {
     _settings.lcd_brightness = AppConfig::LCD_BRIGHTNESS_DEFAULT;
     _settings.sounds_enabled = true;        // Sounds ON by default
     _settings.auto_pps_enabled = false;     // Auto PPS OFF by default
+    _settings.auto_dim_minutes = 1;         // 1 minute dim timeout
+    _settings.startup_melody = 1;           // Mario Power-Up by default
+    _settings.auto_output = false;          // Output disabled by default
+    _settings.last_pps_voltage_mv = 0;      // No saved PPS voltage
 
     memset(_settings.reserved, 0, sizeof(_settings.reserved));
     _settings.crc32 = 0;  // Will be calculated on save

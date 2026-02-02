@@ -2,6 +2,7 @@
 #include "hardware.h"
 #include "interrupts.h"
 #include "utils/logging.h"
+#include <cstring>
 
 // Global instance
 PdManager pdManager;
@@ -28,6 +29,7 @@ PdManager::PdManager()
     _active_contract.valid = false;
     _active_contract.pps_min_mv = 0;
     _active_contract.pps_max_mv = 0;
+    _pd_revision[0] = '\0';
 }
 
 // ============================================================================
@@ -55,6 +57,7 @@ void PdManager::init() {
     if (_pdos_valid) {
         LOG_INFO("Found %d PDOs from charger", _pdo_count);
         _charger_connected = true;
+        detectPdRevision();
     } else {
         LOG_WARN("No PDOs found - EEPROM might not have been read correctly");
     }
@@ -85,6 +88,23 @@ void PdManager::update() {
         }
     }
 
+    // Deferred PDO discovery: if PD revision is unknown, TPS26750 may have negotiated
+    // before RP2040 GPIO interrupts were set up (missed edge at cold boot).
+    // Retry every 500ms until PDOs are found.
+    if (_pd_revision[0] == '\0' && _charger_connected) {
+        static absolute_time_t next_pdo_retry = {0};
+        if (absolute_time_diff_us(next_pdo_retry, get_absolute_time()) >= 0) {
+            next_pdo_retry = make_timeout_time_ms(500);
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            _pdos_valid = (_pdo_count > 0);
+            if (_pdos_valid) {
+                detectPdRevision();
+                refreshActiveContract();
+                LOG_INFO("Deferred PDO discovery: found %d PDOs", _pdo_count);
+            }
+        }
+    }
+
     // PPS keep-alive: must refresh contract every <10 seconds or source reverts to 5V
     if (_pps_active && _pps_voltage_mv > 0) {
         uint32_t elapsed_ms = absolute_time_diff_us(_pps_last_refresh, get_absolute_time()) / 1000;
@@ -112,6 +132,7 @@ uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_cap
     if (!_pdos_valid) {
         _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
         _pdos_valid = (_pdo_count > 0);
+        if (_pdos_valid) detectPdRevision();
     }
 
     // Copy from cache
@@ -244,6 +265,34 @@ bool PdManager::getMode(char* mode_str) {
 }
 
 // ============================================================================
+// PD Revision Detection
+// ============================================================================
+
+void PdManager::detectPdRevision() {
+    bool has_avs = false;
+    bool has_pps = false;
+
+    for (uint8_t i = 0; i < _pdo_count; i++) {
+        if (_pdo_cache[i].is_avs) has_avs = true;
+        if (_pdo_cache[i].is_pps) has_pps = true;
+    }
+
+    if (has_avs) {
+        strcpy(_pd_revision, "PD3.1");
+    } else if (has_pps) {
+        strcpy(_pd_revision, "PD3.0");
+    } else if (_pdo_count > 0) {
+        strcpy(_pd_revision, "PD2.0");
+    } else {
+        _pd_revision[0] = '\0';
+    }
+
+    if (_pd_revision[0] != '\0') {
+        LOG_INFO("Detected PD revision: %s", _pd_revision);
+    }
+}
+
+// ============================================================================
 // Interrupt Handling
 // ============================================================================
 
@@ -261,6 +310,15 @@ void PdManager::handlePdInterrupt() {
 
         // Refresh active contract
         refreshActiveContract();
+
+        // Refresh PDO cache and PD revision if not yet valid (e.g. cold boot)
+        if (!_pdos_valid) {
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            _pdos_valid = (_pdo_count > 0);
+            if (_pdos_valid) {
+                detectPdRevision();
+            }
+        }
 
         // Update negotiation state
         if (_negotiation_state == NegotiationState::REQUESTING) {

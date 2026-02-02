@@ -3,11 +3,11 @@
 #include "interrupts.h"
 #include "app_config.h"
 #include "utils/logging.h"
-#include "utils/eeprom_loader.h"
+#include "utils/tps_eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
 #include "settings.h"
-#include "eeprom_workflow.h"
+#include "tps_eeprom_workflow.h"
 #include "ui/display_manager.h"
 
 // Global instance
@@ -16,24 +16,19 @@ StateMachine stateMachine;
 // ============================================================================
 // Boot Stage Configuration
 // ============================================================================
-// Simplified boot sequence:
-//   Stage 0 (0ms):    Logo displayed, melody plays
-//   Stage 1 (500ms):  Read USB-PD contracts, show "Reading USB-PD..."
-//   Stage 2 (1500ms): Show "Ready"
-//   At 2000ms:        Transition to MAIN
 
 static const char* BOOT_MESSAGES[] = {
     "",                    // 0: Logo only (melody plays)
     "Reading USB-PD...",   // 1: Reading PD contracts
-    "Ready!"                // 2: Complete
+    "Ready!"               // 2: Complete
 };
 static constexpr uint8_t BOOT_STAGE_COUNT = 3;
 
 // Boot stage timing (cumulative milliseconds)
 static const uint32_t BOOT_STAGE_TIMES[] = {
-    0,      // 0: Logo + start melody
-    500,    // 1: Read USB-PD
-    1500    // 2: Ready
+    0,                                            // 0: Logo + start melody
+    (uint32_t)(AppConfig::BOOT_DURATION_MS*0.25), // 1: Read USB-PD
+    (uint32_t)(AppConfig::BOOT_DURATION_MS*0.75)  // 2: Ready
 };
 
 // Storage for PDO list (shared with display)
@@ -71,6 +66,10 @@ StateMachine::StateMachine()
     , _brightness_value(100)
     , _brightness_adjusting(false)
     , _screen_dimmed(false)
+    , _dim_timeout_value(1)
+    , _dim_timeout_adjusting(false)
+    , _melody_value(1)
+    , _melody_adjusting(false)
 {
 }
 
@@ -83,9 +82,14 @@ void StateMachine::init() {
     _last_activity_time = get_absolute_time();
     _last_encoder_ticks = hw.encoder.getTicks();
 
-    // Start Mario power-up melody at boot (only if sounds enabled)
+    // Play startup melody at boot (only if sounds enabled and melody != Silent)
     if (settings.isSoundsEnabled()) {
-        hw.buzzer.playMelody(MARIO_POWERUP, MARIO_POWERUP_LENGTH);
+        uint8_t melody_idx = settings.getStartupMelody();
+        const Note* melody = getStartupMelody(melody_idx);
+        uint8_t length = getStartupMelodyLength(melody_idx);
+        if (melody && length > 0) {
+            hw.buzzer.playMelody(melody, length);
+        }
     }
 
     LOG_INFO("State machine initialized, starting BOOT sequence");
@@ -119,6 +123,7 @@ bool StateMachine::update() {
         // User interacted - restore brightness
         _screen_dimmed = false;
         hw.display.setBacklightBrightness(_brightness_value);
+        hw.rgbLed.setBrightness(50);  // Restore RGB LED brightness
         _last_activity_time = get_absolute_time();
         LOG_INFO("Screen woken from dim (encoder input)");
     }
@@ -162,9 +167,11 @@ bool StateMachine::update() {
     // Auto-dim check: dim screen after inactivity (applies in all states except BOOT)
     if (_state != AppState::BOOT && !_screen_dimmed) {
         int64_t idle_ms = absolute_time_diff_us(_last_activity_time, get_absolute_time()) / 1000;
-        if (idle_ms > (int64_t)AppConfig::AUTO_DIM_TIMEOUT_MS) {
+        uint32_t dim_timeout_ms = static_cast<uint32_t>(settings.getAutoDimMinutes()) * 60000;
+        if (idle_ms > (int64_t)dim_timeout_ms) {
             _screen_dimmed = true;
             hw.display.setBacklightBrightness(AppConfig::LCD_BRIGHTNESS_DIM);
+            hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_DIM);  // Dim RGB LED too
             LOG_INFO("Screen auto-dimmed after %lld ms inactivity", idle_ms);
         }
     }
@@ -258,8 +265,12 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 
                 case MenuItem::SETTINGS:
                     _selected_settings_item = SettingsItem::FLASH_EEPROM;
-                    _brightness_value = settings.getLcdBrightness();  // Initialize brightness value
-                    _brightness_adjusting = false;  // Reset brightness adjust mode
+                    _brightness_value = settings.getLcdBrightness();
+                    _brightness_adjusting = false;
+                    _dim_timeout_value = settings.getAutoDimMinutes();
+                    _dim_timeout_adjusting = false;
+                    _melody_value = settings.getStartupMelody();
+                    _melody_adjusting = false;
                     _adjust_mode = AdjustMode::SETTINGS_MENU;
                     transitionTo(AppState::ADJUST);
                     break;
@@ -331,7 +342,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             _last_activity_time = get_absolute_time();
         }
         
-        if (eepromWorkflow.handleInput(rotate, click)) {
+        if (tpsEepromWorkflow.handleInput(rotate, click)) {
             // Workflow complete - return to settings menu
             _adjust_mode = AdjustMode::SETTINGS_MENU;
             displayManager.invalidate();
@@ -342,7 +353,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
-                if (_selected_pdo_index < _num_pdos - 1) {
+                if (_selected_pdo_index < _num_pdos) {  // _num_pdos = Back item
                     _selected_pdo_index++;
                 } else {
                     _selected_pdo_index = 0;  // Wrap to first
@@ -379,7 +390,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 if (_selected_pdo_index > 0) {
                     _selected_pdo_index--;
                 } else {
-                    _selected_pdo_index = _num_pdos - 1;  // Wrap to last
+                    _selected_pdo_index = _num_pdos;  // Wrap to Back item
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
                 // Velocity-based acceleration for current limit (smaller range: 0-5A)
@@ -410,8 +421,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         case EncoderEvent::CLICK:
             // Confirm selection
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
-                // If no PDOs, click returns to menu
-                if (_num_pdos == 0) {
+                // If no PDOs or "Back" selected, return to menu
+                if (_num_pdos == 0 || _selected_pdo_index == _num_pdos) {
                     hw.buzzer.playTone(1000, 30);  // Exit beep
                     transitionTo(AppState::MENU);
                     _last_activity_time = get_absolute_time();
@@ -497,6 +508,30 @@ void StateMachine::transitionTo(AppState new_state) {
                 Interrupts::checkBtn1Clicked();
                 Interrupts::checkBtn2Clicked();
             }
+            // Auto-output on boot: enable load switch after boot completes
+            if (_previous_state == AppState::BOOT && settings.isAutoOutput()) {
+                hw.powerMonitor.getDiagnoseAlert();  // Clear INA228 fault latch
+                hw.loadSwitch.on();
+                LOG_INFO("Auto-output enabled on boot");
+            }
+            // Restore last PDO on boot (remember last voltage)
+            if (_previous_state == AppState::BOOT) {
+                int8_t saved_pdo = settings.getLastPdoIndex();
+                if (saved_pdo > 0) {  // 0 = default 5V, skip
+                    // Load PDO list and attempt to restore
+                    loadPdoList();
+                    if (saved_pdo < _num_pdos) {
+                        SourceCapability& pdo = s_pdo_list[saved_pdo];
+                        if (pdo.is_pps && settings.getLastPpsVoltageMv() > 0) {
+                            pdManager.requestPpsVoltage(settings.getLastPpsVoltageMv(), pdo.max_current_ma);
+                            LOG_INFO("Restored PPS voltage: %umV", settings.getLastPpsVoltageMv());
+                        } else if (!pdo.is_pps) {
+                            pdManager.requestContract(pdo);
+                            LOG_INFO("Restored PDO[%d]: %umV", saved_pdo, pdo.voltage_mv);
+                        }
+                    }
+                }
+            }
             break;
 
         case AppState::MENU:
@@ -527,7 +562,7 @@ EncoderEvent StateMachine::readEncoderEvent() {
 
     // Check encoder rotation
     int current_ticks = hw.encoder.getTicks();
-    int delta = current_ticks - _last_encoder_ticks;
+    int delta = _last_encoder_ticks - current_ticks;  // Inverted: physical CW = positive delta
     _encoder_delta = delta;  // Store for acceleration (used by current limit adjust)
 
     if (delta > 0) {
@@ -583,6 +618,7 @@ void StateMachine::handleOutputButtons() {
     if (_screen_dimmed && (btn1_clicked || btn2_clicked)) {
         _screen_dimmed = false;
         hw.display.setBacklightBrightness(_brightness_value);
+        hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_NORMAL);  // Restore RGB LED brightness
         _last_activity_time = get_absolute_time();
         LOG_INFO("Screen woken from dim (button press)");
     }
@@ -724,6 +760,9 @@ void StateMachine::requestSelectedPdo() {
     if (success) {
         LOG_INFO("PDO request sent successfully");
         hw.buzzer.playTone(1000, 50);  // Confirmation beep
+        // Save selected PDO for boot restore
+        settings.setLastPdoIndex(_selected_pdo_index);
+        settings.requestSave();
     } else {
         LOG_ERROR("Failed to request PDO");
         hw.buzzer.playTone(200, 200);  // Error beep
@@ -756,6 +795,10 @@ void StateMachine::applyPpsVoltage() {
         if (settings.isSoundsEnabled()) {
             hw.buzzer.playTone(1000, 50);  // Confirmation beep
         }
+        // Save PPS state for boot restore
+        settings.setLastPdoIndex(_pps_pdo_index);
+        settings.setLastPpsVoltageMv(_pps_target_voltage_mv);
+        settings.requestSave();
     } else {
         LOG_ERROR("Failed to request PPS");
         // Error beep always plays (safety feedback)
@@ -777,17 +820,35 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
 
     switch (event) {
         case EncoderEvent::ROTATE_CW:
-            // If in brightness adjust mode, decrease value (CW = down in menus)
+            // Check if any adjustable item is in adjust mode
             if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
-                if (_brightness_value > 5) {
-                    _brightness_value -= 5;
-                } else {
-                    _brightness_value = 5;  // Minimum 5% to keep screen visible
+                if (_brightness_value < 100) {
+                    _brightness_value += 5;
+                    if (_brightness_value > 100) _brightness_value = 100;
+                    settings.setLcdBrightness(_brightness_value);
+                    settings.requestSave();
+                    hw.display.setBacklightBrightness(_brightness_value);
                 }
-                settings.setLcdBrightness(_brightness_value);
-                settings.requestSave();  // Debounced save (reduces flash wear)
-                hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
                 playNavBeep();
+            } else if (_selected_settings_item == SettingsItem::DIM_TIMEOUT && _dim_timeout_adjusting) {
+                if (_dim_timeout_value < 10) {
+                    _dim_timeout_value++;
+                    settings.setAutoDimMinutes(_dim_timeout_value);
+                    settings.requestSave();
+                }
+                playNavBeep();
+            } else if (_selected_settings_item == SettingsItem::STARTUP_MELODY && _melody_adjusting) {
+                if (_melody_value < 3) {
+                    _melody_value++;
+                    settings.setStartupMelody(_melody_value);
+                    settings.requestSave();
+                    // Preview melody on change
+                    const Note* melody = getStartupMelody(_melody_value);
+                    uint8_t length = getStartupMelodyLength(_melody_value);
+                    if (melody && length > 0) {
+                        hw.buzzer.playMelody(melody, length);
+                    }
+                }
             } else {
                 // Move down in settings menu (with wrap-around)
                 int next = static_cast<int>(_selected_settings_item) + 1;
@@ -801,16 +862,37 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
             break;
 
         case EncoderEvent::ROTATE_CCW:
-            // If in brightness adjust mode, increase value (CCW = up in menus)
             if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
-                if (_brightness_value < 100) {
-                    _brightness_value += 5;
-                    if (_brightness_value > 100) _brightness_value = 100;
-                    settings.setLcdBrightness(_brightness_value);
-                    settings.requestSave();  // Debounced save (reduces flash wear)
-                    hw.display.setBacklightBrightness(_brightness_value);  // Apply immediately
+                if (_brightness_value > 5) {
+                    _brightness_value -= 5;
+                } else {
+                    _brightness_value = 5;
+                }
+                settings.setLcdBrightness(_brightness_value);
+                settings.requestSave();
+                hw.display.setBacklightBrightness(_brightness_value);
+                playNavBeep();
+            } else if (_selected_settings_item == SettingsItem::DIM_TIMEOUT && _dim_timeout_adjusting) {
+                if (_dim_timeout_value > 1) {
+                    _dim_timeout_value--;
+                    settings.setAutoDimMinutes(_dim_timeout_value);
+                    settings.requestSave();
                 }
                 playNavBeep();
+            } else if (_selected_settings_item == SettingsItem::STARTUP_MELODY && _melody_adjusting) {
+                if (_melody_value > 0) {
+                    _melody_value--;
+                    settings.setStartupMelody(_melody_value);
+                    settings.requestSave();
+                    // Preview melody on change
+                    const Note* melody = getStartupMelody(_melody_value);
+                    uint8_t length = getStartupMelodyLength(_melody_value);
+                    if (melody && length > 0) {
+                        hw.buzzer.playMelody(melody, length);
+                    } else {
+                        hw.buzzer.stopMelody();  // Silent selected
+                    }
+                }
             } else {
                 // Move up in settings menu (with wrap-around)
                 int prev = static_cast<int>(_selected_settings_item) - 1;
@@ -828,27 +910,34 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                 case SettingsItem::FLASH_EEPROM:
                     _adjust_mode = AdjustMode::EEPROM_FLASH;
                     displayManager.invalidate();
-                    eepromWorkflow.start();
+                    tpsEepromWorkflow.start();
                     break;
 
                 case SettingsItem::AUTO_PPS:
-                    // Toggle Auto PPS setting
                     settings.setAutoPpsEnabled(!settings.isAutoPpsEnabled());
-                    settings.requestSave();  // Debounced save
-                    displayManager.invalidate();
+                    settings.requestSave();
+                    break;
+
+                case SettingsItem::AUTO_OUTPUT:
+                    settings.setAutoOutput(!settings.isAutoOutput());
+                    settings.requestSave();
                     break;
 
                 case SettingsItem::BRIGHTNESS:
-                    // Toggle brightness adjustment mode
                     _brightness_adjusting = !_brightness_adjusting;
-                    displayManager.invalidate();
+                    break;
+
+                case SettingsItem::DIM_TIMEOUT:
+                    _dim_timeout_adjusting = !_dim_timeout_adjusting;
+                    break;
+
+                case SettingsItem::STARTUP_MELODY:
+                    _melody_adjusting = !_melody_adjusting;
                     break;
 
                 case SettingsItem::SOUNDS:
-                    // Toggle Sounds setting
                     settings.setSoundsEnabled(!settings.isSoundsEnabled());
-                    settings.requestSave();  // Debounced save
-                    displayManager.invalidate();
+                    settings.requestSave();
                     break;
 
                 case SettingsItem::BACK:

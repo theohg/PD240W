@@ -1,7 +1,7 @@
 #include "display_manager.h"
 #include "hardware.h"
 #include "logic/state_machine.h"
-#include "logic/eeprom_workflow.h"
+#include "logic/tps_eeprom_workflow.h"
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
@@ -41,9 +41,18 @@ DisplayManager::DisplayManager()
     , _last_adjust_value(0)
     , _last_pps_voltage(0)
     , _last_pps_state(-1)
+    , _last_pd_revision_drawn(false)
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
     , _backlight_on(false)
+    , _last_auto_pps(false)
+    , _last_auto_output(false)
+    , _last_sounds(true)
+    , _last_dim_timeout(1)
+    , _last_melody(1)
+    , _last_brightness_adjusting(false)
+    , _last_dim_adjusting(false)
+    , _last_melody_adjusting(false)
 {
 }
 
@@ -55,6 +64,7 @@ void DisplayManager::init() {
     clearScreen();
     _needs_full_redraw = true;
     _last_pps_state = -1;  // Force PPS badge redraw on first render
+    _last_pd_revision_drawn = false;  // Force PD revision badge redraw
 }
 
 // ============================================================================
@@ -313,6 +323,10 @@ void DisplayManager::drawActiveContract() {
     // Get active contract
     const ActiveContract& contract = pdManager.getActiveContract();
 
+    // Badge constants
+    const int BADGE_H = 18;
+    const int BADGE_R = 4;
+
     // Use fixed-width format to avoid clearing
     char line1[32];
     if (contract.valid && contract.voltage_mv > 0) {
@@ -321,26 +335,33 @@ void DisplayManager::drawActiveContract() {
                  contract.current_ma / 1000.0f);
         hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
 
+        // PD revision badge (draw when revision becomes available or on full redraw)
+        const char* pd_rev = pdManager.getPdRevision();
+        if (pd_rev[0] != '\0' && (_needs_full_redraw || !_last_pd_revision_drawn)) {
+            int rev_w = ST7789::getStringWidthAA(pd_rev, FONT_SMALL) + 8;
+            int rev_x = SCREEN_WIDTH - MARGIN - 40 - rev_w - 4;
+            int rev_y = y - 2;
+            hw.display.fillRoundRect(rev_x, rev_y, rev_w, BADGE_H, BADGE_R, UIColors::MUTED);
+            int text_x = rev_x + (rev_w - ST7789::getStringWidthAA(pd_rev, FONT_SMALL)) / 2;
+            int text_y = rev_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(text_x, text_y, pd_rev, UIColors::TEXT_PRIMARY, UIColors::MUTED, FONT_SMALL);
+            _last_pd_revision_drawn = true;
+        }
+
         // Show PPS indicator if active - only redraw when state changes
         if (contract.is_pps) {
             if (_last_pps_state != 1) {
-                // Draw "PPS" rounded badge in accent color
                 int badge_x = SCREEN_WIDTH - MARGIN - 36;
                 int badge_y = y - 2;
                 int badge_w = 40;
-                int badge_h = 18;
-                int badge_r = 4;  // Corner radius
-                // Draw filled rounded rectangle
-                hw.display.fillRoundRect(badge_x, badge_y, badge_w, badge_h, badge_r, UIColors::ACCENT);
-                // Draw text centered in badge
+                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, UIColors::ACCENT);
                 int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("PPS", FONT_SMALL)) / 2;
-                int text_y = badge_y + (badge_h - FONT_SMALL->lineHeight) / 2;
+                int text_y = badge_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
                 hw.display.drawStringAA(text_x, text_y, "PPS", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
                 _last_pps_state = 1;
             }
         } else {
             if (_last_pps_state != 0) {
-                // Clear PPS badge area when not in PPS mode
                 hw.display.fillRect(SCREEN_WIDTH - MARGIN - 38, y - 3, 42, 22, UIColors::BACKGROUND);
                 _last_pps_state = 0;
             }
@@ -348,7 +369,6 @@ void DisplayManager::drawActiveContract() {
     } else {
         // Non-PD charger or no contract: show USB default
         hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
-        // Clear PPS badge area
         if (_last_pps_state != 0) {
             hw.display.fillRect(SCREEN_WIDTH - MARGIN - 38, y - 3, 42, 22, UIColors::BACKGROUND);
             _last_pps_state = 0;
@@ -361,7 +381,7 @@ void DisplayManager::drawPowerReadings() {
     const int FRAME_X = MARGIN - 2;
     const int FRAME_Y = CONTENT_Y_START + 45;
     const int FRAME_W = SCREEN_WIDTH - 2 * MARGIN + 4;
-    const int FRAME_H = 138;  // Increased to fully contain power section
+    const int FRAME_H = 152;  // Includes energy line
     const int FRAME_R = 6;  // Corner radius
 
     // Draw rounded frame on full redraw
@@ -390,10 +410,12 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "V", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
-    // Secondary: Input Voltage - right aligned in frame
+    // Secondary: Input Voltage - split into fixed-position parts to prevent shifting
     y += 32;
-    snprintf(buf, sizeof(buf), "Vin: %.2f V", state.vbus_voltage_v);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%5.2f", state.vbus_voltage_v);
+    hw.display.drawStringAA(VALUE_X + 30, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X + 72, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
     // --- Current Section ---
     y += 14; // Gap between sections
@@ -418,17 +440,25 @@ void DisplayManager::drawPowerReadings() {
 
     // Primary: Power (number and unit rendered separately)
     hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%.2f", state.power_w);
+    snprintf(buf, sizeof(buf), "%.3f", state.power_w);
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
     if (VALUE_X + num_w < UNIT_X)
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "W", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
+
+    // --- Energy Section (mAh since boot) ---
+    y += 32;
+    double charge_c = hw.powerMonitor.getCharge();
+    double mah = charge_c * 1000.0 / 3.6;  // Coulombs to mAh
+    if (mah < 0.0) mah = 0.0;  // Clamp to zero (no negative energy)
+    snprintf(buf, sizeof(buf), "Nrg: %7.1f mAh", mah);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 }
 
 void DisplayManager::drawTemperature() {
-    // Position below the power readings frame (frame ends at CONTENT_Y_START + 45 + 138 = 183)
-    int y = CONTENT_Y_START + 188;
+    // Position below the power readings frame (frame ends at CONTENT_Y_START + 45 + 152 = 197)
+    int y = CONTENT_Y_START + 202;
     const SafetyState& state = safety.getState();
 
     // Static tracking for flicker prevention
@@ -471,7 +501,7 @@ void DisplayManager::drawTemperature() {
     const int INA_LABEL_X = 125;
     const int INA_VALUE_X = INA_LABEL_X + 32;
     const int INA_UNIT_X = INA_VALUE_X + 42;  // Fixed position for "C"
-    const int VALUE_WIDTH = 40;  // Width for numeric value only
+    const int VALUE_WIDTH = 48;  // Width for numeric value (wide enough to clear AA text artifacts)
 
     // --- NTC temperature ---
     if (_needs_full_redraw) {
@@ -486,6 +516,10 @@ void DisplayManager::drawTemperature() {
         } else {
             snprintf(buf, sizeof(buf), "%5.1f", state.temperature_c);
             hw.display.drawStringAA(NTC_VALUE_X, y, buf, val_color, UIColors::BACKGROUND, FONT_SMALL);
+            // Gap-fill between value end and unit position (prevents artifacts with proportional font)
+            int num_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+            if (NTC_VALUE_X + num_w < NTC_UNIT_X)
+                hw.display.fillRect(NTC_VALUE_X + num_w, y, NTC_UNIT_X - NTC_VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
         }
         last_ntc_temp = state.temperature_c;
     }
@@ -503,6 +537,10 @@ void DisplayManager::drawTemperature() {
         } else {
             snprintf(buf, sizeof(buf), "%5.1f", state.ina_temperature_c);
             hw.display.drawStringAA(INA_VALUE_X, y, buf, val_color, UIColors::BACKGROUND, FONT_SMALL);
+            // Gap-fill between value end and unit position (prevents artifacts with proportional font)
+            int num_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+            if (INA_VALUE_X + num_w < INA_UNIT_X)
+                hw.display.fillRect(INA_VALUE_X + num_w, y, INA_UNIT_X - INA_VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
         }
         last_ina_temp = state.ina_temperature_c;
     }
@@ -512,7 +550,7 @@ void DisplayManager::drawTemperature() {
 
 void DisplayManager::drawOutputStatus() {
     // Position below temperature readings
-    int y = CONTENT_Y_START + 208;
+    int y = CONTENT_Y_START + 222;
 
     // Badge constants
     const int BADGE_W = 32;
@@ -531,7 +569,7 @@ void DisplayManager::drawOutputStatus() {
     if (_needs_full_redraw) {
         hw.display.drawStringAA(MARGIN, y + 2, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, y + 22, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        // hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         // Force badge redraw
         last_load_on = !load_on;
         last_buck_on = !buck_on;
@@ -638,19 +676,29 @@ void DisplayManager::drawPdoList() {
         return;
     }
 
-    // Draw visible PDOs (max 8 visible at once)
+    // Total items: PDOs + Back
+    int total_items = count + 1;  // +1 for "Back" entry
+
+    // Draw visible items (max 8 visible at once, scrollable)
     int start_idx = 0;
-    if (selected_idx > 5 && count > 8) {
+    if (selected_idx > 5 && total_items > 8) {
         start_idx = selected_idx - 5;
-        if (start_idx + 8 > count) {
-            start_idx = count - 8;
+        if (start_idx + 8 > total_items) {
+            start_idx = total_items - 8;
         }
     }
 
-    int visible_count = (count - start_idx > 8) ? 8 : (count - start_idx);
+    int visible_count = (total_items - start_idx > 8) ? 8 : (total_items - start_idx);
 
     for (int i = start_idx; i < start_idx + visible_count; i++) {
         bool selected = (i == selected_idx);
+
+        // "Back" item at index == count
+        if (i == count) {
+            drawMenuItemMuted(y, "Back", selected);
+            y += MENU_ITEM_HEIGHT;
+            continue;
+        }
 
         uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
         uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
@@ -784,10 +832,10 @@ void DisplayManager::drawPpsVoltageAdjust() {
     // Draw target voltage - large display with V at fixed position
     y += 10;
     char buf[32];
-    snprintf(buf, sizeof(buf), "%6.3f", target_mv / 1000.0f);
-    
+    snprintf(buf, sizeof(buf), "%5.2f", target_mv / 1000.0f);
+
     // Fixed layout: center point at screen middle, V after the number area
-    const int UNIT_X = (SCREEN_WIDTH / 2) + 52;  // Fixed position for "V" (adjusted for 3 decimals)
+    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;  // Fixed position for "V"
     const int VALUE_RIGHT = UNIT_X - 8;  // Right edge of value area
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
     int value_x = VALUE_RIGHT - value_width;
@@ -839,53 +887,89 @@ void DisplayManager::drawPpsVoltageAdjust() {
 void DisplayManager::drawSettingsMenu() {
     SettingsItem selected = stateMachine.getSelectedSettingsItem();
     int8_t sel_idx = static_cast<int8_t>(selected);
-    bool brightness_adjusting = stateMachine.isBrightnessAdjusting();
-    static bool last_brightness_adjusting = false;
-    static uint8_t last_brightness_value = 100;
-    uint8_t current_brightness = stateMachine.getBrightnessValue();
 
-    // Check if only brightness value changed (no selection change)
-    bool brightness_only_update = !_needs_full_redraw && 
-                                  sel_idx == _last_settings_selection &&
-                                  selected == SettingsItem::BRIGHTNESS &&
-                                  (brightness_adjusting != last_brightness_adjusting ||
-                                   current_brightness != last_brightness_value);
+    // Snapshot current values
+    bool auto_pps = settings.isAutoPpsEnabled();
+    bool auto_output = settings.isAutoOutput();
+    bool sounds = settings.isSoundsEnabled();
+    uint8_t brightness = stateMachine.getBrightnessValue();
+    bool brightness_adj = stateMachine.isBrightnessAdjusting();
+    uint8_t dim_val = stateMachine.getDimTimeoutValue();
+    bool dim_adj = stateMachine.isDimTimeoutAdjusting();
+    uint8_t mel_val = stateMachine.getMelodyValue();
+    bool mel_adj = stateMachine.isMelodyAdjusting();
 
-    // Only redraw items when selection changed or full redraw needed
-    if (_needs_full_redraw || sel_idx != _last_settings_selection || brightness_only_update) {
-        int y = CONTENT_Y_START + 10;
+    // Helper: check if item at given index needs redraw due to selection change
+    // Only the previously-selected and newly-selected items need highlight update
+    bool sel_changed = (sel_idx != _last_settings_selection);
+    auto sel_affects = [&](int idx) {
+        return sel_changed && (idx == sel_idx || idx == _last_settings_selection);
+    };
 
-        if (!brightness_only_update) {
-            // Flash EEPROM - regular menu item
-            drawMenuItem(y, "Flash EEPROM", selected == SettingsItem::FLASH_EEPROM);
-        }
-        y += MENU_ITEM_HEIGHT;
+    // Y positions for each item
+    int y_base = CONTENT_Y_START + 5;
+    auto y_for = [&](int idx) { return y_base + idx * MENU_ITEM_HEIGHT; };
 
-        if (!brightness_only_update) {
-            // Auto PPS - ON/OFF toggle
-            drawSettingsItem(y, "Auto PPS tuning", settings.isAutoPpsEnabled(), 
-                            selected == SettingsItem::AUTO_PPS, true);
-        }
-        y += MENU_ITEM_HEIGHT;
-
-        // Brightness - always redraw if brightness_only_update or selection changed
-        drawBrightnessItem(y, selected == SettingsItem::BRIGHTNESS);
-        y += MENU_ITEM_HEIGHT;
-
-        if (!brightness_only_update) {
-            // Sounds - ON/OFF toggle
-            drawSettingsItem(y, "Sounds", settings.isSoundsEnabled(),
-                            selected == SettingsItem::SOUNDS, true);
-            y += MENU_ITEM_HEIGHT;
-
-            // Back - muted color
-            drawMenuItemMuted(y, "Back", selected == SettingsItem::BACK);
-        }
-
-        _last_settings_selection = sel_idx;
-        last_brightness_adjusting = brightness_adjusting;
-        last_brightness_value = current_brightness;
+    // Item 0: Flash EEPROM
+    if (_needs_full_redraw || sel_affects(0)) {
+        drawMenuItem(y_for(0), "Flash EEPROM", selected == SettingsItem::FLASH_EEPROM);
     }
+
+    // Item 1: Auto PPS toggle
+    if (_needs_full_redraw || sel_affects(1) || auto_pps != _last_auto_pps) {
+        drawSettingsItem(y_for(1), "Auto PPS", auto_pps,
+                        selected == SettingsItem::AUTO_PPS, true);
+    }
+
+    // Item 2: Auto Output toggle
+    if (_needs_full_redraw || sel_affects(2) || auto_output != _last_auto_output) {
+        drawSettingsItem(y_for(2), "Auto Output", auto_output,
+                        selected == SettingsItem::AUTO_OUTPUT, true);
+    }
+
+    // Item 3: Brightness
+    if (_needs_full_redraw || sel_affects(3) || brightness != _last_brightness_value ||
+        brightness_adj != _last_brightness_adjusting) {
+        drawBrightnessItem(y_for(3), selected == SettingsItem::BRIGHTNESS);
+    }
+
+    // Item 4: Dim timeout
+    if (_needs_full_redraw || sel_affects(4) || dim_val != _last_dim_timeout ||
+        dim_adj != _last_dim_adjusting) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d min", dim_val);
+        drawValueAdjustItem(y_for(4), "Auto Dim:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
+    }
+
+    // Item 5: Startup melody
+    if (_needs_full_redraw || sel_affects(5) || mel_val != _last_melody ||
+        mel_adj != _last_melody_adjusting) {
+        drawValueAdjustItem(y_for(5), "Melody:", getStartupMelodyName(mel_val),
+                           selected == SettingsItem::STARTUP_MELODY, mel_adj);
+    }
+
+    // Item 6: Sounds toggle
+    if (_needs_full_redraw || sel_affects(6) || sounds != _last_sounds) {
+        drawSettingsItem(y_for(6), "Sounds", sounds,
+                        selected == SettingsItem::SOUNDS, true);
+    }
+
+    // Item 7: Back
+    if (_needs_full_redraw || sel_affects(7)) {
+        drawMenuItemMuted(y_for(7), "Back", selected == SettingsItem::BACK);
+    }
+
+    // Update all tracking variables
+    _last_settings_selection = sel_idx;
+    _last_auto_pps = auto_pps;
+    _last_auto_output = auto_output;
+    _last_sounds = sounds;
+    _last_brightness_value = brightness;
+    _last_brightness_adjusting = brightness_adj;
+    _last_dim_timeout = dim_val;
+    _last_dim_adjusting = dim_adj;
+    _last_melody = mel_val;
+    _last_melody_adjusting = mel_adj;
 
     // Draw hint only on full redraw
     if (_needs_full_redraw) {
@@ -964,13 +1048,35 @@ void DisplayManager::drawBrightnessItem(int y, bool selected) {
     }
 }
 
+void DisplayManager::drawValueAdjustItem(int y, const char* label, const char* value, bool selected, bool adjusting) {
+    uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
+    uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
+
+    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+
+    if (selected && adjusting) {
+        hw.display.drawStringAA(MARGIN + 5, y + 5, "<", fg, bg, FONT_SMALL);
+    } else {
+        hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
+    }
+
+    hw.display.drawStringAA(MARGIN + 20, y + 5, label, fg, bg, FONT_SMALL);
+
+    int value_x = SCREEN_WIDTH - MARGIN - ST7789::getStringWidthAA(value, FONT_SMALL) - 10;
+    hw.display.drawStringAA(value_x, y + 5, value, fg, bg, FONT_SMALL);
+
+    if (selected && adjusting) {
+        hw.display.drawStringAA(SCREEN_WIDTH - MARGIN - 10, y + 5, ">", fg, bg, FONT_SMALL);
+    }
+}
+
 void DisplayManager::drawEepromFlashScreen() {
-    uint8_t stage = static_cast<uint8_t>(eepromWorkflow.getStage());
-    uint8_t phase = eepromWorkflow.getPhase();
-    uint8_t progress = eepromWorkflow.getProgress();
-    bool result = eepromWorkflow.getResult();
-    bool confirm_yes = eepromWorkflow.isConfirmYes();
-    const char* message = eepromWorkflow.getMessage();
+    uint8_t stage = static_cast<uint8_t>(tpsEepromWorkflow.getStage());
+    uint8_t phase = tpsEepromWorkflow.getPhase();
+    uint8_t progress = tpsEepromWorkflow.getProgress();
+    bool result = tpsEepromWorkflow.getResult();
+    bool confirm_yes = tpsEepromWorkflow.isConfirmYes();
+    const char* message = tpsEepromWorkflow.getMessage();
 
     // Clear content area on full redraw or stage change
     static uint8_t last_stage = 255;

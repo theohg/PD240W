@@ -1,7 +1,7 @@
 #include "hardware.h"
 #include "utils/logging.h"
 #include "config/version.h"
-#include "utils/eeprom_loader.h"
+#include "utils/tps_eeprom_loader.h"
 
 Hardware hw;
 

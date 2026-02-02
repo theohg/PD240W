@@ -37,7 +37,10 @@ enum class MenuItem {
 enum class SettingsItem {
     FLASH_EEPROM,
     AUTO_PPS,
+    AUTO_OUTPUT,
     BRIGHTNESS,
+    DIM_TIMEOUT,
+    STARTUP_MELODY,
     SOUNDS,
     BACK,           // Back to main menu
     SETTINGS_COUNT  // Number of settings items
@@ -188,10 +191,26 @@ private:
     uint8_t _brightness_value;      // Current brightness during adjustment
     bool _brightness_adjusting;     // True when in brightness adjust mode (click to toggle)
 
+    // Dim timeout adjustment state
+    uint8_t _dim_timeout_value;     // Current dim timeout during adjustment (minutes)
+    bool _dim_timeout_adjusting;    // True when in dim timeout adjust mode
+
+    // Startup melody adjustment state
+    uint8_t _melody_value;          // Current melody index during adjustment
+    bool _melody_adjusting;         // True when in melody adjust mode
+
 public:
     // Brightness state accessors (for display manager)
     uint8_t getBrightnessValue() const { return _brightness_value; }
     bool isBrightnessAdjusting() const { return _brightness_adjusting; }
+
+    // Dim timeout state accessors (for display manager)
+    uint8_t getDimTimeoutValue() const { return _dim_timeout_value; }
+    bool isDimTimeoutAdjusting() const { return _dim_timeout_adjusting; }
+
+    // Melody state accessors (for display manager)
+    uint8_t getMelodyValue() const { return _melody_value; }
+    bool isMelodyAdjusting() const { return _melody_adjusting; }
 
     // PPS state accessors (for display manager)
     uint32_t getPpsTargetVoltageMv() const { return _pps_target_voltage_mv; }

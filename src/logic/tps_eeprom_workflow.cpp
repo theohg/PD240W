@@ -1,18 +1,18 @@
-#include "eeprom_workflow.h"
+#include "tps_eeprom_workflow.h"
 #include "hardware.h"
 #include "utils/logging.h"
-#include "utils/eeprom_loader.h"
+#include "utils/tps_eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 
 // Global instance
-EepromWorkflow eepromWorkflow;
+TpsEepromWorkflow tpsEepromWorkflow;
 
 // ============================================================================
 // Progress Callback (static, forwards to instance)
 // ============================================================================
 
 static void progressCallback(uint8_t phase, uint8_t progress, void* user_data) {
-    EepromWorkflow* wf = static_cast<EepromWorkflow*>(user_data);
+    TpsEepromWorkflow* wf = static_cast<TpsEepromWorkflow*>(user_data);
     wf->setProgress(phase, progress);
 }
 
@@ -20,9 +20,9 @@ static void progressCallback(uint8_t phase, uint8_t progress, void* user_data) {
 // Constructor
 // ============================================================================
 
-EepromWorkflow::EepromWorkflow()
+TpsEepromWorkflow::TpsEepromWorkflow()
     : _active(false)
-    , _stage(EepromWorkflowStage::COMPARING)
+    , _stage(TpsEepromWorkflowStage::COMPARING)
     , _phase(0)
     , _progress(0)
     , _result(false)
@@ -35,9 +35,9 @@ EepromWorkflow::EepromWorkflow()
 // Public Methods
 // ============================================================================
 
-void EepromWorkflow::start() {
+void TpsEepromWorkflow::start() {
     _active = true;
-    _stage = EepromWorkflowStage::COMPARING;
+    _stage = TpsEepromWorkflowStage::COMPARING;
     _phase = 0;
     _progress = 0;
     _result = false;
@@ -50,19 +50,19 @@ void EepromWorkflow::start() {
     runCompare();
 }
 
-bool EepromWorkflow::handleInput(bool rotate, bool click) {
+bool TpsEepromWorkflow::handleInput(bool rotate, bool click) {
     switch (_stage) {
-        case EepromWorkflowStage::COMPARING:
+        case TpsEepromWorkflowStage::COMPARING:
             // No user input during comparison
             break;
 
-        case EepromWorkflowStage::CONFIRM:
+        case TpsEepromWorkflowStage::CONFIRM:
             if (rotate) {
                 _confirm_yes = !_confirm_yes;
             } else if (click) {
                 if (_confirm_yes) {
                     // User confirmed - start flash
-                    _stage = EepromWorkflowStage::FLASHING;
+                    _stage = TpsEepromWorkflowStage::FLASHING;
                     _message = "Flashing...";
                     _progress = 0;
                     runFlash();
@@ -74,11 +74,11 @@ bool EepromWorkflow::handleInput(bool rotate, bool click) {
             }
             break;
 
-        case EepromWorkflowStage::FLASHING:
+        case TpsEepromWorkflowStage::FLASHING:
             // No user input during flashing (blocking operation)
             break;
 
-        case EepromWorkflowStage::DONE:
+        case TpsEepromWorkflowStage::DONE:
             if (click) {
                 cleanup();
                 return true;  // Exit workflow
@@ -89,13 +89,13 @@ bool EepromWorkflow::handleInput(bool rotate, bool click) {
     return false;  // Stay in workflow
 }
 
-void EepromWorkflow::setProgress(uint8_t phase, uint8_t progress) {
+void TpsEepromWorkflow::setProgress(uint8_t phase, uint8_t progress) {
     _phase = phase;
     _progress = progress;
     _message = (phase == 0) ? "Writing..." : "Verifying...";
 }
 
-void EepromWorkflow::cleanup() {
+void TpsEepromWorkflow::cleanup() {
     if (_active) {
         eepromDeinit();
         _active = false;
@@ -107,13 +107,13 @@ void EepromWorkflow::cleanup() {
 // Internal Workflow Steps
 // ============================================================================
 
-void EepromWorkflow::runCompare() {
+void TpsEepromWorkflow::runCompare() {
     LOG_INFO("Starting EEPROM compare...");
 
     // Initialize I2C1 for EEPROM access
     if (!eepromInit()) {
         _message = "I2C init failed";
-        _stage = EepromWorkflowStage::DONE;
+        _stage = TpsEepromWorkflowStage::DONE;
         _result = false;
         return;
     }
@@ -121,7 +121,7 @@ void EepromWorkflow::runCompare() {
     // Probe for device
     if (!eepromProbe()) {
         _message = "EEPROM not found";
-        _stage = EepromWorkflowStage::DONE;
+        _stage = TpsEepromWorkflowStage::DONE;
         _result = false;
         return;
     }
@@ -132,24 +132,24 @@ void EepromWorkflow::runCompare() {
     switch (result) {
         case EepromCompareResult::IDENTICAL:
             _message = "Config identical";
-            _stage = EepromWorkflowStage::DONE;
+            _stage = TpsEepromWorkflowStage::DONE;
             _result = false;  // No flash was performed
             eepromDeinit();   // Release I2C resources
             break;
 
         case EepromCompareResult::EMPTY:
             _message = "EEPROM empty";
-            _stage = EepromWorkflowStage::CONFIRM;
+            _stage = TpsEepromWorkflowStage::CONFIRM;
             break;
 
         case EepromCompareResult::DIFFERENT:
             _message = "Different config";
-            _stage = EepromWorkflowStage::CONFIRM;
+            _stage = TpsEepromWorkflowStage::CONFIRM;
             break;
 
         case EepromCompareResult::NO_DEVICE:
             _message = "No EEPROM found";
-            _stage = EepromWorkflowStage::DONE;
+            _stage = TpsEepromWorkflowStage::DONE;
             _result = false;
             eepromDeinit();
             break;
@@ -157,21 +157,21 @@ void EepromWorkflow::runCompare() {
         case EepromCompareResult::READ_ERROR:
         default:
             _message = "Read error";
-            _stage = EepromWorkflowStage::DONE;
+            _stage = TpsEepromWorkflowStage::DONE;
             _result = false;
             eepromDeinit();
             break;
     }
 }
 
-void EepromWorkflow::runFlash() {
+void TpsEepromWorkflow::runFlash() {
     LOG_INFO("Starting EEPROM flash...");
 
     // Execute flash with progress callback
     _result = eepromFlash(progressCallback, this);
 
     // Move to done stage
-    _stage = EepromWorkflowStage::DONE;
+    _stage = TpsEepromWorkflowStage::DONE;
 
     if (_result) {
         _message = "Success! Power cycle";

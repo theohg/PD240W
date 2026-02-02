@@ -42,7 +42,7 @@ add_executable(PD240W
         src/interrupts.cpp
 
         # Utils
-        src/utils/eeprom_loader.cpp
+        src/utils/tps_eeprom_loader.cpp
         src/utils/tps26750_patch.c
 
         # Drivers
@@ -61,7 +61,7 @@ add_executable(PD240W
         src/logic/settings.cpp
         src/logic/safety.cpp
         src/logic/pd_manager.cpp
-        src/logic/eeprom_workflow.cpp
+        src/logic/tps_eeprom_workflow.cpp
 
         # UI
         src/ui/display_manager.cpp

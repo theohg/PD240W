@@ -1,12 +1,12 @@
 /**
- * @file eeprom_loader.cpp
+ * @file tps_eeprom_loader.cpp
  * @brief Implementation of the EEPROM flashing logic for TPS26750.
  *
  * Uses I2C1 on GPIO 14 (SDA) / GPIO 15 (SCL) to communicate with the
  * CAT24C512 EEPROM that stores the TPS26750 configuration patch.
  */
 
-#include "eeprom_loader.h"
+#include "tps_eeprom_loader.h"
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
@@ -393,7 +393,7 @@ bool eepromFlash(EepromProgressCallback callback, void* user_data) {
 // =============================================================================
 
 bool flashTps26750Eeprom() {
-#if !ENABLE_EEPROM_FLASHING
+#if !ENABLE_TPS_EEPROM_FLASHING
     // Flashing disabled - this is the normal path
     return true;
 #else
@@ -522,7 +522,7 @@ bool flashTps26750Eeprom() {
     LOG_SEPARATOR();
     LOG_INFO("[EEPROM] SUCCESS! Patch written and verified.");
     LOG_INFO("[EEPROM] Power cycle the board to load new TPS26750 config.");
-    LOG_INFO("[EEPROM] Then set ENABLE_EEPROM_FLASHING=0 and rebuild.");
+    LOG_INFO("[EEPROM] Then set ENABLE_TPS_EEPROM_FLASHING=0 and rebuild.");
     LOG_SEPARATOR();
 
     return true;

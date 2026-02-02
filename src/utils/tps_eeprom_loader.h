@@ -1,5 +1,5 @@
 /**
- * @file eeprom_loader.h
+ * @file tps_eeprom_loader.h
  * @brief Utilities to flash the TPS26750 configuration patch to the attached I2C EEPROM.
  *
  * The EEPROM (CAT24C512) is connected to the TPS26750's I2Cc bus and also routed
@@ -24,7 +24,7 @@
  * WARNING: Only enable when you need to update the TPS26750 patch.
  * After successful flash, set back to 0 and rebuild.
  */
-#define ENABLE_EEPROM_FLASHING 0
+#define ENABLE_TPS_EEPROM_FLASHING 0
 
 // =============================================================================
 // EEPROM I2C Configuration (I2C1 on GPIO 14/15)
@@ -116,7 +116,7 @@ bool eepromFlash(EepromProgressCallback callback = nullptr, void* user_data = nu
  * @brief Flashes the TPS26750 configuration binary to the EEPROM.
  *
  * This function:
- * 1. Checks if ENABLE_EEPROM_FLASHING is set (returns true immediately if disabled)
+ * 1. Checks if ENABLE_TPS_EEPROM_FLASHING is set (returns true immediately if disabled)
  * 2. Initializes I2C1 on GPIO 14/15 for EEPROM access
  * 3. Writes 'tps25750x_fullFlash_i2c_array' to EEPROM starting at address 0x0000
  * 4. Handles 128-byte page alignment and write cycle delays
