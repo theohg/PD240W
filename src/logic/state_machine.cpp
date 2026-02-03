@@ -502,7 +502,7 @@ void StateMachine::transitionTo(AppState new_state) {
         case AppState::MAIN:
             _adjust_mode = AdjustMode::NONE;
             pdManager.refreshActiveContract();  // Ensure fresh contract data for display
-            hw.rgbLed.setColor(0, 255, 0, 50);  // Green = ready
+            hw.rgbLed.setColor(LedColor::GREEN, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             // Drain any button presses that occurred during BOOT or FAULT
             if (_previous_state == AppState::BOOT || _previous_state == AppState::FAULT) {
                 Interrupts::checkBtn1Clicked();
@@ -536,15 +536,15 @@ void StateMachine::transitionTo(AppState new_state) {
 
         case AppState::MENU:
             _selected_menu_item = MenuItem::SELECT_VOLTAGE;
-            hw.rgbLed.setColor(0, 0, 255, 50);  // Blue = menu
+            hw.rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             break;
 
         case AppState::ADJUST:
-            hw.rgbLed.setColor(255, 255, 0, 50);  // Yellow = adjusting
+            hw.rgbLed.setColor(LedColor::YELLOW, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             break;
 
         case AppState::FAULT:
-            hw.rgbLed.setColor(255, 0, 0, 255);  // Red = fault
+            hw.rgbLed.setColor(LedColor::RED);
             hw.buzzer.playTone(1000, 500);  // Alert beep
             // Drain button ISR flags to prevent stale presses after acknowledgment
             Interrupts::checkBtn1Clicked();
@@ -597,6 +597,8 @@ EncoderEvent StateMachine::readEncoderEvent() {
                 event = EncoderEvent::CLICK;
             }
             _encoder_button_held = false;
+            // Consume any ISR flag from release bounce to prevent double-click
+            Interrupts::checkBtnEncClicked();
         }
     } else {
         // Button not held - check ISR flag for any clicks we might have missed

@@ -1,4 +1,5 @@
 #include "hardware.h"
+#include "config/app_config.h"
 #include "utils/logging.h"
 #include "config/version.h"
 #include "utils/tps_eeprom_loader.h"
@@ -69,7 +70,7 @@ void Hardware::init() {
     // Initial Output States
     // =========================================================================
     loadSwitch.off();
-    rgbLed.setColor(0, 255, 0, 50);  // Green = ready
+    rgbLed.setColor(LedColor::GREEN, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
 
     // =========================================================================
     // EEPROM Flashing (TPS26750 config update)
@@ -78,9 +79,9 @@ void Hardware::init() {
     if (!flashTps26750Eeprom()) {
         LOG_ERROR("EEPROM flashing failed! Halting.");
         while (true) {
-            rgbLed.setColor(255, 0, 0, 255);
+            rgbLed.setColor(LedColor::RED);
             sleep_ms(500);
-            rgbLed.setColor(0, 0, 0, 0);
+            rgbLed.setColor(LedColor::OFF);
             sleep_ms(500);
         }
     }

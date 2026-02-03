@@ -94,6 +94,17 @@ void SK6812::setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
     }
 }
 
+void SK6812::setColor(LedColor color, uint8_t brightness) {
+    switch (color) {
+        case LedColor::OFF:     setColor(0, 0, 0, 0);              return;
+        case LedColor::RED:     setColor(255, 0, 0, brightness);    return;
+        case LedColor::GREEN:   setColor(0, 255, 0, brightness);    return;
+        case LedColor::BLUE:    setColor(0, 0, 255, brightness);    return;
+        case LedColor::YELLOW:  setColor(255, 255, 0, brightness);  return;
+        case LedColor::ORANGE:  setColor(255, 120, 0, brightness);  return;
+    }
+}
+
 void SK6812::setBrightness(uint8_t b) {
     _brightness = b;
     

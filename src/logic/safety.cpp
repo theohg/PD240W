@@ -114,16 +114,13 @@ SafetyStatus Safety::update() {
     if (led_status != last_led_status || first_run) {
         switch (led_status) {
             case SafetyStatus::FAULT:
-                // Red for Error/Fault
-                hw.rgbLed.setColor(255, 0, 0);
+                hw.rgbLed.setColor(LedColor::RED);
                 break;
             case SafetyStatus::WARNING:
-                // Orange for Warning (R=255, G=120 gives a solid amber/orange)
-                hw.rgbLed.setColor(255, 120, 0);
+                hw.rgbLed.setColor(LedColor::ORANGE);
                 break;
             case SafetyStatus::CAUTION:
-                // Yellow for Caution
-                hw.rgbLed.setColor(255, 255, 0);
+                hw.rgbLed.setColor(LedColor::YELLOW);
                 break;
             case SafetyStatus::OK:
             default:
