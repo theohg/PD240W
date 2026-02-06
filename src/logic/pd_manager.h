@@ -66,6 +66,11 @@ public:
     // Check if PPS contract is active
     bool isPpsActive() const { return _pps_active; }
 
+    // Auto PPS tuning
+    bool isPpsTuningActive() const;   // PPS active AND auto-tune enabled
+    bool isPpsTuningConverged() const { return _pps_tuning_converged; }
+    uint32_t getPpsUserTargetMv() const { return _pps_user_target_mv; }
+
     // Get TPS26750 mode string
     bool getMode(char* mode_str);
 
@@ -96,6 +101,15 @@ private:
     uint32_t _pps_current_ma;           // Last requested PPS current
     absolute_time_t _pps_last_refresh;  // Time of last PPS request
     static constexpr uint32_t PPS_REFRESH_INTERVAL_MS = 7000;  // Refresh every 7s (spec requires <10s)
+
+    // Auto PPS tuning state
+    uint32_t _pps_user_target_mv;       // What the user asked for
+    int32_t  _pps_correction_mv;        // Accumulated correction offset
+    bool     _pps_tuning_converged;     // True when |error| < threshold
+    uint32_t _pps_range_min_mv;         // PPS PDO min voltage (for clamping)
+    uint32_t _pps_range_max_mv;         // PPS PDO max voltage (for clamping)
+    static constexpr int32_t PPS_TUNE_THRESHOLD_MV = 30;       // Converged when error < this
+    static constexpr int32_t PPS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
 
     // PD revision string (cached)
     char _pd_revision[8];

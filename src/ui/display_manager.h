@@ -126,6 +126,9 @@ private:
     bool _last_brightness_adjusting;
     bool _last_dim_adjusting;
     bool _last_melody_adjusting;
+
+    // PPS tuning badge tracking
+    bool _last_pps_converged;
 };
 
 // Global instance

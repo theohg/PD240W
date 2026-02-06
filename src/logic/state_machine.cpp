@@ -82,6 +82,17 @@ void StateMachine::init() {
     _last_activity_time = get_absolute_time();
     _last_encoder_ticks = hw.encoder.getTicks();
 
+    // Restore saved current limit from settings
+    uint32_t saved_limit = settings.getCurrentLimit();
+    if (saved_limit >= AppConfig::CURRENT_LIMIT_MIN_MA && saved_limit <= AppConfig::CURRENT_LIMIT_MAX_MA) {
+        _current_limit_ma = saved_limit;
+    }
+    // Configure INA228 hardware overcurrent alert with the current limit
+    float limit_a = _current_limit_ma / 1000.0f;
+    if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
+        LOG_INFO("INA228 overcurrent alert initialized to %.3fA", limit_a);
+    }
+
     // Play startup melody at boot (only if sounds enabled and melody != Silent)
     if (settings.isSoundsEnabled()) {
         uint8_t melody_idx = settings.getStartupMelody();
@@ -123,7 +134,7 @@ bool StateMachine::update() {
         // User interacted - restore brightness
         _screen_dimmed = false;
         hw.display.setBacklightBrightness(_brightness_value);
-        hw.rgbLed.setBrightness(50);  // Restore RGB LED brightness
+        hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_NORMAL);  // Restore RGB LED brightness
         _last_activity_time = get_absolute_time();
         LOG_INFO("Screen woken from dim (encoder input)");
     }
@@ -778,8 +789,17 @@ void StateMachine::requestSelectedPdo() {
 void StateMachine::applyCurrentLimit() {
     LOG_INFO("Current limit set to %u mA", _current_limit_ma);
 
-    // TODO: Apply to INA228 alert threshold
-    // For now, just store the value - it will be checked in safety module
+    // Configure INA228 hardware overcurrent alert threshold
+    float limit_a = _current_limit_ma / 1000.0f;
+    if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
+        LOG_INFO("INA228 overcurrent alert set to %.3fA", limit_a);
+    } else {
+        LOG_ERROR("Failed to set INA228 overcurrent alert");
+    }
+
+    // Persist to settings
+    settings.setCurrentLimit(_current_limit_ma);
+    settings.requestSave();
 
     if (settings.isSoundsEnabled()) {
         hw.buzzer.playTone(1000, 50);  // Confirmation beep

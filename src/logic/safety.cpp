@@ -84,18 +84,25 @@ SafetyStatus Safety::update() {
         overall_status = SafetyStatus::CAUTION;
     }
 
-    // Critical temperature audible alarm (75C+, pre-fault)
-    // Play repeating alarm when temp is critical but not yet at shutdown
+    // Critical temperature audible alarm (75-80C range)
+    // Melody repeats continuously while in critical range, stops on exit
     static bool _critical_alarm_active = false;
-    
-    if (_state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)) {
-        if (!_critical_alarm_active) {
+
+    bool in_critical_range = _state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)
+                          && !_temp_fault_active
+                          && stateMachine.getState() != AppState::FAULT;
+
+    if (in_critical_range) {
+        // Start or restart melody when it finishes playing
+        if (!_critical_alarm_active || !hw.buzzer.isPlayingMelody()) {
             hw.buzzer.playMelody(CRITICAL_WARNING_ALARM, CRITICAL_WARNING_ALARM_LENGTH);
             _critical_alarm_active = true;
         }
-    } else {
-        // Temperature dropped below critical - stop alarm if we started it
-        if (_critical_alarm_active) {
+    } else if (_critical_alarm_active) {
+        // Left critical range (below 75C with hysteresis, fault at 80C, or on fault screen)
+        if (_temp_fault_active ||
+            stateMachine.getState() == AppState::FAULT ||
+            _state.max_temperature_c < static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C) - TEMP_HYSTERESIS_C) {
             hw.buzzer.stopMelody();
             _critical_alarm_active = false;
         }
@@ -308,8 +315,5 @@ void Safety::clearOvercurrentLatch() {
 
 void Safety::setCurrentLimit(float limit_a) {
     _current_limit_a = limit_a;
-
-    // TODO: Configure INA228 alert threshold
-    // For now, just store the value
     LOG_DEBUG("Current limit set to %.2fA", limit_a);
 }

@@ -53,6 +53,7 @@ DisplayManager::DisplayManager()
     , _last_brightness_adjusting(false)
     , _last_dim_adjusting(false)
     , _last_melody_adjusting(false)
+    , _last_pps_converged(false)
 {
 }
 
@@ -166,26 +167,34 @@ void DisplayManager::renderMenuScreen() {
     MenuItem selected = stateMachine.getSelectedMenuItem();
     int8_t sel_idx = static_cast<int8_t>(selected);
 
-    // Only redraw items when selection changed or full redraw needed
-    if (_needs_full_redraw || sel_idx != _last_menu_selection) {
-        int y = CONTENT_Y_START + 10;
+    // Only redraw the previously-selected and newly-selected items
+    bool sel_changed = (sel_idx != _last_menu_selection);
+    auto sel_affects = [&](int idx) {
+        return sel_changed && (idx == sel_idx || idx == _last_menu_selection);
+    };
 
+    int y = CONTENT_Y_START + 10;
+
+    if (_needs_full_redraw || sel_affects(0))
         drawMenuItem(y, "Select Voltage", selected == MenuItem::SELECT_VOLTAGE);
-        y += MENU_ITEM_HEIGHT;
+    y += MENU_ITEM_HEIGHT;
 
+    if (_needs_full_redraw || sel_affects(1))
         drawMenuItem(y, "Current Limit", selected == MenuItem::CURRENT_LIMIT);
-        y += MENU_ITEM_HEIGHT;
+    y += MENU_ITEM_HEIGHT;
 
+    if (_needs_full_redraw || sel_affects(2))
         drawMenuItem(y, "Settings", selected == MenuItem::SETTINGS);
-        y += MENU_ITEM_HEIGHT;
+    y += MENU_ITEM_HEIGHT;
 
+    if (_needs_full_redraw || sel_affects(3))
         drawMenuItem(y, "About", selected == MenuItem::ABOUT);
-        y += MENU_ITEM_HEIGHT;
+    y += MENU_ITEM_HEIGHT;
 
+    if (_needs_full_redraw || sel_affects(4))
         drawMenuItemMuted(y, "Back", selected == MenuItem::BACK);
 
-        _last_menu_selection = sel_idx;
-    }
+    _last_menu_selection = sel_idx;
 
     // Draw hint only on full redraw
     if (_needs_full_redraw) {
@@ -330,8 +339,13 @@ void DisplayManager::drawActiveContract() {
     // Use fixed-width format to avoid clearing
     char line1[32];
     if (contract.valid && contract.voltage_mv > 0) {
+        // When auto PPS tuning is active, show user's target voltage instead of negotiated
+        uint32_t display_voltage_mv = contract.voltage_mv;
+        if (pdManager.isPpsTuningActive()) {
+            display_voltage_mv = pdManager.getPpsUserTargetMv();
+        }
         snprintf(line1, sizeof(line1), "%5.2fV @ %5.2fA  ",
-                 contract.voltage_mv / 1000.0f,
+                 display_voltage_mv / 1000.0f,
                  contract.current_ma / 1000.0f);
         hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
 
@@ -350,15 +364,27 @@ void DisplayManager::drawActiveContract() {
 
         // Show PPS indicator if active - only redraw when state changes
         if (contract.is_pps) {
-            if (_last_pps_state != 1) {
+            bool tuning_converged = pdManager.isPpsTuningConverged();
+            bool tuning_active = pdManager.isPpsTuningActive();
+
+            // Redraw badge when PPS state changes OR convergence state changes
+            if (_last_pps_state != 1 || (tuning_active && tuning_converged != _last_pps_converged)) {
                 int badge_x = SCREEN_WIDTH - MARGIN - 36;
                 int badge_y = y - 2;
                 int badge_w = 40;
-                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, UIColors::ACCENT);
+
+                // Yellow badge while tuning is converging, green when converged or auto-tune off
+                uint16_t badge_color = (tuning_active && !tuning_converged)
+                    ? UIColors::CAUTION : UIColors::ACCENT;
+                uint16_t text_color = (tuning_active && !tuning_converged)
+                    ? UIColors::BACKGROUND : UIColors::BACKGROUND;
+
+                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, badge_color);
                 int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("PPS", FONT_SMALL)) / 2;
                 int text_y = badge_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(text_x, text_y, "PPS", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
+                hw.display.drawStringAA(text_x, text_y, "PPS", text_color, badge_color, FONT_SMALL);
                 _last_pps_state = 1;
+                _last_pps_converged = tuning_converged;
             }
         } else {
             if (_last_pps_state != 0) {
@@ -412,17 +438,31 @@ void DisplayManager::drawPowerReadings() {
 
     // Secondary: Input Voltage - split into fixed-position parts to prevent shifting
     y += 32;
-    hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%5.2f", state.vbus_voltage_v);
-    hw.display.drawStringAA(VALUE_X + 30, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
-    hw.display.drawStringAA(VALUE_X + 72, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    {
+        const int VIN_VALUE_X = VALUE_X + 30;
+        const int VIN_UNIT_X = VALUE_X + 72;
+        hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        snprintf(buf, sizeof(buf), "%5.2f", state.vbus_voltage_v);
+        hw.display.drawStringAA(VIN_VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        // Gap-fill between value and unit (prevents AA artifacts from wider old digits)
+        int vin_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+        if (VIN_VALUE_X + vin_w < VIN_UNIT_X)
+            hw.display.fillRect(VIN_VALUE_X + vin_w, y, VIN_UNIT_X - VIN_VALUE_X - vin_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(VIN_UNIT_X, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    }
 
     // --- Current Section ---
     y += 14; // Gap between sections
 
+    // Clamp small negative current to zero (sink-only device, noise below 5mA)
+    float display_current = state.current_a;
+    if (display_current > -0.005f && display_current < 0.0005f) {
+        display_current = 0.0f;
+    }
+
     // Primary: Output Current (number and unit rendered separately)
     hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%.3f", state.current_a);
+    snprintf(buf, sizeof(buf), "%.3f", display_current);
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
     if (VALUE_X + num_w < UNIT_X)
@@ -439,8 +479,10 @@ void DisplayManager::drawPowerReadings() {
     y += 14; // Gap between sections
 
     // Primary: Power (number and unit rendered separately)
+    // Zero out power when current displays as zero (consistent with current reading)
+    float display_power = (display_current == 0.0f) ? 0.0f : state.power_w;
     hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%.3f", state.power_w);
+    snprintf(buf, sizeof(buf), "%.3f", display_power);
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
     if (VALUE_X + num_w < UNIT_X)
@@ -449,11 +491,63 @@ void DisplayManager::drawPowerReadings() {
 
     // --- Energy Section (mAh since boot) ---
     y += 32;
-    double charge_c = hw.powerMonitor.getCharge();
-    double mah = charge_c * 1000.0 / 3.6;  // Coulombs to mAh
-    if (mah < 0.0) mah = 0.0;  // Clamp to zero (no negative energy)
-    snprintf(buf, sizeof(buf), "Nrg: %7.1f mAh", mah);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    {
+        double charge_c = hw.powerMonitor.getCharge();
+        // Zero out energy when current displays as zero (consistent with power)
+        double mah = (display_current == 0.0f) ? 0.0 : charge_c * 1000.0 / 3.6;
+        if (mah < 0.0) mah = 0.0;  // Clamp to zero (no negative energy)
+
+        // Track previous value and unit to avoid flicker (only redraw on change)
+        static double last_mah = -1.0;
+        static bool last_was_ah = false;
+        bool is_ah = (mah >= 1000.0);
+
+        // Quantize to display resolution to reduce unnecessary redraws
+        // mAh: 1 decimal (0.1 mAh), Ah: 2 decimals (0.01 Ah = 10 mAh)
+        bool value_changed = _needs_full_redraw;
+        if (is_ah) {
+            int32_t quantized = (int32_t)(mah / 10.0);  // 0.01 Ah resolution
+            int32_t last_quantized = (int32_t)(last_mah / 10.0);
+            if (quantized != last_quantized) value_changed = true;
+        } else {
+            int32_t quantized = (int32_t)(mah * 10.0);  // 0.1 mAh resolution
+            int32_t last_quantized = (int32_t)(last_mah * 10.0);
+            if (quantized != last_quantized) value_changed = true;
+        }
+        if (is_ah != last_was_ah) value_changed = true;
+
+        if (value_changed) {
+            const int NRG_VALUE_X = VALUE_X + 30;
+            const int NRG_UNIT_X = NRG_VALUE_X + 48;  // Fixed unit position
+
+            // Draw label only on full redraw
+            if (_needs_full_redraw) {
+                hw.display.drawStringAA(VALUE_X, y, "Nrg:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+            }
+
+            // Overwrite value directly (fixed-width format covers previous digits)
+            if (is_ah) {
+                snprintf(buf, sizeof(buf), "%6.2f", mah / 1000.0);
+            } else {
+                snprintf(buf, sizeof(buf), "%6.1f", mah);
+            }
+            hw.display.drawStringAA(NRG_VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+
+            // Gap-fill between value and unit position
+            int nrg_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+            if (NRG_VALUE_X + nrg_w < NRG_UNIT_X)
+                hw.display.fillRect(NRG_VALUE_X + nrg_w, y, NRG_UNIT_X - NRG_VALUE_X - nrg_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+
+            // Only redraw unit text when it changes (mAh <-> Ah) or on full redraw
+            if (is_ah != last_was_ah || _needs_full_redraw) {
+                hw.display.fillRect(NRG_UNIT_X, y, SCREEN_WIDTH - MARGIN - NRG_UNIT_X, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+                hw.display.drawStringAA(NRG_UNIT_X, y, is_ah ? "Ah" : "mAh", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+            }
+
+            last_mah = mah;
+            last_was_ah = is_ah;
+        }
+    }
 }
 
 void DisplayManager::drawTemperature() {
@@ -650,20 +744,13 @@ void DisplayManager::drawMenuItemMuted(int y, const char* text, bool selected) {
 void DisplayManager::drawPdoList() {
     int8_t selected_idx = stateMachine.getSelectedPdoIndex();
 
-    // Skip redraw if selection hasn't changed
-    if (!_needs_full_redraw && selected_idx == _last_pdo_selection) {
-        return;
-    }
-    _last_pdo_selection = selected_idx;
-
-    int y = CONTENT_Y_START + 10;
-
     // Get PDO list from PD manager
     SourceCapability pdos[13];
     uint8_t count = pdManager.getSourceCapabilities(pdos, 13);
 
     // No contracts found - show informational message
     if (count == 0) {
+        int y = CONTENT_Y_START + 10;
         drawCenteredStringAA(y + 30, "No PD contracts", UIColors::WARNING, FONT_MEDIUM);
         drawCenteredStringAA(y + 60, "The connected charger may", UIColors::TEXT_SECONDARY, FONT_SMALL);
         drawCenteredStringAA(y + 78, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, FONT_SMALL);
@@ -679,7 +766,7 @@ void DisplayManager::drawPdoList() {
     // Total items: PDOs + Back
     int total_items = count + 1;  // +1 for "Back" entry
 
-    // Draw visible items (max 8 visible at once, scrollable)
+    // Calculate scroll position
     int start_idx = 0;
     if (selected_idx > 5 && total_items > 8) {
         start_idx = selected_idx - 5;
@@ -688,52 +775,74 @@ void DisplayManager::drawPdoList() {
         }
     }
 
+    // Track scroll position to detect when all items need redrawing
+    static int8_t last_start_idx = -1;
+    bool scroll_changed = (start_idx != last_start_idx);
+    bool sel_changed = (selected_idx != _last_pdo_selection);
+
+    // Skip redraw if nothing changed
+    if (!_needs_full_redraw && !sel_changed && !scroll_changed) {
+        return;
+    }
+
     int visible_count = (total_items - start_idx > 8) ? 8 : (total_items - start_idx);
+    int y = CONTENT_Y_START + 10;
 
     for (int i = start_idx; i < start_idx + visible_count; i++) {
-        bool selected = (i == selected_idx);
+        // Only redraw items that need it: full redraw, scroll changed, or selection affects this item
+        bool needs_draw = _needs_full_redraw || scroll_changed;
+        if (!needs_draw && sel_changed) {
+            needs_draw = (i == selected_idx || i == _last_pdo_selection);
+        }
 
-        // "Back" item at index == count
-        if (i == count) {
-            drawMenuItemMuted(y, "Back", selected);
+        if (needs_draw) {
+            bool selected = (i == selected_idx);
+
+            // "Back" item at index == count
+            if (i == count) {
+                drawMenuItemMuted(y, "Back", selected);
+            } else {
+                uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
+                uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
+
+                // Single fill with correct background (avoids flicker)
+                hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+
+                char line[40];
+                if (pdos[i].is_pps) {
+                    snprintf(line, sizeof(line), "PPS %u-%uV %umA",
+                             (unsigned)(pdos[i].min_voltage_mv / 1000),
+                             (unsigned)(pdos[i].voltage_mv / 1000),
+                             (unsigned)pdos[i].max_current_ma);
+                } else if (pdos[i].is_avs) {
+                    snprintf(line, sizeof(line), "AVS %u-%uV %umA",
+                             (unsigned)(pdos[i].min_voltage_mv / 1000),
+                             (unsigned)(pdos[i].voltage_mv / 1000),
+                             (unsigned)pdos[i].max_current_ma);
+                } else {
+                    snprintf(line, sizeof(line), "%uV @ %umA",
+                             (unsigned)(pdos[i].voltage_mv / 1000),
+                             (unsigned)pdos[i].max_current_ma);
+                }
+
+                hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
+                hw.display.drawStringAA(MARGIN + 20, y + 5, line, fg, bg, FONT_SMALL);
+            }
+        }
+
+        y += MENU_ITEM_HEIGHT;
+    }
+
+    // Clear remaining slots only on full redraw or scroll change
+    if (_needs_full_redraw || scroll_changed) {
+        for (int i = visible_count; i < 8; i++) {
+            hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, UIColors::BACKGROUND);
             y += MENU_ITEM_HEIGHT;
-            continue;
         }
-
-        uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
-        uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
-
-        // Single fill with correct background (avoids flicker)
-        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
-
-        char line[40];
-        if (pdos[i].is_pps) {
-            snprintf(line, sizeof(line), "PPS %u-%uV %umA",
-                     (unsigned)(pdos[i].min_voltage_mv / 1000),
-                     (unsigned)(pdos[i].voltage_mv / 1000),
-                     (unsigned)pdos[i].max_current_ma);
-        } else if (pdos[i].is_avs) {
-            snprintf(line, sizeof(line), "AVS %u-%uV %umA",
-                     (unsigned)(pdos[i].min_voltage_mv / 1000),
-                     (unsigned)(pdos[i].voltage_mv / 1000),
-                     (unsigned)pdos[i].max_current_ma);
-        } else {
-            snprintf(line, sizeof(line), "%uV @ %umA",
-                     (unsigned)(pdos[i].voltage_mv / 1000),
-                     (unsigned)pdos[i].max_current_ma);
-        }
-
-        hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
-        hw.display.drawStringAA(MARGIN + 20, y + 5, line, fg, bg, FONT_SMALL);
-
-        y += MENU_ITEM_HEIGHT;
     }
 
-    // Clear remaining slots if less than 8 visible
-    for (int i = visible_count; i < 8; i++) {
-        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, UIColors::BACKGROUND);
-        y += MENU_ITEM_HEIGHT;
-    }
+    last_start_idx = start_idx;
+    _last_pdo_selection = selected_idx;
 
     // Draw hint only on full redraw
     if (_needs_full_redraw) {
@@ -787,7 +896,7 @@ void DisplayManager::drawCurrentLimitAdjust() {
     if (_needs_full_redraw) {
         y += 30;
         char min_str[16], max_str[16];
-        snprintf(min_str, sizeof(min_str), "%.1fA", AppConfig::CURRENT_LIMIT_MIN_MA / 1000.0f);
+        snprintf(min_str, sizeof(min_str), "%.2fA", AppConfig::CURRENT_LIMIT_MIN_MA / 1000.0f);
         snprintf(max_str, sizeof(max_str), "%.1fA (max)", max_ma / 1000.0f);
 
         hw.display.drawStringAA(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
@@ -1335,8 +1444,7 @@ void DisplayManager::drawFaultDetails() {
 
         case FaultType::OVERTEMPERATURE:
             fault_name = "OVERTEMPERATURE";
-            snprintf(detail1, sizeof(detail1), "Trigger: %.1fC", safety.getState().max_temperature_c);
-            snprintf(detail2, sizeof(detail2), "Limit: %dC", AppConfig::TEMP_SHUTDOWN_C);
+            // Details rendered with degree symbols in custom section below
             break;
 
         case FaultType::PD_DISCONNECT:
@@ -1350,22 +1458,40 @@ void DisplayManager::drawFaultDetails() {
     }
 
     drawCenteredStringAA(y, fault_name, UIColors::ERROR, FONT_MEDIUM);
-
     y += 35;
-    if (detail1[0]) {
-        drawCenteredStringAA(y, detail1, UIColors::TEXT_PRIMARY, FONT_SMALL);
-        y += 20;
-    }
-    if (detail2[0]) {
-        drawCenteredStringAA(y, detail2, UIColors::TEXT_PRIMARY, FONT_SMALL);
-        y += 20;
-    }
 
-    // Live temperature line (updated dynamically by drawFaultLiveTemperature)
+    // Overtemperature: custom rendering with degree symbols, shifted right
     if (fault == FaultType::OVERTEMPERATURE) {
-        y += 5;
-        drawCenteredStringAA(y, "Now:      ", UIColors::WARNING, FONT_SMALL);
+        const int DETAIL_X = 50;
+        char temp_buf[16];
+
+        // Trigger line with °C
+        snprintf(temp_buf, sizeof(temp_buf), "Trigger:  %.1f", safety.getState().max_temperature_c);
+        hw.display.drawStringAA(DETAIL_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        int tw = ST7789::getStringWidthAA(temp_buf, FONT_SMALL);
+        hw.display.drawStringAA(DETAIL_X + tw, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(DETAIL_X + tw + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
         y += 20;
+
+        // Limit line with °C
+        snprintf(temp_buf, sizeof(temp_buf), "Limit:    %d", AppConfig::TEMP_SHUTDOWN_C);
+        hw.display.drawStringAA(DETAIL_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        tw = ST7789::getStringWidthAA(temp_buf, FONT_SMALL);
+        hw.display.drawStringAA(DETAIL_X + tw, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(DETAIL_X + tw + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        y += 20;
+
+        // Reserve space for live temperature (drawn by drawFaultLiveTemperature)
+        y += 25;
+    } else {
+        if (detail1[0]) {
+            drawCenteredStringAA(y, detail1, UIColors::TEXT_PRIMARY, FONT_SMALL);
+            y += 20;
+        }
+        if (detail2[0]) {
+            drawCenteredStringAA(y, detail2, UIColors::TEXT_PRIMARY, FONT_SMALL);
+            y += 20;
+        }
     }
 
     y += 20;
@@ -1377,14 +1503,27 @@ void DisplayManager::drawFaultDetails() {
 
 void DisplayManager::drawFaultLiveTemperature() {
     // Live temperature reading at fixed position on fault screen
+    // Uses fixed X positions (not centered) to prevent shifting with proportional font
     const int y = 225;
     const SafetyState& state = safety.getState();
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Now: %5.1fC", state.max_temperature_c);
+    const int LABEL_X = 65;
+    const int VALUE_X = LABEL_X + 38;
+    const int UNIT_X = VALUE_X + 44;
 
-    // Use fixed-width format to overwrite previous value without clearing
-    drawCenteredStringAA(y, buf, UIColors::WARNING, FONT_SMALL);
+    hw.display.drawStringAA(LABEL_X, y, "Now:", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%5.1f", state.max_temperature_c);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+
+    // Gap-fill between value and unit
+    int num_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+    if (VALUE_X + num_w < UNIT_X)
+        hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+
+    hw.display.drawStringAA(UNIT_X, y - 3, "o", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(UNIT_X + 6, y, "C", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
 }
 
 // ============================================================================

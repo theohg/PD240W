@@ -1,8 +1,11 @@
 #include "pd_manager.h"
 #include "hardware.h"
+#include "config/board_config.h"
 #include "interrupts.h"
+#include "logic/settings.h"
 #include "utils/logging.h"
 #include <cstring>
+#include <cstdlib>  // abs()
 
 // Global instance
 PdManager pdManager;
@@ -21,6 +24,11 @@ PdManager::PdManager()
     , _pps_voltage_mv(0)
     , _pps_current_ma(0)
     , _pps_last_refresh(nil_time)
+    , _pps_user_target_mv(0)
+    , _pps_correction_mv(0)
+    , _pps_tuning_converged(false)
+    , _pps_range_min_mv(0)
+    , _pps_range_max_mv(0)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
@@ -110,14 +118,63 @@ void PdManager::update() {
         uint32_t elapsed_ms = absolute_time_diff_us(_pps_last_refresh, get_absolute_time()) / 1000;
 
         if (elapsed_ms >= PPS_REFRESH_INTERVAL_MS) {
-            LOG_DEBUG("PPS keep-alive: refreshing %umV @ %umA", _pps_voltage_mv, _pps_current_ma);
+            uint32_t request_mv = _pps_voltage_mv;
 
-            // Re-request the same PPS contract
-            if (hw.pdController.requestPPSProfile(_pps_voltage_mv, _pps_current_ma)) {
+            // Auto PPS tuning: measure actual voltage and adjust request
+            if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0) {
+                // Measure actual output voltage
+                float measured_v;
+                if (gpio_get(Board::PIN_SWITCH_EN)) {
+                    measured_v = hw.powerMonitor.getBusVoltage();  // Post-switch (accurate)
+                } else {
+                    measured_v = hw.adc.getVBUS();  // Pre-switch (fallback)
+                }
+                uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
+
+                // Only tune if we have a valid measurement (> 1V, likely PPS is delivering)
+                if (measured_mv > 1000) {
+                    int32_t error = (int32_t)_pps_user_target_mv - (int32_t)measured_mv;
+
+                    if (abs(error) > PPS_TUNE_THRESHOLD_MV) {
+                        // Accumulate correction
+                        _pps_correction_mv += error;
+
+                        // Clamp correction to safety limit
+                        if (_pps_correction_mv > PPS_TUNE_MAX_CORRECTION_MV)
+                            _pps_correction_mv = PPS_TUNE_MAX_CORRECTION_MV;
+                        if (_pps_correction_mv < -PPS_TUNE_MAX_CORRECTION_MV)
+                            _pps_correction_mv = -PPS_TUNE_MAX_CORRECTION_MV;
+
+                        _pps_tuning_converged = false;
+                        LOG_DEBUG("PPS tune: target=%umV measured=%umV error=%dmV correction=%dmV",
+                                  _pps_user_target_mv, measured_mv, error, _pps_correction_mv);
+                    } else {
+                        _pps_tuning_converged = true;
+                    }
+                }
+
+                // Compute adjusted request voltage
+                int32_t adjusted = (int32_t)_pps_user_target_mv + _pps_correction_mv;
+
+                // Clamp to PPS range
+                if (_pps_range_max_mv > 0) {
+                    if (adjusted < (int32_t)_pps_range_min_mv) adjusted = (int32_t)_pps_range_min_mv;
+                    if (adjusted > (int32_t)_pps_range_max_mv) adjusted = (int32_t)_pps_range_max_mv;
+                }
+
+                // Round to 20mV steps (PD spec)
+                adjusted = (adjusted / 20) * 20;
+
+                request_mv = (uint32_t)adjusted;
+            }
+
+            LOG_DEBUG("PPS keep-alive: requesting %umV @ %umA", request_mv, _pps_current_ma);
+
+            if (hw.pdController.requestPPSProfile(request_mv, _pps_current_ma)) {
                 _pps_last_refresh = get_absolute_time();
+                _pps_voltage_mv = request_mv;  // Track what we actually requested
             } else {
                 LOG_WARN("PPS keep-alive request failed");
-                // Don't deactivate - let it retry next cycle
             }
         }
     }
@@ -171,6 +228,9 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_active = false;
         _pps_voltage_mv = 0;
         _pps_current_ma = 0;
+        _pps_user_target_mv = 0;
+        _pps_correction_mv = 0;
+        _pps_tuning_converged = false;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send Fixed contract request");
@@ -193,6 +253,22 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_voltage_mv = voltage_mv;
         _pps_current_ma = current_ma;
         _pps_last_refresh = get_absolute_time();
+
+        // Auto PPS tuning: store user target and reset correction
+        _pps_user_target_mv = voltage_mv;
+        _pps_correction_mv = 0;
+        _pps_tuning_converged = false;
+
+        // Find PPS range from cached PDOs for clamping
+        for (uint8_t i = 0; i < _pdo_count; i++) {
+            if (_pdo_cache[i].is_pps &&
+                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                voltage_mv <= _pdo_cache[i].voltage_mv) {
+                _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
+                _pps_range_max_mv = _pdo_cache[i].voltage_mv;
+                break;
+            }
+        }
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send PPS contract request");
@@ -214,6 +290,9 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_active = false;
         _pps_voltage_mv = 0;
         _pps_current_ma = 0;
+        _pps_user_target_mv = 0;
+        _pps_correction_mv = 0;
+        _pps_tuning_converged = false;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send AVS contract request");
@@ -234,14 +313,56 @@ bool PdManager::refreshActiveContract() {
         _active_contract.current_ma = current_ma;
         _active_contract.valid = true;
 
-        // Use our tracked PPS state for proper detection
-        _active_contract.is_pps = _pps_active;
-        _active_contract.is_avs = false;  // TODO: Add AVS tracking when needed
+        // Detect PPS/AVS from tracked state or by matching against PDO cache.
+        // On warm MCU reset, _pps_active is false but TPS26750 still has a PPS contract.
+        // Detect this by checking if the active voltage matches a fixed PDO exactly.
+        bool detected_pps = _pps_active;
+        bool detected_avs = false;
+
+        if (!_pps_active && _pdos_valid && voltage_mv > 0) {
+            // Check if this voltage matches any fixed PDO
+            bool matches_fixed = false;
+            for (uint8_t i = 0; i < _pdo_count; i++) {
+                if (!_pdo_cache[i].is_pps && !_pdo_cache[i].is_avs &&
+                    _pdo_cache[i].voltage_mv == voltage_mv) {
+                    matches_fixed = true;
+                    break;
+                }
+            }
+            // If no fixed PDO matches, check if a PPS or AVS PDO covers this voltage
+            if (!matches_fixed) {
+                for (uint8_t i = 0; i < _pdo_count; i++) {
+                    if (_pdo_cache[i].is_pps &&
+                        voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                        voltage_mv <= _pdo_cache[i].voltage_mv) {
+                        detected_pps = true;
+                        // Restore PPS keep-alive state so it doesn't revert to 5V
+                        _pps_active = true;
+                        _pps_voltage_mv = voltage_mv;
+                        _pps_current_ma = current_ma;
+                        _pps_last_refresh = get_absolute_time();
+                        _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
+                        _pps_range_max_mv = _pdo_cache[i].voltage_mv;
+                        LOG_INFO("Detected active PPS contract on warm reset: %umV", voltage_mv);
+                        break;
+                    }
+                    if (_pdo_cache[i].is_avs &&
+                        voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                        voltage_mv <= _pdo_cache[i].voltage_mv) {
+                        detected_avs = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        _active_contract.is_pps = detected_pps;
+        _active_contract.is_avs = detected_avs;
 
         // Store PPS voltage range if active
-        if (_pps_active) {
-            _active_contract.pps_min_mv = _pps_voltage_mv;  // Store current requested voltage
-            _active_contract.pps_max_mv = _pps_voltage_mv;  // Will be updated from capability
+        if (detected_pps) {
+            _active_contract.pps_min_mv = _pps_voltage_mv;
+            _active_contract.pps_max_mv = _pps_voltage_mv;
         } else {
             _active_contract.pps_min_mv = 0;
             _active_contract.pps_max_mv = 0;
@@ -362,6 +483,10 @@ void PdManager::handlePdInterrupt() {
         clear_mask[0] = (1 << 1);  // Bit 1
         hw.pdController.clearInterrupts(clear_mask);
     }
+}
+
+bool PdManager::isPpsTuningActive() const {
+    return _pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0;
 }
 
 bool PdManager::checkNewContractEvent() {

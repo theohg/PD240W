@@ -78,8 +78,8 @@ pico_set_program_version(PD240W "0.1")
 #
 # To switch: change the 1/0 values below and re-run CMake (not just ninja)
 # =============================================================================
-set(STDIO_UART 1)   # Set to 1 for UART output, 0 to disable
-set(STDIO_USB  0)   # Set to 1 for USB serial output, 0 to disable
+set(STDIO_UART 0)   # Set to 1 for UART output, 0 to disable
+set(STDIO_USB  1)   # Set to 1 for USB serial output, 0 to disable
 
 pico_enable_stdio_uart(PD240W ${STDIO_UART})
 pico_enable_stdio_usb(PD240W ${STDIO_USB})
