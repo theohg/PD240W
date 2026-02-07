@@ -12,6 +12,7 @@ namespace Version {
     constexpr const char* AUTHOR = "Theo Heng";
     constexpr const char* COMPANY = "Synapticon GmbH";
     constexpr const char* GITHUB = "https://github.com/theohg/PD240W";
+    constexpr const char* GITHUB_SHORT = "theohg/PD240W";
     constexpr const char* TARGET = "RP2040 (Pico)";
 
     // Build info (can be overridden by build system)

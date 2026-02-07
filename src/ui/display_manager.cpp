@@ -26,6 +26,13 @@ static constexpr int CONTENT_Y_START = HEADER_HEIGHT + 5;
 static constexpr int MENU_ITEM_HEIGHT = 25;
 static constexpr int MARGIN = 10;
 
+// Overtemperature fault screen layout (vertically aligned columns)
+static constexpr int OT_LABEL_X = 35;   // Labels: "Trigger", "Limit", "Now"
+static constexpr int OT_COLON_X = 88;   // ":" column (vertically aligned)
+static constexpr int OT_VALUE_X = 98;   // Temperature values (left-aligned digits)
+static constexpr int OT_UNIT_X  = 148;  // "°C" column (vertically aligned)
+static constexpr int OT_ROW_H   = 22;   // Row spacing
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -54,6 +61,7 @@ DisplayManager::DisplayManager()
     , _last_dim_adjusting(false)
     , _last_melody_adjusting(false)
     , _last_pps_converged(false)
+    , _fault_now_temp_y(219)
 {
 }
 
@@ -744,9 +752,10 @@ void DisplayManager::drawMenuItemMuted(int y, const char* text, bool selected) {
 void DisplayManager::drawPdoList() {
     int8_t selected_idx = stateMachine.getSelectedPdoIndex();
 
-    // Get PDO list from PD manager
+    // Get PDO list and active contract for highlighting
     SourceCapability pdos[13];
     uint8_t count = pdManager.getSourceCapabilities(pdos, 13);
+    const ActiveContract& active = pdManager.getActiveContract();
 
     // No contracts found - show informational message
     if (count == 0) {
@@ -802,8 +811,39 @@ void DisplayManager::drawPdoList() {
             if (i == count) {
                 drawMenuItemMuted(y, "Back", selected);
             } else {
+                // Check if this PDO is the currently active (negotiated) contract
+                bool is_active = false;
+                if (active.valid) {
+                    if (pdos[i].is_pps && active.is_pps) {
+                        is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
+                                     active.voltage_mv <= pdos[i].voltage_mv);
+                    } else if (pdos[i].is_avs && active.is_avs) {
+                        is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
+                                     active.voltage_mv <= pdos[i].voltage_mv);
+                    } else if (!pdos[i].is_pps && !pdos[i].is_avs && !active.is_pps && !active.is_avs) {
+                        is_active = (pdos[i].voltage_mv == active.voltage_mv);
+                    }
+                }
+
                 uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
-                uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
+                uint16_t fg;
+                if (is_active) {
+                    fg = UIColors::ACCENT;  // Green for active contract
+                } else if (selected) {
+                    fg = UIColors::HIGHLIGHT_FG;  // Yellow for cursor
+                } else {
+                    fg = UIColors::TEXT_PRIMARY;  // White for normal
+                }
+
+                // Prefix: * for active contract, > for cursor, space for normal
+                const char* prefix;
+                if (is_active) {
+                    prefix = "*";
+                } else if (selected) {
+                    prefix = ">";
+                } else {
+                    prefix = " ";
+                }
 
                 // Single fill with correct background (avoids flicker)
                 hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
@@ -825,7 +865,7 @@ void DisplayManager::drawPdoList() {
                              (unsigned)pdos[i].max_current_ma);
                 }
 
-                hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
+                hw.display.drawStringAA(MARGIN + 5, y + 5, prefix, fg, bg, FONT_SMALL);
                 hw.display.drawStringAA(MARGIN + 20, y + 5, line, fg, bg, FONT_SMALL);
             }
         }
@@ -1026,13 +1066,13 @@ void DisplayManager::drawSettingsMenu() {
 
     // Item 1: Auto PPS toggle
     if (_needs_full_redraw || sel_affects(1) || auto_pps != _last_auto_pps) {
-        drawSettingsItem(y_for(1), "Auto PPS", auto_pps,
+        drawSettingsItem(y_for(1), "Auto PPS tuning", auto_pps,
                         selected == SettingsItem::AUTO_PPS, true);
     }
 
     // Item 2: Auto Output toggle
     if (_needs_full_redraw || sel_affects(2) || auto_output != _last_auto_output) {
-        drawSettingsItem(y_for(2), "Auto Output", auto_output,
+        drawSettingsItem(y_for(2), "Auto Output EN", auto_output,
                         selected == SettingsItem::AUTO_OUTPUT, true);
     }
 
@@ -1047,7 +1087,7 @@ void DisplayManager::drawSettingsMenu() {
         dim_adj != _last_dim_adjusting) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%d min", dim_val);
-        drawValueAdjustItem(y_for(4), "Auto Dim:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
+        drawValueAdjustItem(y_for(4), "Auto Dim timeout:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
     }
 
     // Item 5: Startup melody
@@ -1320,7 +1360,7 @@ void DisplayManager::drawEepromFlashScreen() {
 // ============================================================================
 
 void DisplayManager::drawAboutScreen() {
-    const int LINE_H = 16;
+    const int LINE_H = 17;
 
     // Logo on left, product name on right
     int logo_size = 44;
@@ -1343,7 +1383,7 @@ void DisplayManager::drawAboutScreen() {
     y += 8;
 
     // Info lines — compact two-column layout to fit 240px width
-    const int LABEL_X = MARGIN + 5;
+    const int LABEL_X = MARGIN * 3;
     const int VALUE_X = LABEL_X + 55;
     char buf[48];
 
@@ -1391,7 +1431,7 @@ void DisplayManager::drawAboutScreen() {
     // GitHub link section
     hw.display.drawStringAA(LABEL_X, y, "Link:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     // Display shortened URL
-    hw.display.drawStringAA(VALUE_X, y, "synapticon/PD240W", UIColors::LINK_BLUE, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::GITHUB_SHORT, UIColors::LINK_BLUE, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H + 4;
 
     // Separator
@@ -1460,29 +1500,42 @@ void DisplayManager::drawFaultDetails() {
     drawCenteredStringAA(y, fault_name, UIColors::ERROR, FONT_MEDIUM);
     y += 35;
 
-    // Overtemperature: custom rendering with degree symbols, shifted right
+    // Overtemperature: vertically aligned columns for labels, colons, values, and °C
     if (fault == FaultType::OVERTEMPERATURE) {
-        const int DETAIL_X = 50;
         char temp_buf[16];
+        int tw;
 
-        // Trigger line with °C
-        snprintf(temp_buf, sizeof(temp_buf), "Trigger:  %.1f", safety.getState().max_temperature_c);
-        hw.display.drawStringAA(DETAIL_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-        int tw = ST7789::getStringWidthAA(temp_buf, FONT_SMALL);
-        hw.display.drawStringAA(DETAIL_X + tw, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(DETAIL_X + tw + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-        y += 20;
-
-        // Limit line with °C
-        snprintf(temp_buf, sizeof(temp_buf), "Limit:    %d", AppConfig::TEMP_SHUTDOWN_C);
-        hw.display.drawStringAA(DETAIL_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        // Row 1: Trigger temperature (frozen at fault time)
+        hw.display.drawStringAA(OT_LABEL_X, y, "Trigger", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_COLON_X, y, ":", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        snprintf(temp_buf, sizeof(temp_buf), "%5.1f", safety.getState().max_temperature_c);
+        hw.display.drawStringAA(OT_VALUE_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
         tw = ST7789::getStringWidthAA(temp_buf, FONT_SMALL);
-        hw.display.drawStringAA(DETAIL_X + tw, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(DETAIL_X + tw + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-        y += 20;
+        if (OT_VALUE_X + tw < OT_UNIT_X)
+            hw.display.fillRect(OT_VALUE_X + tw, y, OT_UNIT_X - OT_VALUE_X - tw, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(OT_UNIT_X, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_UNIT_X + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        y += OT_ROW_H;
 
-        // Reserve space for live temperature (drawn by drawFaultLiveTemperature)
-        y += 25;
+        // Row 2: Limit temperature
+        hw.display.drawStringAA(OT_LABEL_X, y, "Limit", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_COLON_X, y, ":", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        snprintf(temp_buf, sizeof(temp_buf), "%5d", AppConfig::TEMP_SHUTDOWN_C);
+        hw.display.drawStringAA(OT_VALUE_X, y, temp_buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        tw = ST7789::getStringWidthAA(temp_buf, FONT_SMALL);
+        if (OT_VALUE_X + tw < OT_UNIT_X)
+            hw.display.fillRect(OT_VALUE_X + tw, y, OT_UNIT_X - OT_VALUE_X - tw, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(OT_UNIT_X, y - 3, "o", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_UNIT_X + 6, y, "C", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        y += OT_ROW_H;
+
+        // Row 3: Now (live temperature) - label, colon, and °C drawn here; value updated by drawFaultLiveTemperature()
+        hw.display.drawStringAA(OT_LABEL_X, y, "Now", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_COLON_X, y, ":", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_UNIT_X, y - 3, "o", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OT_UNIT_X + 6, y, "C", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+        _fault_now_temp_y = y;  // Save Y for live temperature updates
+        y += OT_ROW_H + 5;
     } else {
         if (detail1[0]) {
             drawCenteredStringAA(y, detail1, UIColors::TEXT_PRIMARY, FONT_SMALL);
@@ -1502,28 +1555,17 @@ void DisplayManager::drawFaultDetails() {
 }
 
 void DisplayManager::drawFaultLiveTemperature() {
-    // Live temperature reading at fixed position on fault screen
-    // Uses fixed X positions (not centered) to prevent shifting with proportional font
-    const int y = 225;
-    const SafetyState& state = safety.getState();
-
-    const int LABEL_X = 65;
-    const int VALUE_X = LABEL_X + 38;
-    const int UNIT_X = VALUE_X + 44;
-
-    hw.display.drawStringAA(LABEL_X, y, "Now:", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+    // Live-update only the temperature value — label, colon, and °C are drawn by drawFaultDetails()
+    const int y = _fault_now_temp_y;
 
     char buf[16];
-    snprintf(buf, sizeof(buf), "%5.1f", state.max_temperature_c);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+    snprintf(buf, sizeof(buf), "%5.1f", safety.getState().max_temperature_c);
+    hw.display.drawStringAA(OT_VALUE_X, y, buf, UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
 
-    // Gap-fill between value and unit
+    // Gap-fill between value and °C unit
     int num_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
-    if (VALUE_X + num_w < UNIT_X)
-        hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
-
-    hw.display.drawStringAA(UNIT_X, y - 3, "o", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
-    hw.display.drawStringAA(UNIT_X + 6, y, "C", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
+    if (OT_VALUE_X + num_w < OT_UNIT_X)
+        hw.display.fillRect(OT_VALUE_X + num_w, y, OT_UNIT_X - OT_VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
 }
 
 // ============================================================================

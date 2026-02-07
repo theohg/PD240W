@@ -22,8 +22,8 @@ namespace UIColors {
     constexpr uint16_t CAUTION = 0xFFE0;         // Yellow
     constexpr uint16_t WARNING = 0xFD20;         // Orange
     constexpr uint16_t ERROR = 0xF800;           // Red
-    constexpr uint16_t HIGHLIGHT_BG = 0x001F;    // Blue
-    constexpr uint16_t HIGHLIGHT_FG = 0xFFE0;    // Yellow
+    constexpr uint16_t HIGHLIGHT_BG = 0xE00F;    // Synapticon Pink
+    constexpr uint16_t HIGHLIGHT_FG = 0xFFFF;    // White
     constexpr uint16_t HEADER_LINE = 0xE00F;     // Synapticon Pink
     constexpr uint16_t MUTED = 0x7BEF;           // Dark gray
     constexpr uint16_t SYNAPTICON_PINK = 0xE00F; // Brand Magenta
@@ -129,6 +129,9 @@ private:
 
     // PPS tuning badge tracking
     bool _last_pps_converged;
+
+    // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
+    int16_t _fault_now_temp_y;
 };
 
 // Global instance

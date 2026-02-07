@@ -1,7 +1,7 @@
 # ============================================================================
 # Build outputs (exclude these as they're auto-generated)
 # ============================================================================
-build/
+build/*
 *.elf
 *.bin
 *.hex
@@ -12,6 +12,9 @@ build/
 *.a
 *.d
 *.su
+
+# Track the pre-built firmware binary in the build directory
+!build/PD240W.uf2
 
 # CMake generated files
 CMakeCache.txt

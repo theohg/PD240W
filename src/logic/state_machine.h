@@ -135,6 +135,8 @@ private:
 
     // Boot sequence
     uint8_t _boot_stage;
+    bool _boot_pdos_found;              // True once PDOs loaded with results
+    absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
 
     // Menu navigation
     MenuItem _selected_menu_item;

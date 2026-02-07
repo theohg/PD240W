@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential ninja-build
+
+      - name: Clone Pico SDK
+        run: |
+          git clone --branch 2.2.0 --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk
+          cd /tmp/pico-sdk && git submodule update --init --depth 1
+
+      - name: Configure
+        env:
+          PICO_SDK_PATH: /tmp/pico-sdk
+        run: |
+          mkdir -p build
+          cd build
+          cmake -G Ninja ..
+
+      - name: Build
+        run: |
+          cd build
+          ninja
+
+      - name: Report binary size
+        run: |
+          arm-none-eabi-size build/PD240W.elf
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build/PD240W.uf2
+            build/PD240W.elf
+          retention-days: 30

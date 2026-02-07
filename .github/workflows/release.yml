@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential ninja-build
+
+      - name: Clone Pico SDK
+        run: |
+          git clone --branch 2.2.0 --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk
+          cd /tmp/pico-sdk && git submodule update --init --depth 1
+
+      - name: Configure and Build
+        env:
+          PICO_SDK_PATH: /tmp/pico-sdk
+        run: |
+          mkdir -p build
+          cd build
+          cmake -G Ninja ..
+          ninja
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "PD240W ${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## PD240W Firmware ${{ steps.version.outputs.VERSION }}
+
+            ### Installation
+            1. Hold BOOTSEL button while connecting the Pico via USB
+            2. Drag `PD240W.uf2` to the mounted `RPI-RP2` drive
+
+            ### Files
+            - `PD240W.uf2` - Flash image for USB drag-and-drop
+            - `PD240W.elf` - Debug binary with symbols (for SWD flashing)
+          files: |
+            build/PD240W.uf2
+            build/PD240W.elf
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

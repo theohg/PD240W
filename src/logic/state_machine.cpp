@@ -46,6 +46,8 @@ StateMachine::StateMachine()
     , _encoder_press_start(nil_time)
     , _encoder_button_held(false)
     , _boot_stage(0)
+    , _boot_pdos_found(false)
+    , _boot_ready_time(nil_time)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
     , _selected_settings_item(SettingsItem::FLASH_EEPROM)
     , _selected_pdo_index(0)
@@ -204,7 +206,30 @@ void StateMachine::handleBootState() {
         advanceBootStage();
     }
 
-    // Check for boot complete
+    // Track PDO discovery for adaptive early exit
+    if (_boot_stage >= 1 && _num_pdos > 0 && !_boot_pdos_found) {
+        _boot_pdos_found = true;
+    }
+
+    // Adaptive early exit: once PDOs found and minimum display time elapsed
+    if (_boot_pdos_found && elapsed_ms >= AppConfig::BOOT_MIN_DISPLAY_MS) {
+        // Jump to "Ready!" stage if not there yet
+        if (_boot_stage < BOOT_STAGE_COUNT - 1) {
+            _boot_stage = BOOT_STAGE_COUNT - 1;
+        }
+        // Record when "Ready!" was first shown
+        if (is_nil_time(_boot_ready_time)) {
+            _boot_ready_time = get_absolute_time();
+        }
+        // Brief delay to show "Ready!" before transitioning
+        uint32_t ready_elapsed = absolute_time_diff_us(_boot_ready_time, get_absolute_time()) / 1000;
+        if (ready_elapsed >= AppConfig::BOOT_READY_DELAY_MS) {
+            transitionTo(AppState::MAIN);
+            return;
+        }
+    }
+
+    // Fallback: original fixed timeout (handles case where no PDOs found)
     if (elapsed_ms >= AppConfig::BOOT_DURATION_MS) {
         transitionTo(AppState::MAIN);
     }
@@ -508,6 +533,8 @@ void StateMachine::transitionTo(AppState new_state) {
     switch (new_state) {
         case AppState::BOOT:
             _boot_stage = 0;
+            _boot_pdos_found = false;
+            _boot_ready_time = nil_time;
             break;
 
         case AppState::MAIN:
@@ -546,7 +573,11 @@ void StateMachine::transitionTo(AppState new_state) {
             break;
 
         case AppState::MENU:
-            _selected_menu_item = MenuItem::SELECT_VOLTAGE;
+            // Only reset cursor when entering from MAIN screen
+            // When returning from ADJUST, keep cursor on the previously selected item
+            if (_previous_state != AppState::ADJUST) {
+                _selected_menu_item = MenuItem::SELECT_VOLTAGE;
+            }
             hw.rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             break;
 
@@ -732,6 +763,11 @@ void StateMachine::advanceBootStage() {
 uint8_t StateMachine::getBootProgress() const {
     if (_state != AppState::BOOT) return 100;
 
+    // When adaptive exit is active, show 100% at "Ready!" stage
+    if (_boot_pdos_found && _boot_stage >= BOOT_STAGE_COUNT - 1) {
+        return 100;
+    }
+
     uint32_t elapsed_ms = absolute_time_diff_us(_state_enter_time, get_absolute_time()) / 1000;
     uint32_t progress = (elapsed_ms * 100) / AppConfig::BOOT_DURATION_MS;
     return (progress > 100) ? 100 : static_cast<uint8_t>(progress);
@@ -749,6 +785,7 @@ const char* StateMachine::getBootStageMessage() const {
 // ============================================================================
 
 void StateMachine::loadPdoList() {
+    pdManager.refreshActiveContract();  // Ensure we have the latest active contract for highlighting
     _num_pdos = hw.pdController.getSourceCapabilities(s_pdo_list, 13);
     _selected_pdo_index = 0;
 
