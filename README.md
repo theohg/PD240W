@@ -16,7 +16,7 @@ An adjustable power supply for motor drives using USB-C Power Delivery negotiati
 - **USB-C Power Delivery**: Negotiates Fixed, PPS (5-21V programmable), and AVS (15-48V EPR) profiles
 - **Current Limiting**: Adjustable 50mA-5A via INA228 power monitor with hardware overcurrent protection
 - **LCD Interface**: 240x320 ST7789 display with anti-aliased fonts and Prusa-style encoder navigation
-- **Safety**: Overcurrent ISR, overtemperature monitoring (NTC + INA228), PD disconnect detection
+- **Safety**: Overcurrent ISR, overtemperature monitoring (NTC + INA228)
 - **Settings Persistence**: User settings stored in RP2040 flash with CRC32 validation
 - **Auto PPS Tuning**: Closed-loop voltage correction for PPS charger output accuracy
 - **Energy Monitoring**: Tracks mAh delivered since boot via INA228 charge accumulator
@@ -40,6 +40,15 @@ An adjustable power supply for motor drives using USB-C Power Delivery negotiati
 | Input | Rotary encoder + 2 buttons | ISR-based with debounce |
 | Buzzer | PWM driven | Configurable melodies |
 | Max Output | | 48V @ 5A (240W) |
+
+### Hardware Files
+
+| Type | Path | Contents |
+|------|------|----------|
+| PCB (STEP) | `3D_models/PD240W_PCB.stp` | Full PCB 3D model |
+| Enclosure (STL) | `3D_models/enclosure/` | Casing top/bottom, knob, button, LCD support, SWD cover |
+| Gerbers | `PCB_files/gerbers/` | PCB manufacturing files |
+| BOM | `PCB_files/BOM.csv` | Bill of materials |
 
 ### Pin Map
 
@@ -93,26 +102,65 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
 | BTN2 | Toggle 17V buck (requires VBUS > 18V) |
 
 <p align="center">
-  <img src="photos/PD240W_demo.gif" alt="PD240W usage demo" width="500">
+  <img src="photos/PD240W_demo.gif" alt="PD240W usage demo" width="90%">
 </p>
 
 ### Menu Structure
 
+```mermaid
+stateDiagram-v2
+    [*] --> BOOT
+    BOOT --> MAIN : 2s timeout
+
+    MAIN --> MENU : Long press
+    MAIN --> FAULT : Safety fault
+
+    FAULT --> MAIN : Click acknowledge
+
+    state MENU {
+        Select_Voltage
+        Current_Limit
+        Settings
+        About
+        Back
+    }
+
+    MENU --> MAIN : Back / Long press
+    Select_Voltage --> PDO_Select : Click
+    Current_Limit --> Current_Adjust : Click
+    About --> About_Screen : Click
+
+    PDO_Select --> MENU : Confirm / Back
+    Current_Adjust --> MENU : Confirm / Back
+    About_Screen --> MENU : Click / Back
+
+    state Settings {
+        Flash_EEPROM
+        Auto_PPS_Tuning
+        Auto_Output
+        Brightness
+        Dim_Timeout
+        Startup_Melody
+        Sounds
+        Settings_Back
+    }
+
+    Settings --> MENU : Settings_Back
+    Flash_EEPROM --> EEPROM_Workflow : Click
+    EEPROM_Workflow --> Settings : Done / Back
 ```
-Main Screen (V, A, W, mAh, temperature, contract info)
-  |
-  +-- Select Voltage        (Fixed / PPS / AVS PDO selection)
-  +-- Current Limit         (50mA - 5A, 50mA steps)
-  +-- Settings
-  |     +-- Flash EEPROM    (TPS26750 config)
-  |     +-- Auto PPS Tuning (ON/OFF)
-  |     +-- Auto Output     (ON/OFF)
-  |     +-- Brightness      (5-100%)
-  |     +-- Dim Timeout     (1-10 min)
-  |     +-- Startup Melody  (Silent/Mario/Chime/TwoTone)
-  |     +-- Sounds          (ON/OFF)
-  +-- About
-```
+
+| Menu Item | Description |
+|-----------|-------------|
+| Select Voltage | Fixed / PPS / AVS PDO selection |
+| Current Limit | 50mA - 5A, 50mA steps with encoder acceleration |
+| Flash EEPROM | TPS26750 configuration flash workflow |
+| Auto PPS Tuning | Closed-loop voltage correction (ON/OFF) |
+| Auto Output | Enable load switch on boot (ON/OFF) |
+| Brightness | LCD backlight 5-100% |
+| Dim Timeout | Auto-dim after 1-10 min inactivity |
+| Startup Melody | Silent / Mario / Chime / TwoTone |
+| Sounds | Navigation beeps (ON/OFF) |
 
 ## Project Structure
 
@@ -125,7 +173,7 @@ src/
 ├── config/
 │   ├── board_config.h              Pin definitions (Board:: namespace)
 │   ├── app_config.h                Timeouts, thresholds, limits (AppConfig:: namespace)
-│   └── version.h                   Firmware version, author, company
+│   └── version.h                   Firmware & hardware version, author...
 │
 ├── drivers/                        Low-level hardware drivers (no business logic)
 │   ├── display/
@@ -172,3 +220,7 @@ src/
 ## Author
 
 **Theo Heng** - [Synapticon GmbH](https://www.synapticon.com)
+
+## Acknowledgements
+
+This project was made possible by [Synapticon GmbH](https://www.synapticon.com), who funded and supported its development. Thank you for providing the resources, hardware, and opportunity to bring PD240W to life.

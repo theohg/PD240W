@@ -100,6 +100,8 @@ cmake-build-*/
 CLAUDE.md
 DEVELOPMENT_PLAN.md
 .claude
+UNIT_TEST.md
+DEV_CONTAINER.md
 
 # ============================================================================
 # Custom project files
