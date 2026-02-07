@@ -1,5 +1,6 @@
 # PD240W
 
+[![Latest Firmware](https://img.shields.io/github/v/release/theohg/PD240W?label=Latest%20Firmware&style=flat-square&color=orange)](https://github.com/theohg/PD240W/releases/latest)
 ![CI](https://github.com/theohg/PD240W/actions/workflows/ci.yml/badge.svg)
 ![Pico SDK](https://img.shields.io/badge/Pico_SDK-2.2.0-blue)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
@@ -108,46 +109,29 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
 ### Menu Structure
 
 ```mermaid
-stateDiagram-v2
-    [*] --> BOOT
-    BOOT --> MAIN : 2s timeout
+graph TD
+  %% Nodes
+      Boot([Boot]) -->|≤2s| Main[Main Screen]
+      Main -->|Error| Fault[Fault Screen]
+      Fault -->|Click| Main
+      
+      Main <-->|Click| Menu[Main Menu]
 
-    MAIN --> MENU : Long press
-    MAIN --> FAULT : Safety fault
+      Menu --> Voltage[Select Voltage]
+      Menu --> Current[Current Limit]
+      Menu --> Settings[Settings]
+      Menu --> About[About]
 
-    FAULT --> MAIN : Click acknowledge
-
-    state MENU {
-        Select_Voltage
-        Current_Limit
-        Settings
-        About
-        Back
-    }
-
-    MENU --> MAIN : Back / Long press
-    Select_Voltage --> PDO_Select : Click
-    Current_Limit --> Current_Adjust : Click
-    About --> About_Screen : Click
-
-    PDO_Select --> MENU : Confirm / Back
-    Current_Adjust --> MENU : Confirm / Back
-    About_Screen --> MENU : Click / Back
-
-    state Settings {
-        Flash_EEPROM
-        Auto_PPS_Tuning
-        Auto_Output
-        Brightness
-        Dim_Timeout
-        Startup_Melody
-        Sounds
-        Settings_Back
-    }
-
-    Settings --> MENU : Settings_Back
-    Flash_EEPROM --> EEPROM_Workflow : Click
-    EEPROM_Workflow --> Settings : Done / Back
+      Voltage <-->|Select PDO| AdjV[Adjust Voltage]
+      Current <-->|Set Limit| AdjC[Adjust Current]
+      
+      Settings --> EEPROM[Flash EEPROM]
+      Settings --> Configs[Params: Brightness / Sounds / Tuning...]
+      
+      %% Styling
+      classDef default fill:#f9f9f9,stroke:#333,stroke-width:1px;
+      classDef alert fill:#ffcccc,stroke:#cc0000,stroke-width:2px;
+      class Fault alert;
 ```
 
 | Menu Item | Description |
