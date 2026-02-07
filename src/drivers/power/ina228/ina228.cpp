@@ -83,15 +83,12 @@ bool INA228::init()
   // Set averaging to 16 samples for stable readings
   setAverage(INA228_16_SAMPLES);
 
+  // Set VSHCT (Shunt Voltage Conversion Time) 
+  setShuntVoltageConversionTime(INA228_50_us);
+
   return true;
 }
 
-
-// bool INA228::isConnected()
-// {
-//   _wire->beginTransmission(_address);
-//   return ( _wire->endTransmission() == 0);
-// }
 
 bool INA228::isConnected()
 {

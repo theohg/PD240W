@@ -718,7 +718,7 @@ void StateMachine::setFault(FaultType fault) {
     switch (fault) {
         case FaultType::OVERCURRENT:
             _fault_measured_value = hw.powerMonitor.getCurrent();
-            _fault_limit_value = 5.0f;  // 5A max
+            _fault_limit_value = _current_limit_ma / 1000.0f;
             LOG_ERROR("FAULT: Overcurrent - %.2fA (limit %.2fA)",
                      _fault_measured_value, _fault_limit_value);
             break;

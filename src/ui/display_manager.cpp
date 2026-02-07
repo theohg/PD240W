@@ -27,11 +27,18 @@ static constexpr int MENU_ITEM_HEIGHT = 25;
 static constexpr int MARGIN = 10;
 
 // Overtemperature fault screen layout (vertically aligned columns)
-static constexpr int OT_LABEL_X = 35;   // Labels: "Trigger", "Limit", "Now"
-static constexpr int OT_COLON_X = 88;   // ":" column (vertically aligned)
-static constexpr int OT_VALUE_X = 98;   // Temperature values (left-aligned digits)
-static constexpr int OT_UNIT_X  = 148;  // "°C" column (vertically aligned)
+static constexpr int OT_LABEL_X = 45;   // Labels: "Trigger", "Limit", "Now"
+static constexpr int OT_COLON_X = 118;   // ":" column (vertically aligned)
+static constexpr int OT_VALUE_X = 130;   // Temperature values (left-aligned digits)
+static constexpr int OT_UNIT_X  = 180;  // "°C" column (vertically aligned)
 static constexpr int OT_ROW_H   = 22;   // Row spacing
+
+// Overcurrent fault screen layout (vertically aligned columns)
+static constexpr int OC_LABEL_X = 45;   // Labels: "Trigger", "Limit", "Now"
+static constexpr int OC_COLON_X = 118;   // ":" column (vertically aligned)
+static constexpr int OC_VALUE_X = 130;  // Current values (left-aligned digits)
+static constexpr int OC_UNIT_X  = 180;  // "A" column (vertically aligned)
+static constexpr int OC_ROW_H   = 22;   // Row spacing
 
 // ============================================================================
 // Constructor
@@ -1478,13 +1485,10 @@ void DisplayManager::drawFaultDetails() {
     switch (fault) {
         case FaultType::OVERCURRENT:
             fault_name = "OVERCURRENT";
-            snprintf(detail1, sizeof(detail1), "Measured: %.2fA", safety.getState().current_a);
-            snprintf(detail2, sizeof(detail2), "Limit: %.2fA", 5.0f);
             break;
 
         case FaultType::OVERTEMPERATURE:
             fault_name = "OVERTEMPERATURE";
-            // Details rendered with degree symbols in custom section below
             break;
 
         case FaultType::PD_DISCONNECT:
@@ -1536,6 +1540,16 @@ void DisplayManager::drawFaultDetails() {
         hw.display.drawStringAA(OT_UNIT_X + 6, y, "C", UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
         _fault_now_temp_y = y;  // Save Y for live temperature updates
         y += OT_ROW_H + 5;
+    } else if (fault == FaultType::OVERCURRENT) {
+        char buf[16];
+
+        // Row 1: Limit value (user configured)
+        hw.display.drawStringAA(OC_LABEL_X+34, y, "Limit", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OC_COLON_X, y, ":", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        snprintf(buf, sizeof(buf), "%5.2f", stateMachine.getFaultLimitValue());
+        hw.display.drawStringAA(OC_VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(OC_UNIT_X, y, "A", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+        y += OC_ROW_H;
     } else {
         if (detail1[0]) {
             drawCenteredStringAA(y, detail1, UIColors::TEXT_PRIMARY, FONT_SMALL);

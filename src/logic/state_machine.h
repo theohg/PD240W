@@ -214,6 +214,9 @@ public:
     uint8_t getMelodyValue() const { return _melody_value; }
     bool isMelodyAdjusting() const { return _melody_adjusting; }
 
+    // Fault state accessors (for display manager)
+    float getFaultLimitValue() const { return _fault_limit_value; }
+
     // PPS state accessors (for display manager)
     uint32_t getPpsTargetVoltageMv() const { return _pps_target_voltage_mv; }
     uint32_t getPpsMinVoltageMv() const { return _pps_min_voltage_mv; }
