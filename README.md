@@ -2,15 +2,30 @@
 
 [![Latest Firmware](https://img.shields.io/github/v/release/theohg/PD240W?label=Latest%20Firmware&style=flat-square&color=orange)](https://github.com/theohg/PD240W/releases/latest)
 ![CI](https://github.com/theohg/PD240W/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/github/license/theohg/PD240W)
 ![Pico SDK](https://img.shields.io/badge/Pico_SDK-2.2.0-blue)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/Platform-RP2040-green)
 
-An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. Firmware runs on a Raspberry Pi Pico (RP2040).
+An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. This device is designed to be compatible with USB-PD 3.1 and above. Firmware runs on a Raspberry Pi Pico ([RP2040](https://www.raspberrypi.com/products/rp2040/)).
 
 <p align="center">
-  <img src="photos/PD240W_closeup.jpg" alt="PD240W closeup" width="80%">
+  <img src="photos/PD240W_closeup.jpg" alt="PD240W closeup" width="100%">
 </p>
+
+> [!WARNING]
+> **Disclaimer**: This device has currently only been tested for the **USB-PD 3.0** standard (up to 20V, including PPS). It has not yet been validated with the **USB-PD 3.1 ERP** extensions (28V, 36V, and 48V with AVS). Use at your own risk when testing high-voltage EPR profiles.
+
+## Table of Contents
+
+- [Features](#features)
+- [Hardware](#hardware)
+- [Quick Start](#quick-start)
+- [Controls](#controls)
+- [Firmware Structure](#firmware-structure)
+- [Want one?](#want-one)
+- [Planned Features](#planned-features)
+- [Acknowledgements](#acknowledgements)
 
 ## Features
 
@@ -21,28 +36,18 @@ An adjustable power supply for motor drives using USB-C Power Delivery negotiati
 - **Settings Persistence**: User settings stored in RP2040 flash with CRC32 validation
 - **Auto PPS Tuning**: Closed-loop voltage correction for PPS charger output accuracy
 - **Energy Monitoring**: Tracks mAh delivered since boot via INA228 charge accumulator
-- **17V Buck Output**: Optional STO/SBC voltage for motor drive safety circuits
-- **Configurable**: Brightness, auto-dim, startup melody, auto-output on boot
+- **17V Buck Output**: Optional mock STO/SBC voltage for motor drive safety circuits
+- **Configurable**: Brightness, auto-dim, startup melody, auto-output on boot and more
 
 ## Hardware
 
 <p align="center">
-  <img src="photos/PCB_naked.jpg" alt="PCB overview" width="49.5%">
-  <img src="photos/PCB_closeup.jpg" alt="PCB closeup" width="49.5%">
+  <img src="photos/PCB_naked.jpg" alt="PCB overview" width="49.7%">
+  <img src="photos/PCB_closeup.jpg" alt="PCB closeup" width="49.7%">
 </p>
-
-| Component | Part | Specification |
-|-----------|------|---------------|
-| MCU | Raspberry Pi Pico (RP2040) | Dual Cortex-M0+, 264KB SRAM |
-| USB-C PD Controller | TI TPS26750 | I2C 0x21, USB PD 3.1 with EPR |
-| Current Sensor | TI INA228 | I2C 0x40, 8mOhm shunt, 20-bit |
-| Display | ST7789 | 240x320 2.4" SPI @ 10MHz |
-| RGB LED | SK6812 | PIO driven, GRB color order |
-| Input | Rotary encoder + 2 buttons | ISR-based with debounce |
-| Buzzer | PWM driven | Configurable melodies |
-| Max Output | | 48V @ 5A (240W) |
-
-### Hardware Files
+<p align="center">
+  <img src="photos/PD240W_diagram.png" alt="PD240W diagram" width="100%">
+</p>
 
 | Type | Path | Contents |
 |------|------|----------|
@@ -50,17 +55,15 @@ An adjustable power supply for motor drives using USB-C Power Delivery negotiati
 | Enclosure (STL) | `3D_models/enclosure/` | Casing top/bottom, knob, button, LCD support, SWD cover |
 | Gerbers | `PCB_files/gerbers/` | PCB manufacturing files |
 | BOM | `PCB_files/BOM.csv` | Bill of materials |
+| Pick & Place | `PCB_files/pick_and_place.csv` | Pick and place file |
 
-### Pin Map
+### Hardware Erata
 
-| Bus | Pins | Peripherals |
-|-----|------|-------------|
-| I2C0 @ 400kHz | GP4/GP5 | INA228, TPS26750 |
-| I2C1 @ 400kHz | GP14/GP15 | CAT24C512 EEPROM (TPS26750 config) |
-| SPI | GP18-GP21 | ST7789 LCD |
-| UART @ 115200 | GP16 TX / GP29 RX | Debug serial output |
-| PWM | GP24 | LCD backlight |
-| PIO | GP28 | SK6812 RGB LED |
+USB data lines (D+/D-) are reversed in the current PCB revision, preventing native USB communication between the RP2040 and the USB host. This can be easily fixed by crossing the D+ and D- lines on the PCB by crossing the series 27Ω resistors as shown below:
+
+<p align="center">
+  <img src="photos/USB_tracks_bridged.jpg" alt="PCB USB data lines bridged" width="100%">
+</p>
 
 ## Quick Start
 
@@ -92,18 +95,35 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
   -c "adapter speed 5000; program build/PD240W.elf verify reset exit"
 ```
 
+> [!IMPORTANT]
+> **EEPROM Initial Setup**: Before full PD negotiation can work, you must flash the **TPS26750 EEPROM** configuration. This is done via the **EEPROM Flash** workflow found in the **Settings** menu. 
+> 
+> **Note**: Before the EEPROM is flashed, the board will only power on when connected to a standard 5V non-PD charger (USB BC1.2 mode).
+
+Once the firmware has been successfully flashed, connect the device to a compatible USB-PD power source and interact with the encoder and buttons to navigate the menus and adjust settings as explained below.
+
+> [!NOTE]
+> Finding a compact and affordable charger supporting **USB-PD 3.1** (up to 48V EPR) is currently quite rare. Here are a few known options:
+>
+> | Model | Max single-port PD Output | Voltage Profile | Approx. Price |
+> |---|---|---|---|
+> | **[UGREEN Nexode 140W](https://fr.ugreen.com/products/ugreen-nexode-140w-chargeur-usb-c-pd-3-1-3-ports)** | 140W | 28V @ 5A | ~60€ |
+> | **[Framework Power Adapter - 180W](https://frame.work/fr/fr/products/16-power-adapter?v=FRANCR000F)** | 180W | 36V @ 5A | ~109€ |
+> | **[HKY 240W GaN Charger](https://www.amazon.de/-/en/Charger-Framework-Thunderbolt-External-ADP-240KB/dp/B0FLXY1HYW/ref=sr_1_2?crid=3N3IPHZQ5LLC7&dib=eyJ2IjoiMSJ9.Hby-yLg1Ti0JNivqvDzvN57zIH6zG4_c9wlyL50Z52GmOPyP_vKubcMJ3zNZ7RRcIgOo2FKgZio1hprqALfRdOTl2DQ7Dp27o4l66qmaDQw9ctSuX0EaWnDfyVwVAMaSwnUP7h1NBuraYlZnAgiljw.9cbe3P4mLf8D7-0faSCcJpKki5cfrjZLwFO-zW9XlJw&dib_tag=se&keywords=hky+240w&qid=1769454134&sprefix=hky+240w%2Caps%2C102&sr=8-2)** | 240W | 48V @ 5A | ~90€ |
+> | **[Framework Power Adapter - 240W](https://frame.work/fr/fr/products/power-adapter-240w?v=FRAKMX000F)** | 240W | 48V @ 5A | ~120€ |
+> | **[UGREEN NEXODE 500W](https://eu.ugreen.com/products/ugreen-nexode-500w-6-port-gan-desktop-fast-charger)** | 240W | 48V @ 5A | ~250€ |
+
 ## Controls
 
 | Input | Action |
 |-------|--------|
 | Encoder Rotate | Navigate menus / Adjust values |
 | Encoder Click | Confirm / Select |
-| Encoder Long Press | Go Back / Exit current screen |
-| BTN1 | Toggle load switch output |
-| BTN2 | Toggle 17V buck (requires VBUS > 18V) |
+| BTN1 (top) | Toggle load switch output |
+| BTN2 (bottom) | Toggle 17V buck (requires VBUS > 18V) |
 
 <p align="center">
-  <img src="photos/PD240W_demo.gif" alt="PD240W usage demo" width="90%">
+  <img src="photos/PD240W_demo.gif" alt="PD240W usage demo" width="100%">
 </p>
 
 ### Menu Structure
@@ -146,7 +166,7 @@ graph TD
 | Startup Melody | Silent / Mario / Chime / TwoTone |
 | Sounds | Navigation beeps (ON/OFF) |
 
-## Project Structure
+## Firmware Structure
 
 ```
 src/
@@ -197,14 +217,32 @@ src/
     └── fonts/                      Source TTF files (Inter)
 ```
 
+## Want one?
+
 <p align="center">
-  <img src="photos/PD240W_tower.jpg" alt="PD240W units" width="90%">
+  <img src="photos/PD240W_tower.jpg" alt="PD240W units" width="100%">
 </p>
 
-## Author
+Feel free to order assembled PCBs, flash the firmware, and test it for yourself! Manufacturing 5 assembled PCBs will cost approximately **$415**. 
 
-**Theo Heng** - [Synapticon GmbH](https://www.synapticon.com)
+The project is open for contributions. Don't hesitate to improve the code, report bugs, or suggest new features via Pull Requests and Issues!
+
+## Planned Features for V1.1.0+
+
+- **Full USB-PD 3.1 Support**: Stable support for the entire norm, including AVS and EPR profiles.
+- **Auto AVS Tuning**: Closed-loop voltage correction for AVS profiles (similar to current PPS tuning).
+- **Extended PPS Range**: Support for PPS voltages as low as 3.5V.
 
 ## Acknowledgements
 
 This project was made possible by [Synapticon GmbH](https://www.synapticon.com), who funded and supported its development. Thank you for providing the resources, hardware, and opportunity to bring PD240W to life.
+
+Inspiration for this project was taken from the great work on portable USB-C PD power supplies by CentyLab on the [PocketPD](https://hackaday.io/project/194295-pocketpd-usb-c-portable-bench-power-supply) project and Alex Xia with his [ProtoV MINI](https://hackaday.io/project/204461-protov-mini-tiny-usb-c-breadboard-power-supply).
+
+***
+
+<p align="center">
+  <img src="photos/PCB_back.jpg" alt="PCB back" width="100%">
+</p>
+
+Made with ❤️ by Théo Heng

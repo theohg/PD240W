@@ -108,4 +108,3 @@ DEV_CONTAINER.md
 # ============================================================================
 tools/clean_logo.py
 tools/convert_png_to_c.py
-PCB_files/
