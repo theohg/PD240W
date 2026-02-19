@@ -46,6 +46,9 @@ An adjustable power supply for motor drives using USB-C Power Delivery negotiati
   <img src="photos/PCB_closeup.jpg" alt="PCB closeup" width="49.7%">
 </p>
 <p align="center">
+  <img src="photos/PCB_annoted.jpg" alt="PCB annoted" width="100%">
+</p>
+<p align="center">
   <img src="photos/PD240W_diagram.png" alt="PD240W diagram" width="100%">
 </p>
 
