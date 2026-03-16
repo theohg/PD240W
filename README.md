@@ -8,6 +8,7 @@
 ![Platform](https://img.shields.io/badge/Platform-RP2040-green)
 
 An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. This device is designed to be compatible with USB-PD 3.1 and above. Firmware runs on a Raspberry Pi Pico ([RP2040](https://www.raspberrypi.com/products/rp2040/)).
+
 Follow the latest project logs and updates on <a href="https://hackaday.io/project/205084-pd240w" target="_blank" title="PD240W on Hackaday.io">
 Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday.io" style="height: 2em; vertical-align: text-bottom;">
 </a>
