@@ -1,0 +1,2 @@
+Transmission Line,Impedance [ohms],Tolerance [ohms],Layer,Trace Width [mm],Gap [mm],Ref. Layers
+Edge-Coupled Coated Microstrip,90,±10 %,L1,0.15,0.2032,L2

@@ -8,6 +8,9 @@
 ![Platform](https://img.shields.io/badge/Platform-RP2040-green)
 
 An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. This device is designed to be compatible with USB-PD 3.1 and above. Firmware runs on a Raspberry Pi Pico ([RP2040](https://www.raspberrypi.com/products/rp2040/)).
+Follow the latest project logs and updates on <a href="https://hackaday.io/project/205084-pd240w" target="_blank" title="PD240W on Hackaday.io">
+Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday.io" style="height: 2em; vertical-align: text-bottom;">
+</a>
 
 <p align="center">
   <img src="photos/PD240W_closeup.jpg" alt="PD240W closeup" width="100%">
@@ -230,9 +233,27 @@ Feel free to order assembled PCBs, flash the firmware, and test it for yourself!
 
 The project is open for contributions. Don't hesitate to improve the code, report bugs, or suggest new features via Pull Requests and Issues!
 
+## License and Copyright
+
+This repository contains different types of source files, which are licensed as follows:
+
+### 1. Hardware files (CC BY-NC 4.0)
+All hardware design files in the PCB_files directory (Schematics, PCB layout, Gerbers, BOM) and 3D printable enclosure files are licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License**. 
+
+You are free to download, modify, and build this board for personal, educational, and hobbyist use. However, you may **not** use these designs for commercial purposes (such as manufacturing and selling the boards) without prior written permission.
+
+Please see the [LICENSE.txt](./LICENSE.txt) file for full terms.
+
+### 2. Firmware & Software (MIT License)
+The firmware and software source code in this repository is licensed under the **MIT License**. 
+
+You are free to use, modify, and distribute the software component of this project. 
+
+Please see the [LICENSE-FIRMWARE.txt](./LICENSE-FIRMWARE.txt) file for full terms.
+
 ## Planned Features for V1.1.0+
 
-- **Full USB-PD 3.1 Support**: Stable support for the entire norm, including AVS and EPR profiles.
+- **Full USB-PD 3.1/3.2 Support**: Stable support for the entire norm, including AVS and EPR profiles.
 - **Auto AVS Tuning**: Closed-loop voltage correction for AVS profiles (similar to current PPS tuning).
 - **Extended PPS Range**: Support for PPS voltages as low as 3.5V.
 

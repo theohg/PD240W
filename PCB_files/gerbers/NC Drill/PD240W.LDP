@@ -1,4 +1,0 @@
-Layer Pairs Export File for PCB: c:\programdata\altium\vaultserverdata\arkservice\35eb0d5f-3167-4f65-bec2-d57a13793ceb\s\e\PD240W.PcbDoc
-LayersSetName=Top_Bot_Plated_Thru_Holes|DrillFile=pd240w-roundholes-plated.txt|DrillLayers=gtl,g1,g2,g3,g4,gbl
-LayersSetName=Top_Bot_Plated_Slot_Holes|DrillFile=pd240w-slotholes-plated.txt|DrillLayers=gtl,g1,g2,g3,g4,gbl
-LayersSetName=Top_Bot_NonPlated_Thru_Holes|DrillFile=pd240w-roundholes-nonplated.txt|DrillLayers=gtl,g1,g2,g3,g4,gbl
