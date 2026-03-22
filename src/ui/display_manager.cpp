@@ -55,9 +55,11 @@ DisplayManager::DisplayManager()
     , _last_pdo_scroll_idx(-1)
     , _last_adjust_value(0)
     , _last_pps_voltage(0)
+    , _last_avs_voltage(0)
     , _last_pps_state(-1)
     , _last_pd_revision_drawn(false)
     , _last_pd_revision{0}
+    , _last_epr_badge_drawn(false)
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
     , _backlight_on(false)
@@ -81,9 +83,10 @@ DisplayManager::DisplayManager()
 void DisplayManager::init() {
     clearScreen();
     _needs_full_redraw = true;
-    _last_pps_state = -1;  // Force PPS badge redraw on first render
+    _last_pps_state = -1;  // Force PPS/AVS badge redraw on first render
     _last_pd_revision_drawn = false;  // Force PD revision badge redraw
     _last_pd_revision[0] = '\0';
+    _last_epr_badge_drawn = false;  // Force EPR badge redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 }
 
@@ -241,6 +244,11 @@ void DisplayManager::renderAdjustScreen() {
             drawHeader("PPS Voltage");
         }
         drawPpsVoltageAdjust();
+    } else if (mode == AdjustMode::AVS_VOLTAGE) {
+        if (_needs_full_redraw) {
+            drawHeader("AVS Voltage");
+        }
+        drawAvsVoltageAdjust();
     } else if (mode == AdjustMode::EEPROM_FLASH) {
         if (_needs_full_redraw) {
             drawHeader("Flash EEPROM");
@@ -372,15 +380,20 @@ void DisplayManager::drawActiveContract() {
         // PD revision badge (draw when revision changes or on full redraw)
         const char* pd_rev = pdManager.getPdRevision();
         bool rev_changed = (strcmp(pd_rev, _last_pd_revision) != 0);
+
+        // Rightmost badge position (PPS/AVS badge)
+        const int RIGHTMOST_BADGE_X = SCREEN_WIDTH - MARGIN - 36;
+        const int RIGHTMOST_BADGE_W = 40;
+
         if (pd_rev[0] != '\0' && (_needs_full_redraw || !_last_pd_revision_drawn || rev_changed)) {
             // Clear old badge area if revision string changed (different width)
             if (rev_changed && _last_pd_revision_drawn) {
                 int old_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
-                int old_x = SCREEN_WIDTH - MARGIN - 40 - old_w - 4;
+                int old_x = RIGHTMOST_BADGE_X - old_w - 4;
                 hw.display.fillRect(old_x, y - 2, old_w, BADGE_H, UIColors::BACKGROUND);
             }
             int rev_w = ST7789::getStringWidthAA(pd_rev, FONT_SMALL) + 8;
-            int rev_x = SCREEN_WIDTH - MARGIN - 40 - rev_w - 4;
+            int rev_x = RIGHTMOST_BADGE_X - rev_w - 4;
             int rev_y = y - 2;
             hw.display.fillRoundRect(rev_x, rev_y, rev_w, BADGE_H, BADGE_R, UIColors::MUTED);
             int text_x = rev_x + (rev_w - ST7789::getStringWidthAA(pd_rev, FONT_SMALL)) / 2;
@@ -389,35 +402,67 @@ void DisplayManager::drawActiveContract() {
             _last_pd_revision_drawn = true;
             strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
             _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
+
+            // EPR badge: draw to the left of PD revision badge when EPR-capable
+            bool is_epr = (strstr(pd_rev, "3.1") != nullptr);
+            if (is_epr && !_last_epr_badge_drawn) {
+                const char* epr_text = "EPR";
+                int epr_w = ST7789::getStringWidthAA(epr_text, FONT_SMALL) + 8;
+                int epr_x = rev_x - epr_w - 4;
+                int epr_y = y - 2;
+                hw.display.fillRoundRect(epr_x, epr_y, epr_w, BADGE_H, BADGE_R, UIColors::SYNAPTICON_PINK);
+                int epr_tx = epr_x + (epr_w - ST7789::getStringWidthAA(epr_text, FONT_SMALL)) / 2;
+                int epr_ty = epr_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(epr_tx, epr_ty, epr_text, UIColors::TEXT_PRIMARY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
+                _last_epr_badge_drawn = true;
+            } else if (!is_epr && _last_epr_badge_drawn) {
+                // Clear EPR badge
+                int epr_w = ST7789::getStringWidthAA("EPR", FONT_SMALL) + 8;
+                int epr_x = rev_x - epr_w - 4;
+                hw.display.fillRect(epr_x, y - 3, epr_w + 4, BADGE_H + 2, UIColors::BACKGROUND);
+                _last_epr_badge_drawn = false;
+            }
         }
 
-        // Show PPS indicator if active - only redraw when state changes
+        // Show PPS/AVS indicator if active - only redraw when state changes
         if (contract.is_pps) {
             bool tuning_converged = pdManager.isPpsTuningConverged();
             bool tuning_active = pdManager.isPpsTuningActive();
 
             // Redraw badge when PPS state changes OR convergence state changes
             if (_last_pps_state != 1 || (tuning_active && tuning_converged != _last_pps_converged)) {
-                int badge_x = SCREEN_WIDTH - MARGIN - 36;
+                int badge_x = RIGHTMOST_BADGE_X;
                 int badge_y = y - 2;
-                int badge_w = 40;
+                int badge_w = RIGHTMOST_BADGE_W;
 
                 // Yellow badge while tuning is converging, green when converged or auto-tune off
                 uint16_t badge_color = (tuning_active && !tuning_converged)
                     ? UIColors::CAUTION : UIColors::ACCENT;
-                uint16_t text_color = (tuning_active && !tuning_converged)
-                    ? UIColors::BACKGROUND : UIColors::BACKGROUND;
 
                 hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, badge_color);
                 int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("PPS", FONT_SMALL)) / 2;
                 int text_y = badge_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(text_x, text_y, "PPS", text_color, badge_color, FONT_SMALL);
+                hw.display.drawStringAA(text_x, text_y, "PPS", UIColors::BACKGROUND, badge_color, FONT_SMALL);
                 _last_pps_state = 1;
                 _last_pps_converged = tuning_converged;
             }
+        } else if (contract.is_avs) {
+            // AVS badge - green, same position as PPS badge
+            if (_last_pps_state != 2) {
+                int badge_x = RIGHTMOST_BADGE_X;
+                int badge_y = y - 2;
+                int badge_w = RIGHTMOST_BADGE_W;
+
+                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, UIColors::ACCENT);
+                int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("AVS", FONT_SMALL)) / 2;
+                int text_y = badge_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(text_x, text_y, "AVS", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
+                _last_pps_state = 2;
+            }
         } else {
+            // Clear badge area when neither PPS nor AVS active
             if (_last_pps_state != 0) {
-                hw.display.fillRect(SCREEN_WIDTH - MARGIN - 38, y - 3, 42, 22, UIColors::BACKGROUND);
+                hw.display.fillRect(RIGHTMOST_BADGE_X - 2, y - 3, RIGHTMOST_BADGE_W + 4, 22, UIColors::BACKGROUND);
                 _last_pps_state = 0;
             }
         }
@@ -1044,6 +1089,74 @@ void DisplayManager::drawPpsVoltageAdjust() {
         // Hints
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
                               "Rotate: 20mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                              "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    }
+}
+
+void DisplayManager::drawAvsVoltageAdjust() {
+    uint32_t target_mv = stateMachine.getAvsTargetVoltageMv();
+    uint32_t min_mv = stateMachine.getAvsMinVoltageMv();
+    uint32_t max_mv = stateMachine.getAvsMaxVoltageMv();
+    uint32_t max_current = stateMachine.getAvsMaxCurrentMa();
+
+    // Skip redraw if value hasn't changed
+    if (!_needs_full_redraw && target_mv == _last_avs_voltage) {
+        return;
+    }
+    _last_avs_voltage = target_mv;
+
+    int y = CONTENT_Y_START + 20;
+
+    // Only clear content area on full redraw
+    if (_needs_full_redraw) {
+        hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
+        drawCenteredStringAA(y, "Adjustable Voltage", UIColors::SYNAPTICON_PINK, FONT_SMALL);
+        y += 18;
+    } else {
+        y += 18;
+    }
+
+    // Draw target voltage - large display with V at fixed position
+    y += 10;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%5.2f", target_mv / 1000.0f);
+
+    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;
+    const int VALUE_RIGHT = UNIT_X - 8;
+    int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
+    int value_x = VALUE_RIGHT - value_width;
+
+    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+
+    // Draw progress bar (scaled to AVS range)
+    y += 50;
+    uint32_t range = max_mv - min_mv;
+    uint8_t percent = (range > 0)
+        ? ((target_mv - min_mv) * 100) / range
+        : 0;
+    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
+
+    // Draw min/max labels and hints on full redraw only
+    if (_needs_full_redraw) {
+        y += 30;
+        char min_str[16], max_str[16];
+        snprintf(min_str, sizeof(min_str), "%.1fV", min_mv / 1000.0f);
+        snprintf(max_str, sizeof(max_str), "%.1fV", max_mv / 1000.0f);
+
+        hw.display.drawStringAA(MARGIN * 2, y, min_str, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        int max_width = ST7789::getStringWidthAA(max_str, FONT_SMALL);
+        hw.display.drawStringAA(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
+                              UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+
+        y += 25;
+        snprintf(buf, sizeof(buf), "Max current: %umA", (unsigned)max_current);
+        drawCenteredStringAA(y, buf, UIColors::TEXT_SECONDARY, FONT_SMALL);
+
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                              "Rotate: 25mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
                               "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }

@@ -545,6 +545,17 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 }
                 // Round to 20mV boundary (PD spec requirement)
                 _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+            } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
+                // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
+                uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
+                uint32_t step = AppConfig::AVS_VOLTAGE_STEP_MV * velocity_mult;
+                if (_avs_target_voltage_mv + step <= _avs_max_voltage_mv) {
+                    _avs_target_voltage_mv += step;
+                } else {
+                    _avs_target_voltage_mv = _avs_max_voltage_mv;
+                }
+                // Round to 25mV boundary (AVS PD spec requirement)
+                _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -582,6 +593,17 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 }
                 // Round to 20mV boundary (PD spec requirement)
                 _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+            } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
+                // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
+                uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
+                uint32_t step = AppConfig::AVS_VOLTAGE_STEP_MV * velocity_mult;
+                if (_avs_target_voltage_mv >= _avs_min_voltage_mv + step) {
+                    _avs_target_voltage_mv -= step;
+                } else {
+                    _avs_target_voltage_mv = _avs_min_voltage_mv;
+                }
+                // Round to 25mV boundary (AVS PD spec requirement)
+                _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -613,6 +635,19 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         LOG_INFO("Entering PPS voltage adjustment: %u-%umV", _pps_min_voltage_mv, _pps_max_voltage_mv);
                         // Force display redraw since we changed mode within same state
                         displayManager.invalidate();
+                    } else if (pdo.is_avs) {
+                        // Enter AVS voltage adjustment mode
+                        _avs_pdo_index = _selected_pdo_index;
+                        _avs_min_voltage_mv = pdo.min_voltage_mv;
+                        _avs_max_voltage_mv = pdo.voltage_mv;
+                        _avs_max_current_ma = pdo.max_current_ma;
+                        // Start at mid-range voltage
+                        _avs_target_voltage_mv = (_avs_min_voltage_mv + _avs_max_voltage_mv) / 2;
+                        // Round to 25mV step (AVS resolution)
+                        _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
+                        _adjust_mode = AdjustMode::AVS_VOLTAGE;
+                        LOG_INFO("Entering AVS voltage adjustment: %u-%umV", _avs_min_voltage_mv, _avs_max_voltage_mv);
+                        displayManager.invalidate();
                     } else {
                         // Fixed or AVS - request immediately
                         requestSelectedPdo();
@@ -624,6 +659,9 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 transitionTo(AppState::MENU);
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
                 applyPpsVoltage();
+                transitionTo(AppState::MENU);
+            } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
+                applyAvsVoltage();
                 transitionTo(AppState::MENU);
             }
             _last_activity_time = get_absolute_time();
@@ -976,6 +1014,25 @@ void StateMachine::applyPpsVoltage() {
     } else {
         LOG_ERROR("Failed to request PPS");
         // Error beep always plays (safety feedback)
+        hw.buzzer.playTone(200, 200);
+    }
+}
+
+void StateMachine::applyAvsVoltage() {
+    LOG_INFO("Requesting AVS: %umV @ %umA", _avs_target_voltage_mv, _avs_max_current_ma);
+
+    bool success = pdManager.requestAvsVoltage(_avs_target_voltage_mv, _avs_max_current_ma);
+
+    if (success) {
+        LOG_INFO("AVS request sent successfully");
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(1000, 50);
+        }
+        settings.setLastPdoIndex(_avs_pdo_index);
+        settings.setLastPpsVoltageMv(_avs_target_voltage_mv);
+        settings.requestSave();
+    } else {
+        LOG_ERROR("Failed to request AVS");
         hw.buzzer.playTone(200, 200);
     }
 }

@@ -51,9 +51,10 @@ private:
     bool _needs_full_redraw;
     bool _backlight_on;
     AppState _last_rendered_state;
-    int8_t _last_pps_state;  // -1=unknown, 0=not PPS, 1=PPS
+    int8_t _last_pps_state;  // -1=unknown, 0=not PPS/AVS, 1=PPS, 2=AVS
     bool _last_pd_revision_drawn;  // True if PD revision badge was drawn
     char _last_pd_revision[8];     // Last drawn PD revision string
+    bool _last_epr_badge_drawn;    // True if EPR badge was drawn
 
     // PDO list reference
     const SourceCapability* _pdo_list;
@@ -86,6 +87,7 @@ private:
     void drawPdoList();
     void drawCurrentLimitAdjust();
     void drawPpsVoltageAdjust();
+    void drawAvsVoltageAdjust();
 
     // Settings menu elements
     void drawSettingsMenu();
@@ -116,6 +118,7 @@ private:
     int8_t _last_pdo_scroll_idx;  // Scroll position in PDO list
     uint32_t _last_adjust_value;
     uint32_t _last_pps_voltage;
+    uint32_t _last_avs_voltage;
     uint8_t _last_brightness_value;
     const char* _last_boot_message;
 

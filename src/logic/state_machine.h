@@ -53,6 +53,7 @@ enum class AdjustMode {
     PDO_SELECT,         // Selecting a PDO from the list
     CURRENT_LIMIT,      // Adjusting current limit value
     PPS_VOLTAGE,        // Adjusting PPS voltage within range
+    AVS_VOLTAGE,        // Adjusting AVS voltage within range
     EEPROM_FLASH,       // EEPROM flash workflow
     ABOUT,              // Displaying about screen (read-only)
     SETTINGS_MENU       // Settings submenu navigation
@@ -170,6 +171,13 @@ private:
     uint32_t _pps_max_current_ma;       // Max current from PPS PDO
     uint8_t _pps_pdo_index;             // Index of selected PPS PDO
 
+    // AVS adjustment state
+    uint32_t _avs_target_voltage_mv;    // Current target voltage
+    uint32_t _avs_min_voltage_mv;       // Min voltage from AVS PDO
+    uint32_t _avs_max_voltage_mv;       // Max voltage from AVS PDO
+    uint32_t _avs_max_current_ma;       // Max current from AVS PDO
+    uint8_t _avs_pdo_index;             // Index of selected AVS PDO
+
     // State handlers
     void handleBootState();
     void handleMainState(EncoderEvent event);
@@ -192,6 +200,7 @@ private:
     void requestSelectedPdo();
     void applyCurrentLimit();
     void applyPpsVoltage();
+    void applyAvsVoltage();
     void handleSettingsMenuState(EncoderEvent event);
 
     // Brightness adjustment state
@@ -235,6 +244,12 @@ public:
     uint32_t getPpsMinVoltageMv() const { return _pps_min_voltage_mv; }
     uint32_t getPpsMaxVoltageMv() const { return _pps_max_voltage_mv; }
     uint32_t getPpsMaxCurrentMa() const { return _pps_max_current_ma; }
+
+    // AVS state accessors (for display manager)
+    uint32_t getAvsTargetVoltageMv() const { return _avs_target_voltage_mv; }
+    uint32_t getAvsMinVoltageMv() const { return _avs_min_voltage_mv; }
+    uint32_t getAvsMaxVoltageMv() const { return _avs_max_voltage_mv; }
+    uint32_t getAvsMaxCurrentMa() const { return _avs_max_current_ma; }
 };
 
 // Global instance

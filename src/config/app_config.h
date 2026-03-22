@@ -43,6 +43,12 @@ namespace AppConfig {
     constexpr uint32_t PPS_VELOCITY_MULT = 2;           // Velocity multiplier (faster scaling for large range)
 
     // -------------------------------------------------------------------------
+    // AVS Voltage Settings
+    // -------------------------------------------------------------------------
+    constexpr uint32_t AVS_VOLTAGE_STEP_MV = 25;        // AVS voltage step size [mV] (PD spec EPR minimum)
+    constexpr uint32_t AVS_VELOCITY_MULT = 4;           // Higher multiplier for wider range (15-48V)
+
+    // -------------------------------------------------------------------------
     // Display Settings
     // -------------------------------------------------------------------------
     constexpr uint8_t LCD_BRIGHTNESS_DEFAULT = 100;    // Default brightness (%)

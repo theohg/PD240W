@@ -143,38 +143,23 @@ bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
 
     if (supplyType == 0x03) { 
         // --- Augmented PDO (PPS or AVS) ---
-        // To distinguish PPS from AVS, we check the voltage. 
-        // PPS max is 21V. AVS usually starts > 15V but specifically for EPR 28/36/48V.
-        // A better check is the APDO capability bits, but for active contract RDO parsing:
+        // Distinguish using APDO type bits (29:28) from the PDO
+        uint8_t apdo_type = (pdo >> 28) & 0x03;
         
-        // Check "Object Position" in RDO (Bits 31-28). If this refers to a source cap > 7, it is EPR AVS.
-        uint8_t objPos = (rdo >> 28) & 0x0F;
-        
-        // Simplified Logic: If it's Augmented:
-        // AVS RDO: Volts in 50mV units (Bits 20-9)
-        // PPS RDO: Volts in 20mV units (Bits 20-9)
-        // We really need to know which one it is.
-        // We can infer from the PDO content itself.
-        // PPS APDO: Bits 24-17 (Max Volt 100mV), Bits 15-8 (Min Volt 100mV).
-        // AVS APDO: Bits 24-17 (Max Volt 100mV), etc.
-        // The distinction is primarily power range. 
-        
-        // Heuristic: If the PDO max voltage > 21V (210 units of 100mV = 0xD2), it MUST be AVS.
-        // PDO Max Voltage is Bits 24-17.
-        uint32_t max_v_pdo = (pdo >> 17) & 0xFF;
-        
-        if (max_v_pdo > 210) { 
+        if (apdo_type == 0x01) { 
             // === AVS Contract ===
-            // RDO Voltage is 50mV units [USB PD 3.1 Spec]
-            voltage_mv = ((rdo >> 9) & 0xFFF) * 50; 
-        } else {
+            // TPS26750 maps AVS RDO into PPS-compatible bit positions:
+            // Voltage: Bits 19:9 (11 bits), 25mV units
+            voltage_mv = ((rdo >> 9) & 0x7FF) * 25; 
+            // Current: Bits 6:0 (7 bits), 50mA units
+            current_ma = (rdo & 0x7F) * 50;
+        } else if (apdo_type == 0x00) {
             // === PPS Contract ===
-            // RDO Voltage is 20mV units
+            // PPS RDO Voltage: Bits 20:9 (12 bits), 20mV units
             voltage_mv = ((rdo >> 9) & 0xFFF) * 20; 
+            // PPS RDO Current: Bits 6:0 (7 bits), 50mA units
+            current_ma = (rdo & 0x7F) * 50;
         }
-        
-        // Current is in RDO bits 6:0 (7 bits), unit 50mA for both
-        current_ma = (rdo & 0x7F) * 50;
 
     } else {
         // --- Fixed / Variable / Battery Contract ---
@@ -246,20 +231,38 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
         SourceCapability temp;
         temp.is_pps = false;
         temp.is_avs = false;
+        temp.voltage_mv = 0;
+        temp.max_current_ma = 0;
+        temp.min_voltage_mv = 0;
 
         if (type == 0x03) {
             // --- Augmented PDO ---
-            if (i >= num_spr) {
-                // EPR AVS
+            // Distinguish AVS from PPS by reading APDO type bits (29:28)
+            uint8_t apdo_type = (pdo >> 28) & 0x03;
+
+            if (apdo_type == 0x01) {
+                // === EPR AVS ===
                 temp.is_avs = true;
-                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
+                // AVS Max Voltage: Bits 25-17 (9 bits), 100mV units
+                temp.voltage_mv = ((pdo >> 17) & 0x1FF) * 100;
+                // AVS Min Voltage: Bits 15-8 (8 bits), 100mV units
                 temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
-                temp.max_current_ma = (pdo & 0x7F) * 50;
-            } else {
-                // SPR PPS
+                // AVS specifies Max Power (PDP) in Watts in Bits 7-0.
+                // Calculate Max Current at Max Voltage for compatibility:
+                uint32_t max_power_w = pdo & 0xFF;
+                if (temp.voltage_mv > 0) {
+                    temp.max_current_ma = (max_power_w * 1000UL * 1000UL) / temp.voltage_mv;
+                } else {
+                    temp.max_current_ma = 0;
+                }
+            } else if (apdo_type == 0x00) {
+                // === SPR PPS ===
                 temp.is_pps = true;
-                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
+                // PPS Max Voltage: Bits 24-17 (8 bits), 100mV units
+                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100;
+                // PPS Min Voltage: Bits 15-8 (8 bits), 100mV units
                 temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
+                // PPS Max Current: Bits 6-0 (7 bits), 50mA units
                 temp.max_current_ma = (pdo & 0x7F) * 50;
             }
         } else {
@@ -283,8 +286,22 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
         }
 
         if (valid) {
-            caps[valid_count] = temp;
-            valid_count++;
+            // Deduplication: skip if identical PDO already exists
+            bool duplicate = false;
+            for (uint8_t j = 0; j < valid_count; j++) {
+                if (caps[j].voltage_mv == temp.voltage_mv &&
+                    caps[j].max_current_ma == temp.max_current_ma &&
+                    caps[j].is_pps == temp.is_pps &&
+                    caps[j].is_avs == temp.is_avs &&
+                    caps[j].min_voltage_mv == temp.min_voltage_mv) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                caps[valid_count] = temp;
+                valid_count++;
+            }
         }
     }
 
@@ -350,7 +367,8 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
         uint8_t avs_i_val = (avs_i / 50) & 0x7F;
         buf[20] = (buf[20] & 0x80) | avs_i_val;
 
-        uint16_t avs_v_val = avs_v / 50; 
+        // AVS voltage uses 25mV units (not 50mV like PPS uses 20mV)
+        uint16_t avs_v_val = avs_v / 25; 
         buf[21] = (buf[21] & 0x01) | ((avs_v_val & 0x7F) << 1);
         buf[22] = (buf[22] & 0xE0) | ((avs_v_val >> 7) & 0x1F);
     }
@@ -414,7 +432,9 @@ bool TPS26750::requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma) {
 
 bool TPS26750::requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma) {
     // Enable AVS, Disable PPS.
-    return modifySinkRegister(5000, 28000, 3000, // Fallback defaults
+    // Provide sufficient headroom for max_v so the internal policy engine accepts the request
+    uint32_t max_v = voltage_mv + 2000;
+    return modifySinkRegister(5000, max_v, 5000, // Fallback defaults with headroom
                               0, 0, false, 
                               voltage_mv, current_ma, true);
 }
