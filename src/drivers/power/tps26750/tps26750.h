@@ -52,6 +52,7 @@ enum TPS_Reg : uint8_t {
     TPS_REG_AUTONEGOTIATE_SINK          = 0x37, // 24 bytes
     TPS_REG_POWER_STATUS                = 0x3F, // 2 bytes
     TPS_REG_PD_STATUS                   = 0x40, // 4 bytes
+    TPS_REG_PD3_STATUS                  = 0x41, // 4 bytes - Contains PortPartnerNegSpecRev
     TPS_REG_PD3_CONFIG                  = 0x42, // 4 bytes
     TPS_REG_RX_SOP_IDENTITY             = 0x48, // 26 bytes
     TPS_REG_IO_CONFIG                   = 0x5C, // 49 bytes
@@ -117,6 +118,7 @@ enum TPS_Reg : uint8_t {
 #define TPS_CMD_SWSr "SWSr" // Swap to Source
 #define TPS_CMD_GSrC "GSrC" // Get Source Caps (Used to re-negotiate Sink Contract)
 #define TPS_CMD_GSkC "GSkC" // Get Sink Caps
+#define TPS_CMD_ESrC "ESrC" // EPR Get Source Caps (Request EPR profiles 28V/36V/48V)
 #define TPS_CMD_PBMe "PBMe" // Patch Bundle Mode Exit
 
 // ============================================================================
@@ -208,6 +210,14 @@ public:
      * @return true if read successful.
      */
     bool getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma);
+
+    /**
+     * @brief Read the PD_STATUS register.
+     * @details Contains PD spec revision and contract status.
+     * @param status_buf Buffer of at least 4 bytes to store status.
+     * @return true if read successful.
+     */
+    bool getPdStatus(uint8_t* status_buf);
     
     /**
      * @brief Reads the list of available power contracts offered by the source.

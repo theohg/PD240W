@@ -192,6 +192,13 @@ bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
     return true;
 }
 
+bool TPS26750::getPdStatus(uint8_t* status_buf) {
+    // TPS_REG_PD3_STATUS (0x41) contains the Port Partner negotiated spec revision
+    // According to TPS26750 TRM, the PortPartnerNegSpecRev field is in this register
+    // Note: The exact bit position may vary - dump bytes if needed for debugging
+    return readRegister(TPS_REG_PD3_STATUS, status_buf, 4);
+}
+
 uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps) {
     // Register 0x30 
     // Structure:
@@ -210,13 +217,14 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
     uint8_t num_spr = raw_data[0] & 0x07;
     uint8_t num_epr = (raw_data[0] >> 3) & 0x07;
     uint8_t total_available = num_spr + num_epr;
-    
-    uint8_t count = (total_available < max_caps) ? total_available : max_caps;
 
-    // Parse SPR PDOs (Index 0 to num_spr-1)
-    for (uint8_t i = 0; i < count; i++) {
+    uint8_t to_parse = (total_available < max_caps) ? total_available : max_caps;
+    uint8_t valid_count = 0;  // Track valid PDOs after filtering
+
+    // Parse PDOs and validate
+    for (uint8_t i = 0; i < to_parse; i++) {
         uint8_t offset;
-        
+
         // Determine offset in buffer
         if (i < num_spr) {
             // SPR PDOs start at Byte 1
@@ -226,91 +234,115 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
             // i - num_spr gives index into EPR list (0 to 5)
             offset = 29 + ((i - num_spr) * 4);
         }
-        
-        uint32_t pdo = raw_data[offset] | 
-                      (raw_data[offset+1] << 8)  | 
-                      (raw_data[offset+2] << 16) | 
+
+        uint32_t pdo = raw_data[offset] |
+                      (raw_data[offset+1] << 8)  |
+                      (raw_data[offset+2] << 16) |
                       (raw_data[offset+3] << 24);
 
         uint8_t type = (pdo >> 30) & 0x03;
 
-        // Initialize flags
-        caps[i].is_pps = false;
-        caps[i].is_avs = false;
+        // Temporary storage for validation
+        SourceCapability temp;
+        temp.is_pps = false;
+        temp.is_avs = false;
 
-        if (type == 0x03) { 
+        if (type == 0x03) {
             // --- Augmented PDO ---
-            // Distinguish PPS vs AVS based on PDO content range or if it came from EPR section
-            // Generally, if it's in the EPR list (i >= num_spr), it's AVS.
-            // If it's in SPR list, it's PPS.
-            
             if (i >= num_spr) {
                 // EPR AVS
-                caps[i].is_avs = true;
-                // AVS APDO: Max Volt (17-24) 100mV, Min Volt (8-15) 100mV
-                caps[i].voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
-                caps[i].min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
-                // EPR Current is 50mA units
-                caps[i].max_current_ma = (pdo & 0x7F) * 50; 
+                temp.is_avs = true;
+                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
+                temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
+                temp.max_current_ma = (pdo & 0x7F) * 50;
             } else {
                 // SPR PPS
-                caps[i].is_pps = true;
-                caps[i].voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
-                caps[i].min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
-                caps[i].max_current_ma = (pdo & 0x7F) * 50;
+                temp.is_pps = true;
+                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100; // Max Voltage
+                temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
+                temp.max_current_ma = (pdo & 0x7F) * 50;
             }
-        } else { 
+        } else {
             // --- Fixed / Variable / Battery ---
-            // Note: EPR Fixed PDOs also exist (Type 00), treated same logic for V/I parsing mostly
-            // But EPR Fixed voltage is 100mV units? No, standard PD Fixed is 50mV. 
-            // Wait, PD 3.1 spec says EPR Fixed Supply PDO uses 50mV units? 
-            // Actually, EPR Fixed PDOs are still 50mV units.
-            
-            // Bits 19-10: Voltage (50mV units)
-            caps[i].voltage_mv = ((pdo >> 10) & 0x3FF) * 50;
-            // Bits 9-0: Max Current (10mA units)
-            caps[i].max_current_ma = (pdo & 0x3FF) * 10;
-            caps[i].min_voltage_mv = 0;
+            temp.voltage_mv = ((pdo >> 10) & 0x3FF) * 50;
+            temp.max_current_ma = (pdo & 0x3FF) * 10;
+            temp.min_voltage_mv = 0;
+        }
+
+        // Validate PDO - skip invalid entries
+        bool valid = true;
+        if (temp.voltage_mv == 0) {
+            valid = false;
+        }
+        if (temp.max_current_ma == 0) {
+            valid = false;
+        }
+        // For PPS/AVS, check range validity
+        if ((temp.is_pps || temp.is_avs) && temp.min_voltage_mv >= temp.voltage_mv) {
+            valid = false;
+        }
+
+        if (valid) {
+            caps[valid_count] = temp;
+            valid_count++;
         }
     }
 
-    return count;
+    return valid_count;
 }
 
 // ============================================================================
 // Contract Negotiation Logic
 // ============================================================================
 
-bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i, 
+bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
                                   uint32_t pps_v, uint32_t pps_i, bool pps_en,
-                                  uint32_t avs_v, uint32_t avs_i, bool avs_en) 
+                                  uint32_t avs_v, uint32_t avs_i, bool avs_en)
 {
     // 1. Read existing register (0x37, 24 bytes) to preserve reserved bits
     uint8_t buf[24] = {0};
-    if (!readRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) return false;
+    if (!readRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
+        printf("[DEBUG] Failed to read AUTONEGOTIATE_SINK\n");
+        return false;
+    }
+
+    printf("[DEBUG] AUTONEG_SINK before: [");
+    for (int i = 0; i < 8; i++) printf("%02X ", buf[i]);
+    printf("...]\n");
+
+    // === FIX: Force Manual Mode ===
+    // Clear bits 6, 5, 4, 2 to disable auto-compute and auto-select features
+    // Set bit 3 (No Capability Mismatch) to accept lower-power contracts
+    // This stops the chip from ignoring manual voltage limits and defaulting to max voltage
+    buf[0] &= ~((1 << 6) | (1 << 5) | (1 << 4) | (1 << 2));
+    buf[0] |= (1 << 3);
+
+    // === Clear Power Requirement Fields ===
+    // Clear AutoNeg Sink Min Required Power (Bits 31-22) to accept lower-wattage contracts
+    // This field spans the upper 2 bits of Byte 2 (bits 6-7) through all of Byte 3
+    buf[2] &= 0x3F;  // Clear bits 6-7 of Byte 2
+    buf[3] = 0x00;   // Clear all of Byte 3
+
+    // Clear Capability Mismatch Max/Min Power (Bits 63-52) to prevent rejection of lower voltage profiles
+    // This field spans the upper 4 bits of Byte 6 (bits 4-7) through lower 6 bits of Byte 7 (bits 0-5)
+    buf[6] &= 0x0F;  // Clear bits 4-7 of Byte 6
+    buf[7] &= 0xC0;  // Clear bits 0-5 of Byte 7
 
     // --- Update Standard Fields ---
-    // AutoNegMaxVoltage (Bytes 4-5? No, Bits 41-32. That splits across Byte 4 and 5)
-    // Structure of 0x37 is packed. Little Endian assumption for multi-byte fields.
-    // Let's use bit manipulation on the byte array.
-    
     // AutoNegMaxVoltage (Bits 41-32 -> 10 bits): Unit 50mV
     uint16_t max_v_val = max_v / 50;
     // Bits 32-39 are in Byte 4. Bits 40-41 are in Byte 5.
-    // Byte 4 = LSB 8 bits. Byte 5 lower 2 bits.
     buf[4] = (max_v_val & 0xFF);
     buf[5] = (buf[5] & 0xFC) | ((max_v_val >> 8) & 0x03);
 
     // AutoNegMinVoltage (Bits 51-42 -> 10 bits): Unit 50mV
     uint16_t min_v_val = min_v / 50;
     // Bits 42-47 in Byte 5 (shifted by 2). Bits 48-51 in Byte 6.
-    // Byte 5 bits 7:2. Byte 6 bits 3:0.
     buf[5] = (buf[5] & 0x03) | ((min_v_val & 0x3F) << 2);
     buf[6] = (buf[6] & 0xF0) | ((min_v_val >> 6) & 0x0F);
 
     // AutoNegMaxCurrent (Bits 21-12 -> 10 bits): Unit 10mA
     // Byte 1 bits 7:4, Byte 2 bits 5:0.
-    // Let's rely on op_i / 10.
     uint16_t max_i_val = op_i / 10;
     buf[1] = (buf[1] & 0x0F) | ((max_i_val & 0x0F) << 4);
     buf[2] = (buf[2] & 0xC0) | ((max_i_val >> 4) & 0x3F);
@@ -350,10 +382,29 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
     }
 
     // 2. Write back
-    if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) return false;
+    if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
+        printf("[DEBUG] Failed to write AUTONEGOTIATE_SINK\n");
+        return false;
+    }
 
-    // 3. Trigger Re-negotiation [cite: 243] "issue the 'GSrC' 4CC Task"
-    return sendCommand(TPS_CMD_GSrC);
+    printf("[DEBUG] AUTONEG_SINK after: [");
+    for (int i = 0; i < 8; i++) printf("%02X ", buf[i]);
+    printf("...]\n");
+    printf("[DEBUG] Request: min=%umV max=%umV op_i=%umA pps=%d avs=%d\n",
+           min_v, max_v, op_i, pps_en, avs_en);
+
+    // 3. Trigger Re-negotiation
+    // If requesting EPR (>21V), OR currently in an EPR contract, we MUST use ESrC instead of GSrC.
+    const char* cmd = TPS_CMD_GSrC;
+    uint32_t current_v = 0, current_i = 0;
+    
+    if (avs_en || max_v > 21000 || (getActiveContract(current_v, current_i) && current_v > 21000)) {
+        cmd = TPS_CMD_ESrC;
+    }
+
+    bool result = sendCommand(cmd);
+    printf("[DEBUG] %s command %s\n", cmd, result ? "sent" : "FAILED");
+    return result;
 }
 
 bool TPS26750::requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma) {

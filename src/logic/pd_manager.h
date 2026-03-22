@@ -111,8 +111,20 @@ private:
     static constexpr int32_t PPS_TUNE_THRESHOLD_MV = 30;       // Converged when error < this
     static constexpr int32_t PPS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
 
+    // AVS keep-alive state (EPR contracts also need periodic re-request)
+    bool _avs_active;                   // True if current contract is AVS
+    uint32_t _avs_voltage_mv;           // Last requested AVS voltage
+    uint32_t _avs_current_ma;           // Last requested AVS current
+    absolute_time_t _avs_last_refresh;  // Time of last AVS request
+    static constexpr uint32_t AVS_REFRESH_INTERVAL_MS = 7000;  // Same as PPS
+
     // PD revision string (cached)
     char _pd_revision[8];
+
+    // Polling fallback state (for chargers that don't fire interrupt)
+    uint32_t _pre_request_voltage_mv;
+    uint32_t _pre_request_current_ma;
+    static constexpr uint32_t POLLING_FALLBACK_MS = 500;
 
     // Detect PD revision from cached PDOs
     void detectPdRevision();

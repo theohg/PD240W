@@ -3,6 +3,7 @@
 #include "config/board_config.h"
 #include "interrupts.h"
 #include "logic/settings.h"
+#include "ui/display_manager.h"
 #include "utils/logging.h"
 #include <cstring>
 #include <cstdlib>  // abs()
@@ -29,6 +30,12 @@ PdManager::PdManager()
     , _pps_tuning_converged(false)
     , _pps_range_min_mv(0)
     , _pps_range_max_mv(0)
+    , _avs_active(false)
+    , _avs_voltage_mv(0)
+    , _avs_current_ma(0)
+    , _avs_last_refresh(nil_time)
+    , _pre_request_voltage_mv(0)
+    , _pre_request_current_ma(0)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
@@ -86,11 +93,27 @@ void PdManager::update() {
         handlePdInterrupt();
     }
 
-    // Check negotiation timeout
+    // Check negotiation timeout and polling fallback
     if (_negotiation_state == NegotiationState::REQUESTING) {
         uint32_t elapsed_ms = absolute_time_diff_us(_negotiation_start, get_absolute_time()) / 1000;
 
-        if (elapsed_ms >= NEGOTIATION_TIMEOUT_MS) {
+        // Polling fallback: if no interrupt after 500ms, poll the active contract
+        // Some PD2.0 sources don't fire NEW_CONTRACT_AS_SINK interrupt reliably
+        if (elapsed_ms >= POLLING_FALLBACK_MS) {
+            uint32_t current_voltage_mv, current_current_ma;
+            if (hw.pdController.getActiveContract(current_voltage_mv, current_current_ma)) {
+                // Check if contract changed from pre-request state
+                if (current_voltage_mv != _pre_request_voltage_mv ||
+                    current_current_ma != _pre_request_current_ma) {
+                    LOG_INFO("Contract change detected via polling: %umV @ %umA",
+                             current_voltage_mv, current_current_ma);
+                    refreshActiveContract();
+                    _negotiation_state = NegotiationState::SUCCESS;
+                }
+            }
+        }
+
+        if (elapsed_ms >= NEGOTIATION_TIMEOUT_MS && _negotiation_state == NegotiationState::REQUESTING) {
             LOG_WARN("Contract negotiation timeout");
             _negotiation_state = NegotiationState::TIMEOUT;
         }
@@ -178,6 +201,38 @@ void PdManager::update() {
             }
         }
     }
+
+    // AVS keep-alive: EPR contracts also need periodic re-request to maintain the contract
+    if (_avs_active && _avs_voltage_mv > 0) {
+        uint32_t elapsed_ms = absolute_time_diff_us(_avs_last_refresh, get_absolute_time()) / 1000;
+
+        if (elapsed_ms >= AVS_REFRESH_INTERVAL_MS) {
+            LOG_DEBUG("AVS keep-alive: requesting %umV @ %umA", _avs_voltage_mv, _avs_current_ma);
+
+            if (hw.pdController.requestAVSProfile(_avs_voltage_mv, _avs_current_ma)) {
+                _avs_last_refresh = get_absolute_time();
+            } else {
+                LOG_WARN("AVS keep-alive request failed");
+            }
+        }
+    }
+
+    // Periodic contract refresh for display sync (every 1 second)
+    // Ensures displayed contract matches actual state after EPR transitions
+    static absolute_time_t next_contract_refresh = {0};
+    if (absolute_time_diff_us(next_contract_refresh, get_absolute_time()) >= 0) {
+        next_contract_refresh = make_timeout_time_ms(1000);
+
+        uint32_t old_voltage = _active_contract.voltage_mv;
+        refreshActiveContract();
+
+        // If voltage changed significantly, force display update
+        if (_active_contract.voltage_mv != old_voltage) {
+            LOG_INFO("Contract voltage changed: %umV -> %umV",
+                     old_voltage, _active_contract.voltage_mv);
+            displayManager.invalidate();
+        }
+    }
 }
 
 // ============================================================================
@@ -218,6 +273,10 @@ bool PdManager::requestContract(const SourceCapability& pdo) {
 bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     LOG_INFO("Requesting Fixed: %umV @ %umA", voltage_mv, current_ma);
 
+    // Store pre-request contract for polling fallback
+    _pre_request_voltage_mv = _active_contract.voltage_mv;
+    _pre_request_current_ma = _active_contract.current_ma;
+
     bool success = hw.pdController.requestFixedProfile(voltage_mv, current_ma);
 
     if (success) {
@@ -231,6 +290,11 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_user_target_mv = 0;
         _pps_correction_mv = 0;
         _pps_tuning_converged = false;
+
+        // Deactivate AVS mode when switching to fixed
+        _avs_active = false;
+        _avs_voltage_mv = 0;
+        _avs_current_ma = 0;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send Fixed contract request");
@@ -241,6 +305,10 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
 
 bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     LOG_INFO("Requesting PPS: %umV @ %umA", voltage_mv, current_ma);
+
+    // Store pre-request contract for polling fallback
+    _pre_request_voltage_mv = _active_contract.voltage_mv;
+    _pre_request_current_ma = _active_contract.current_ma;
 
     bool success = hw.pdController.requestPPSProfile(voltage_mv, current_ma);
 
@@ -253,6 +321,11 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_voltage_mv = voltage_mv;
         _pps_current_ma = current_ma;
         _pps_last_refresh = get_absolute_time();
+
+        // Deactivate AVS mode when switching to PPS
+        _avs_active = false;
+        _avs_voltage_mv = 0;
+        _avs_current_ma = 0;
 
         // Auto PPS tuning: store user target and reset correction
         _pps_user_target_mv = voltage_mv;
@@ -280,6 +353,10 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
 bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     LOG_INFO("Requesting AVS: %umV @ %umA", voltage_mv, current_ma);
 
+    // Store pre-request contract for polling fallback
+    _pre_request_voltage_mv = _active_contract.voltage_mv;
+    _pre_request_current_ma = _active_contract.current_ma;
+
     bool success = hw.pdController.requestAVSProfile(voltage_mv, current_ma);
 
     if (success) {
@@ -293,6 +370,12 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_user_target_mv = 0;
         _pps_correction_mv = 0;
         _pps_tuning_converged = false;
+
+        // Track AVS state for keep-alive
+        _avs_active = true;
+        _avs_voltage_mv = voltage_mv;
+        _avs_current_ma = current_ma;
+        _avs_last_refresh = get_absolute_time();
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send AVS contract request");
@@ -398,18 +481,24 @@ void PdManager::detectPdRevision() {
         if (_pdo_cache[i].is_pps) has_pps = true;
     }
 
-    if (has_avs) {
-        strcpy(_pd_revision, "PD3.1");
+    // Standard SPR (PD 2.0/3.0) allows max 7 PDOs. 
+    // 8+ PDOs or the presence of AVS guarantees EPR (PD 3.1+).
+    if (has_avs || _pdo_count > 7) {
+        // You can safely assume at least PD 3.1. 
+        // (PD 3.2 chargers will fall into this bucket as well).
+        strcpy(_pd_revision, "PD3.1+"); 
     } else if (has_pps) {
+        // PPS was introduced in PD 3.0
         strcpy(_pd_revision, "PD3.0");
     } else if (_pdo_count > 0) {
+        // If neither PPS nor AVS are present and <= 7 PDOs, assume PD 2.0
         strcpy(_pd_revision, "PD2.0");
     } else {
         _pd_revision[0] = '\0';
     }
 
     if (_pd_revision[0] != '\0') {
-        LOG_INFO("Detected PD revision: %s", _pd_revision);
+        LOG_INFO("Detected PD revision (from PDOs): %s", _pd_revision);
     }
 }
 
@@ -449,6 +538,31 @@ void PdManager::handlePdInterrupt() {
         // Clear the interrupt
         uint8_t clear_mask[11] = {0};
         clear_mask[1] = (1 << 4);  // Bit 12
+        hw.pdController.clearInterrupts(clear_mask);
+    }
+
+    // Check for source capabilities received (bit 14) - happens on EPR mode entry/exit
+    if (hw.pdController.isInterruptSet(events, 14)) {
+        uint8_t old_count = _pdo_count;
+
+        // Invalidate and refresh PDO cache
+        _pdos_valid = false;
+        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+        _pdos_valid = (_pdo_count > 0);
+
+        if (_pdos_valid) {
+            detectPdRevision();
+            LOG_INFO("Source capabilities updated: %d PDOs (was %d)", _pdo_count, old_count);
+        } else {
+            LOG_WARN("Source capabilities received but no PDOs found");
+        }
+
+        // Also refresh active contract as it may have changed
+        refreshActiveContract();
+
+        // Clear the interrupt
+        uint8_t clear_mask[11] = {0};
+        clear_mask[1] = (1 << 6);  // Bit 14
         hw.pdController.clearInterrupts(clear_mask);
     }
 

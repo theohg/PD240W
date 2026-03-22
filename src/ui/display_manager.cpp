@@ -52,6 +52,7 @@ DisplayManager::DisplayManager()
     , _last_menu_selection(-1)
     , _last_settings_selection(-1)
     , _last_pdo_selection(-1)
+    , _last_pdo_scroll_idx(-1)
     , _last_adjust_value(0)
     , _last_pps_voltage(0)
     , _last_pps_state(-1)
@@ -81,6 +82,7 @@ void DisplayManager::init() {
     _needs_full_redraw = true;
     _last_pps_state = -1;  // Force PPS badge redraw on first render
     _last_pd_revision_drawn = false;  // Force PD revision badge redraw
+    _last_pdo_scroll_idx = -1;  // Reset scroll position
 }
 
 // ============================================================================
@@ -136,6 +138,7 @@ void DisplayManager::render() {
 
 void DisplayManager::invalidate() {
     _needs_full_redraw = true;
+    _last_pdo_scroll_idx = -1;  // Reset scroll position on invalidate
 }
 
 void DisplayManager::setPdoList(const SourceCapability* pdos, uint8_t count) {
@@ -792,8 +795,7 @@ void DisplayManager::drawPdoList() {
     }
 
     // Track scroll position to detect when all items need redrawing
-    static int8_t last_start_idx = -1;
-    bool scroll_changed = (start_idx != last_start_idx);
+    bool scroll_changed = (start_idx != _last_pdo_scroll_idx);
     bool sel_changed = (selected_idx != _last_pdo_selection);
 
     // Skip redraw if nothing changed
@@ -888,7 +890,7 @@ void DisplayManager::drawPdoList() {
         }
     }
 
-    last_start_idx = start_idx;
+    _last_pdo_scroll_idx = start_idx;
     _last_pdo_selection = selected_idx;
 
     // Draw hint only on full redraw

@@ -112,6 +112,7 @@ private:
     int8_t _last_menu_selection;
     int8_t _last_settings_selection;
     int8_t _last_pdo_selection;
+    int8_t _last_pdo_scroll_idx;  // Scroll position in PDO list
     uint32_t _last_adjust_value;
     uint32_t _last_pps_voltage;
     uint8_t _last_brightness_value;

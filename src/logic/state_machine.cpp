@@ -389,7 +389,11 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
-                if (_selected_pdo_index < _num_pdos) {  // _num_pdos = Back item
+                // Clamp index to valid range in case PDO count changed
+                if (_selected_pdo_index > _num_pdos) {
+                    _selected_pdo_index = _num_pdos;
+                }
+                if (_selected_pdo_index < _num_pdos) {
                     _selected_pdo_index++;
                 } else {
                     _selected_pdo_index = 0;  // Wrap to first
@@ -423,6 +427,10 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
 
         case EncoderEvent::ROTATE_CCW:
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
+                // Clamp index to valid range in case PDO count changed
+                if (_selected_pdo_index > _num_pdos) {
+                    _selected_pdo_index = _num_pdos;
+                }
                 if (_selected_pdo_index > 0) {
                     _selected_pdo_index--;
                 } else {
@@ -786,7 +794,7 @@ const char* StateMachine::getBootStageMessage() const {
 
 void StateMachine::loadPdoList() {
     pdManager.refreshActiveContract();  // Ensure we have the latest active contract for highlighting
-    _num_pdos = hw.pdController.getSourceCapabilities(s_pdo_list, 13);
+    _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
     _selected_pdo_index = 0;
 
     LOG_INFO("Loaded %d PDOs from charger", _num_pdos);
