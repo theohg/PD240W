@@ -53,6 +53,7 @@ private:
     AppState _last_rendered_state;
     int8_t _last_pps_state;  // -1=unknown, 0=not PPS, 1=PPS
     bool _last_pd_revision_drawn;  // True if PD revision badge was drawn
+    char _last_pd_revision[8];     // Last drawn PD revision string
 
     // PDO list reference
     const SourceCapability* _pdo_list;

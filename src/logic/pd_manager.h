@@ -91,6 +91,12 @@ public:
 
     // Check if PDOs have been discovered
     bool hasPdos() const { return _pdos_valid && _pdo_count > 0; }
+    
+    // Invalidate PDO cache (forces re-read from chip on next access)
+    void invalidatePdoCache() { _pdos_valid = false; }
+    
+    // Force a probe for EPR capabilities (useful before opening menus)
+    void probeEpr();
 
 private:
     // Negotiation state

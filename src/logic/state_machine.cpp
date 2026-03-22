@@ -49,6 +49,8 @@ StateMachine::StateMachine()
     , _boot_pdos_found(false)
     , _boot_contract_requested(false)
     , _boot_contract_complete(false)
+    , _boot_epr_probed(false)
+    , _boot_epr_probe_time(nil_time)
     , _boot_ready_time(nil_time)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
     , _selected_settings_item(SettingsItem::FLASH_EEPROM)
@@ -267,9 +269,70 @@ void StateMachine::handleBootState() {
         }
     }
 
-    // Stage 2 -> 3: Move to "Ready!" once negotiation is complete
+    // Stage 2 -> 3: After negotiation, probe EPR and refresh PDOs before Ready
     if (_boot_stage == 2 && _boot_contract_complete) {
-        _boot_stage = 3;  // Ready
+        if (!_boot_epr_probed) {
+            // Send EPR probe (like entering voltage menu) to discover AVS/EPR PDOs
+            pdManager.probeEpr();
+            _boot_epr_probe_time = get_absolute_time();
+            _boot_epr_probed = true;
+        }
+
+        uint32_t epr_elapsed = absolute_time_diff_us(_boot_epr_probe_time, get_absolute_time()) / 1000;
+        bool is_highest_mode = (settings.getStartupNegotiationMode() == StartupContractMode::HIGHEST_VOLTAGE);
+
+        // Poll for EPR PDOs every ~150ms during the wait window
+        static uint32_t last_epr_poll_ms = 0;
+        static bool epr_pdos_found = false;
+        if (epr_elapsed >= 150 && epr_elapsed - last_epr_poll_ms >= 150) {
+            last_epr_poll_ms = epr_elapsed;
+            pdManager.invalidatePdoCache();
+            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+            pdManager.refreshActiveContract();
+
+            // Check if EPR/AVS PDOs have arrived
+            if (!epr_pdos_found) {
+                for (uint8_t i = 0; i < _num_pdos; i++) {
+                    if (s_pdo_list[i].is_avs || s_pdo_list[i].voltage_mv > 20000) {
+                        epr_pdos_found = true;
+                        LOG_INFO("Boot: EPR PDOs found after %ums: %d PDOs", epr_elapsed, _num_pdos);
+                        break;
+                    }
+                }
+            }
+
+            // EPR found but not in highest-voltage mode: proceed immediately
+            // (contract was already explicitly negotiated in stage 2)
+            if (epr_pdos_found && !is_highest_mode) {
+                last_epr_poll_ms = 0;
+                epr_pdos_found = false;
+                _boot_stage = 3;
+            }
+        }
+
+        // Highest voltage + EPR: wait for TPS26750 auto-negotiation to settle
+        if (epr_pdos_found && is_highest_mode && _boot_stage == 2) {
+            pdManager.refreshActiveContract();
+            const auto& contract = pdManager.getActiveContract();
+            if (contract.valid && contract.voltage_mv > 20000) {
+                LOG_INFO("Boot: Contract settled at %umV after %ums", contract.voltage_mv, epr_elapsed);
+                last_epr_poll_ms = 0;
+                epr_pdos_found = false;
+                _boot_stage = 3;
+            }
+        }
+
+        // Timeouts: 600ms for non-EPR chargers, 1200ms when waiting for EPR contract
+        uint32_t timeout_ms = epr_pdos_found ? 1200 : 600;
+        if (_boot_stage == 2 && epr_elapsed >= timeout_ms) {
+            pdManager.invalidatePdoCache();
+            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+            pdManager.refreshActiveContract();
+            LOG_INFO("Boot: EPR probe timeout, proceeding with %d PDOs", _num_pdos);
+            last_epr_poll_ms = 0;
+            epr_pdos_found = false;
+            _boot_stage = 3;
+        }
     }
 
     // Stage 3: Show "Ready!" briefly, then transition to MAIN
@@ -337,6 +400,9 @@ void StateMachine::handleMenuState(EncoderEvent event) {
             // Select current menu item (no select beep - navigation sounds removed)
             switch (_selected_menu_item) {
                 case MenuItem::SELECT_VOLTAGE:
+                    pdManager.probeEpr();
+                    sleep_ms(150); // Give the charger a moment to respond with EPR caps
+                    pdManager.invalidatePdoCache(); // Force an absolute reload of the _pdo_cache
                     loadPdoList();
                     _adjust_mode = AdjustMode::PDO_SELECT;
                     transitionTo(AppState::ADJUST);

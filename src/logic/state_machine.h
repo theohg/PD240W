@@ -139,6 +139,8 @@ private:
     bool _boot_pdos_found;              // True once PDOs loaded with results
     bool _boot_contract_requested;      // True once startup contract negotiation initiated
     bool _boot_contract_complete;       // True once negotiation finished (success or timeout)
+    bool _boot_epr_probed;              // True once EPR probe sent after negotiation
+    absolute_time_t _boot_epr_probe_time; // When EPR probe was sent
     absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
 
     // Menu navigation

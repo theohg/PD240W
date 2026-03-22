@@ -57,6 +57,7 @@ DisplayManager::DisplayManager()
     , _last_pps_voltage(0)
     , _last_pps_state(-1)
     , _last_pd_revision_drawn(false)
+    , _last_pd_revision{0}
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
     , _backlight_on(false)
@@ -82,6 +83,7 @@ void DisplayManager::init() {
     _needs_full_redraw = true;
     _last_pps_state = -1;  // Force PPS badge redraw on first render
     _last_pd_revision_drawn = false;  // Force PD revision badge redraw
+    _last_pd_revision[0] = '\0';
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 }
 
@@ -367,9 +369,16 @@ void DisplayManager::drawActiveContract() {
                  contract.current_ma / 1000.0f);
         hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
 
-        // PD revision badge (draw when revision becomes available or on full redraw)
+        // PD revision badge (draw when revision changes or on full redraw)
         const char* pd_rev = pdManager.getPdRevision();
-        if (pd_rev[0] != '\0' && (_needs_full_redraw || !_last_pd_revision_drawn)) {
+        bool rev_changed = (strcmp(pd_rev, _last_pd_revision) != 0);
+        if (pd_rev[0] != '\0' && (_needs_full_redraw || !_last_pd_revision_drawn || rev_changed)) {
+            // Clear old badge area if revision string changed (different width)
+            if (rev_changed && _last_pd_revision_drawn) {
+                int old_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
+                int old_x = SCREEN_WIDTH - MARGIN - 40 - old_w - 4;
+                hw.display.fillRect(old_x, y - 2, old_w, BADGE_H, UIColors::BACKGROUND);
+            }
             int rev_w = ST7789::getStringWidthAA(pd_rev, FONT_SMALL) + 8;
             int rev_x = SCREEN_WIDTH - MARGIN - 40 - rev_w - 4;
             int rev_y = y - 2;
@@ -378,6 +387,8 @@ void DisplayManager::drawActiveContract() {
             int text_y = rev_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
             hw.display.drawStringAA(text_x, text_y, pd_rev, UIColors::TEXT_PRIMARY, UIColors::MUTED, FONT_SMALL);
             _last_pd_revision_drawn = true;
+            strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
+            _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
         }
 
         // Show PPS indicator if active - only redraw when state changes

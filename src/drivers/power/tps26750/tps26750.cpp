@@ -306,76 +306,50 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
         return false;
     }
 
-    printf("[DEBUG] AUTONEG_SINK before: [");
-    for (int i = 0; i < 8; i++) printf("%02X ", buf[i]);
-    printf("...]\n");
-
     // === FIX: Force Manual Mode ===
     // Clear bits 6, 5, 4, 2 to disable auto-compute and auto-select features
     // Set bit 3 (No Capability Mismatch) to accept lower-power contracts
-    // This stops the chip from ignoring manual voltage limits and defaulting to max voltage
     buf[0] &= ~((1 << 6) | (1 << 5) | (1 << 4) | (1 << 2));
     buf[0] |= (1 << 3);
 
     // === Clear Power Requirement Fields ===
-    // Clear AutoNeg Sink Min Required Power (Bits 31-22) to accept lower-wattage contracts
-    // This field spans the upper 2 bits of Byte 2 (bits 6-7) through all of Byte 3
-    buf[2] &= 0x3F;  // Clear bits 6-7 of Byte 2
-    buf[3] = 0x00;   // Clear all of Byte 3
-
-    // Clear Capability Mismatch Max/Min Power (Bits 63-52) to prevent rejection of lower voltage profiles
-    // This field spans the upper 4 bits of Byte 6 (bits 4-7) through lower 6 bits of Byte 7 (bits 0-5)
-    buf[6] &= 0x0F;  // Clear bits 4-7 of Byte 6
-    buf[7] &= 0xC0;  // Clear bits 0-5 of Byte 7
+    buf[2] &= 0x3F;  
+    buf[3] = 0x00;   
+    buf[6] &= 0x0F;  
+    buf[7] &= 0xC0;  
 
     // --- Update Standard Fields ---
-    // AutoNegMaxVoltage (Bits 41-32 -> 10 bits): Unit 50mV
     uint16_t max_v_val = max_v / 50;
-    // Bits 32-39 are in Byte 4. Bits 40-41 are in Byte 5.
     buf[4] = (max_v_val & 0xFF);
     buf[5] = (buf[5] & 0xFC) | ((max_v_val >> 8) & 0x03);
 
-    // AutoNegMinVoltage (Bits 51-42 -> 10 bits): Unit 50mV
     uint16_t min_v_val = min_v / 50;
-    // Bits 42-47 in Byte 5 (shifted by 2). Bits 48-51 in Byte 6.
     buf[5] = (buf[5] & 0x03) | ((min_v_val & 0x3F) << 2);
     buf[6] = (buf[6] & 0xF0) | ((min_v_val >> 6) & 0x0F);
 
-    // AutoNegMaxCurrent (Bits 21-12 -> 10 bits): Unit 10mA
-    // Byte 1 bits 7:4, Byte 2 bits 5:0.
     uint16_t max_i_val = op_i / 10;
     buf[1] = (buf[1] & 0x0F) | ((max_i_val & 0x0F) << 4);
     buf[2] = (buf[2] & 0xC0) | ((max_i_val >> 4) & 0x3F);
 
     // --- Update PPS Fields ---
-    // PPS Enable Sink Mode: Bit 64 -> Byte 8, bit 0.
     if (pps_en) buf[8] |= 0x01; else buf[8] &= ~0x01;
 
     if (pps_en) {
-        // PPS Operating Current: Bits 102-96 (7 bits). Unit 50mA.
-        // Byte 12.
         uint8_t pps_i_val = (pps_i / 50) & 0x7F;
-        buf[12] = (buf[12] & 0x80) | pps_i_val; // Keep bit 103/7 intact? No, field is 96-102.
+        buf[12] = (buf[12] & 0x80) | pps_i_val; 
         
-        // PPS Output Voltage: Bits 115-105 (11 bits). Unit 20mV.
-        // Byte 13 bits 7:1 (offset 1). Byte 14 bits 3:0.
         uint16_t pps_v_val = pps_v / 20;
         buf[13] = (buf[13] & 0x01) | ((pps_v_val & 0x7F) << 1);
         buf[14] = (buf[14] & 0xF0) | ((pps_v_val >> 7) & 0x0F);
     }
 
     // --- Update AVS Fields ---
-    // EPR AVS Enable Sink Mode: Bit 128 -> Byte 16, bit 0.
     if (avs_en) buf[16] |= 0x01; else buf[16] &= ~0x01;
 
     if (avs_en) {
-        // AVS Operating Current: Bits 166-160 (7 bits). Unit 50mA.
-        // Byte 20.
         uint8_t avs_i_val = (avs_i / 50) & 0x7F;
         buf[20] = (buf[20] & 0x80) | avs_i_val;
 
-        // AVS Output Voltage: Bits 180-169 (12 bits). Unit 50mV (assuming standard RDO unit).
-        // Byte 21 bits 7:1 (offset 1). Byte 22 bits 4:0.
         uint16_t avs_v_val = avs_v / 50; 
         buf[21] = (buf[21] & 0x01) | ((avs_v_val & 0x7F) << 1);
         buf[22] = (buf[22] & 0xE0) | ((avs_v_val >> 7) & 0x1F);
@@ -387,49 +361,24 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
         return false;
     }
 
-    printf("[DEBUG] AUTONEG_SINK after: [");
-    for (int i = 0; i < 8; i++) printf("%02X ", buf[i]);
-    printf("...]\n");
-    printf("[DEBUG] Request: min=%umV max=%umV op_i=%umA pps=%d avs=%d\n",
-           min_v, max_v, op_i, pps_en, avs_en);
+    // 3. Trigger Re-negotiation via PPS Toggle Trick
+    // Instead of relying purely on GSrC (which LG monitors ignore),
+    // we toggle PPSEnableSinkMode to force the TPS26750 to automatically re-evaluate
+    // and send a Request message directly based on currently cached capabilities.
+    uint8_t toggle_buf[24];
+    memcpy(toggle_buf, buf, 24);
+    
+    // Flip the PPS Enable bit
+    toggle_buf[8] ^= 0x01;
+    writeRegister(TPS_REG_AUTONEGOTIATE_SINK, toggle_buf, 24);
+    
+    sleep_ms(2); // Give TPS26750 a moment to register the change
+    
+    // Restore and write final intended state
+    writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24);
 
-    // // 3. Trigger Re-negotiation
-    // // If requesting EPR (>21V), OR currently in an EPR contract, we MUST use ESrC instead of GSrC.
-    // const char* cmd = TPS_CMD_GSrC;
-    // uint32_t current_v = 0, current_i = 0;
-    
-    // if (avs_en || max_v > 21000 || (getActiveContract(current_v, current_i) && current_v > 21000)) {
-    //     cmd = TPS_CMD_ESrC;
-    // }
-
-    // bool result = sendCommand(cmd);
-    // printf("[DEBUG] %s command %s\n", cmd, result ? "sent" : "FAILED");
-    // return result;
-    
-    // 3. Trigger Re-negotiation
-    // If requesting EPR (>21V), OR currently in an EPR contract, we MUST use ESrC instead of GSrC.
-    // Additionally, if the source has previously advertised EPR capabilities, we must use ESrC
-    // to prevent wiping out the cached EPR PDOs by requesting SPR capabilities.
-    const char* cmd = TPS_CMD_GSrC;
-    uint32_t current_v = 0, current_i = 0;
-    
-    // Check if we currently have EPR PDOs cached in the PD controller
-    uint8_t rx_caps_info = 0;
-    bool has_epr_caps = false;
-    if (readRegister(TPS_REG_RX_SOURCE_CAPS, &rx_caps_info, 1)) {
-        uint8_t num_epr = (rx_caps_info >> 3) & 0x07;
-        if (num_epr > 0) {
-            has_epr_caps = true;
-        }
-    }
-    
-    if (avs_en || max_v > 21000 || has_epr_caps || (getActiveContract(current_v, current_i) && current_v > 21000)) {
-        cmd = TPS_CMD_ESrC;
-    }
-
-    bool result = sendCommand(cmd);
-    printf("[DEBUG] %s command %s (has_epr_caps=%d)\n", cmd, result ? "sent" : "FAILED", has_epr_caps);
-    return result;
+    printf("[DEBUG] Triggered re-negotiation via PPS toggle trick\n");
+    return true;
 }
 
 bool TPS26750::requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma) {
