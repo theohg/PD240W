@@ -78,6 +78,20 @@ public:
     // Returns "PD3.1" for AVS/EPR, "PD3.0" for PPS, "PD2.0" for fixed-only, "" for no PDOs
     const char* getPdRevision() const { return _pd_revision; }
 
+    // Startup contract negotiation based on settings
+    // - Lowest: select lowest voltage fixed PDO
+    // - Highest: select highest voltage fixed/AVS PDO
+    // - Last: restore saved PDO, or find closest if unavailable
+    // Returns true if a contract request was initiated
+    bool negotiateStartupContract();
+
+    // Wait for PDOs with timeout (non-blocking polling, call repeatedly in loop)
+    // Returns true when PDOs are available, false if still waiting
+    bool waitForPdos(uint32_t timeout_ms);
+
+    // Check if PDOs have been discovered
+    bool hasPdos() const { return _pdos_valid && _pdo_count > 0; }
+
 private:
     // Negotiation state
     NegotiationState _negotiation_state;

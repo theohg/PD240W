@@ -24,8 +24,9 @@ Hardware::Hardware() :
 {}
 
 void Hardware::init() {
-    // Sleep to let time to the TPS26750 to negotiate power:
-    sleep_ms(250);
+    // Short delay to let TPS26750 start up - actual PD negotiation is handled
+    // adaptively during the boot screen via pdManager.waitForPdos()
+    sleep_ms(50);
     stdio_init_all();
 
     LOG_SEPARATOR();

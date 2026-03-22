@@ -65,20 +65,9 @@ void PdManager::init() {
         LOG_WARN("Failed to read TPS26750 mode");
     }
 
-    // Read initial source capabilities
-    _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
-    _pdos_valid = (_pdo_count > 0);
-
-    if (_pdos_valid) {
-        LOG_INFO("Found %d PDOs from charger", _pdo_count);
-        _charger_connected = true;
-        detectPdRevision();
-    } else {
-        LOG_WARN("No PDOs found - EEPROM might not have been read correctly");
-    }
-
-    // Read current active contract
-    refreshActiveContract();
+    // Note: PDO discovery is handled adaptively during boot via waitForPdos()
+    // This avoids false warnings when TPS26750 hasn't finished negotiating yet.
+    // Initial source capabilities will be read during the boot sequence.
 
     LOG_INFO("PD Manager initialized");
 }
@@ -262,9 +251,11 @@ uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_cap
 
 bool PdManager::requestContract(const SourceCapability& pdo) {
     if (pdo.is_pps) {
-        return requestPpsVoltage(pdo.min_voltage_mv, pdo.max_current_ma);
+        // For PPS, request max voltage as default (user can adjust via PPS voltage mode)
+        return requestPpsVoltage(pdo.voltage_mv, pdo.max_current_ma);
     } else if (pdo.is_avs) {
-        return requestAvsVoltage(pdo.min_voltage_mv, pdo.max_current_ma);
+        // For AVS, request max voltage (which is stored in voltage_mv field)
+        return requestAvsVoltage(pdo.voltage_mv, pdo.max_current_ma);
     } else {
         return requestFixedVoltage(pdo.voltage_mv, pdo.max_current_ma);
     }
@@ -451,8 +442,8 @@ bool PdManager::refreshActiveContract() {
             _active_contract.pps_max_mv = 0;
         }
 
-        LOG_DEBUG("Active contract: %umV @ %umA (PPS: %s)",
-                  voltage_mv, current_ma, _pps_active ? "yes" : "no");
+        // LOG_DEBUG("Active contract: %umV @ %umA (PPS: %s)",
+        //           voltage_mv, current_ma, _pps_active ? "yes" : "no");
         return true;
     }
 
@@ -608,6 +599,274 @@ bool PdManager::checkNewContractEvent() {
 
     if (hw.pdController.readInterrupts(events)) {
         return hw.pdController.isInterruptSet(events, 12);
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Startup Contract Negotiation
+// ============================================================================
+
+bool PdManager::waitForPdos(uint32_t timeout_ms) {
+    // State machine for PDO discovery with EPR probing
+    // Phase 0: Initial PDO discovery
+    // Phase 1: EPR probe sent, waiting for response
+    // Phase 2: Done
+    static absolute_time_t wait_start = nil_time;
+    static uint8_t phase = 0;
+    static bool epr_probe_sent = false;
+
+    if (is_nil_time(wait_start)) {
+        wait_start = get_absolute_time();
+        phase = 0;
+        epr_probe_sent = false;
+    }
+
+    uint32_t elapsed_ms = absolute_time_diff_us(wait_start, get_absolute_time()) / 1000;
+
+    // Check timeout
+    if (elapsed_ms >= timeout_ms) {
+        LOG_WARN("PDO discovery timed out after %ums (phase %d)", elapsed_ms, phase);
+        wait_start = nil_time;
+        phase = 0;
+        epr_probe_sent = false;
+        return true;  // Return true to stop waiting
+    }
+
+    // Phase 0: Initial PDO discovery
+    if (phase == 0) {
+        // Check if PDOs are already available
+        if (_pdos_valid && _pdo_count > 0) {
+            // Already have PDOs, skip to EPR check
+            phase = 1;
+        } else {
+            // Try to discover PDOs
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            _pdos_valid = (_pdo_count > 0);
+
+            if (_pdos_valid) {
+                detectPdRevision();
+                refreshActiveContract();
+                LOG_INFO("Initial PDO discovery: %d PDOs found", _pdo_count);
+                phase = 1;  // Move to EPR check phase
+            }
+        }
+    }
+
+    // Phase 1: Check if EPR probing is needed
+    if (phase == 1 && !epr_probe_sent) {
+        // Check if we only have SPR PDOs (max voltage <= 20V)
+        // and might benefit from trying EPR mode
+        bool has_epr = false;
+        uint32_t max_voltage = 0;
+
+        for (uint8_t i = 0; i < _pdo_count; i++) {
+            if (_pdo_cache[i].voltage_mv > max_voltage) {
+                max_voltage = _pdo_cache[i].voltage_mv;
+            }
+            if (_pdo_cache[i].is_avs || _pdo_cache[i].voltage_mv > 20000) {
+                has_epr = true;
+            }
+        }
+
+        if (!has_epr && _pdo_count > 0 && max_voltage <= 20000) {
+            // Only SPR PDOs found, try entering EPR mode
+            LOG_INFO("Only SPR PDOs found (max %umV), probing for EPR...", max_voltage);
+
+            // Send ESrC to request EPR source capabilities
+            if (hw.pdController.sendCommand(TPS_CMD_ESrC)) {
+                epr_probe_sent = true;
+                LOG_DEBUG("ESrC command sent for EPR discovery");
+            } else {
+                LOG_WARN("Failed to send ESrC command");
+                // Continue without EPR
+                phase = 2;
+            }
+        } else {
+            // Already have EPR PDOs or no PDOs - done
+            if (has_epr) {
+                LOG_INFO("EPR PDOs already available (max %umV)", max_voltage);
+            }
+            phase = 2;
+        }
+    }
+
+    // Wait for EPR response (200ms should be enough for charger to respond)
+    if (phase == 1 && epr_probe_sent) {
+        static absolute_time_t epr_wait_start = nil_time;
+        if (is_nil_time(epr_wait_start)) {
+            epr_wait_start = get_absolute_time();
+        }
+
+        uint32_t epr_elapsed = absolute_time_diff_us(epr_wait_start, get_absolute_time()) / 1000;
+
+        // Wait up to 300ms for EPR response
+        if (epr_elapsed >= 300) {
+            // Re-read PDOs to check for EPR capabilities
+            uint8_t old_count = _pdo_count;
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            _pdos_valid = (_pdo_count > 0);
+
+            if (_pdos_valid) {
+                detectPdRevision();
+                if (_pdo_count > old_count) {
+                    LOG_INFO("EPR probe successful: %d PDOs (was %d)", _pdo_count, old_count);
+                } else {
+                    LOG_DEBUG("EPR probe complete: %d PDOs (no change)", _pdo_count);
+                }
+            }
+
+            epr_wait_start = nil_time;
+            phase = 2;
+        }
+    }
+
+    // Phase 2: Done
+    if (phase == 2) {
+        wait_start = nil_time;
+        phase = 0;
+        epr_probe_sent = false;
+        return true;
+    }
+
+    return false;  // Still waiting
+}
+
+bool PdManager::negotiateStartupContract() {
+    // Nothing to negotiate if no PDOs available
+    if (!_pdos_valid || _pdo_count == 0) {
+        LOG_DEBUG("No PDOs available for startup negotiation");
+        return false;
+    }
+
+    StartupContractMode mode = settings.getStartupNegotiationMode();
+
+    // Build list of fixed/AVS PDOs sorted by voltage for selection
+    // Note: We skip PPS for lowest/highest mode as they're programmable ranges
+    int8_t lowest_idx = -1;
+    int8_t highest_idx = -1;
+    uint32_t lowest_voltage = UINT32_MAX;
+    uint32_t highest_voltage = 0;
+
+    for (uint8_t i = 0; i < _pdo_count; i++) {
+        // For lowest/highest, only consider fixed and AVS PDOs
+        // AVS PDOs report max voltage in voltage_mv field
+        if (!_pdo_cache[i].is_pps) {
+            uint32_t voltage = _pdo_cache[i].voltage_mv;
+
+            if (voltage < lowest_voltage) {
+                lowest_voltage = voltage;
+                lowest_idx = i;
+            }
+            if (voltage > highest_voltage) {
+                highest_voltage = voltage;
+                highest_idx = i;
+            }
+        }
+    }
+
+    int8_t target_idx = -1;
+    uint32_t target_pps_voltage_mv = 0;  // For restoring PPS voltage
+
+    switch (mode) {
+        case StartupContractMode::LOWEST_VOLTAGE:
+            target_idx = lowest_idx;
+            if (target_idx >= 0) {
+                LOG_INFO("Startup negotiation: Lowest voltage - %umV (PDO[%d])",
+                         lowest_voltage, target_idx);
+            }
+            break;
+
+        case StartupContractMode::HIGHEST_VOLTAGE:
+            target_idx = highest_idx;
+            if (target_idx >= 0) {
+                LOG_INFO("Startup negotiation: Highest voltage - %umV (PDO[%d])",
+                         highest_voltage, target_idx);
+            }
+            break;
+
+        case StartupContractMode::LAST_USED: {
+            int8_t saved_idx = settings.getLastPdoIndex();
+            uint32_t saved_pps_voltage = settings.getLastPpsVoltageMv();
+
+            if (saved_idx < 0 || saved_idx >= _pdo_count) {
+                // No saved PDO or out of range - use default (first PDO)
+                LOG_INFO("Startup negotiation: No saved PDO, keeping default");
+                return false;
+            }
+
+            // Check if saved PDO characteristics match any current PDO
+            // For fixed PDOs: match voltage
+            // For PPS: match the PPS range that contains our saved voltage
+            // For AVS: match the AVS range
+
+            // First, try exact match by index
+            if (saved_idx < _pdo_count) {
+                const SourceCapability& saved_pdo = _pdo_cache[saved_idx];
+
+                // If it's PPS and we have saved voltage, check if voltage is in range
+                if (saved_pdo.is_pps && saved_pps_voltage > 0) {
+                    if (saved_pps_voltage >= saved_pdo.min_voltage_mv &&
+                        saved_pps_voltage <= saved_pdo.voltage_mv) {
+                        target_idx = saved_idx;
+                        target_pps_voltage_mv = saved_pps_voltage;
+                        LOG_INFO("Startup negotiation: Restoring PPS %umV (PDO[%d])",
+                                 saved_pps_voltage, saved_idx);
+                    }
+                } else if (!saved_pdo.is_pps) {
+                    // Fixed or AVS - use directly
+                    target_idx = saved_idx;
+                    LOG_INFO("Startup negotiation: Restoring %s %umV (PDO[%d])",
+                             saved_pdo.is_avs ? "AVS" : "Fixed",
+                             saved_pdo.voltage_mv, saved_idx);
+                }
+            }
+
+            // If exact match failed, find closest voltage PDO
+            if (target_idx < 0) {
+                // Get the last saved voltage (from fixed PDO or approximate from PPS)
+                uint32_t target_voltage_mv = 0;
+                if (saved_idx < _pdo_count) {
+                    target_voltage_mv = _pdo_cache[saved_idx].voltage_mv;
+                }
+                // For PPS, use saved PPS voltage if available
+                if (saved_pps_voltage > 0) {
+                    target_voltage_mv = saved_pps_voltage;
+                }
+
+                // Find closest fixed/AVS PDO by voltage
+                int32_t min_diff = INT32_MAX;
+                for (uint8_t i = 0; i < _pdo_count; i++) {
+                    if (!_pdo_cache[i].is_pps) {
+                        int32_t diff = abs((int32_t)_pdo_cache[i].voltage_mv - (int32_t)target_voltage_mv);
+                        if (diff < min_diff) {
+                            min_diff = diff;
+                            target_idx = i;
+                        }
+                    }
+                }
+
+                if (target_idx >= 0) {
+                    LOG_INFO("Startup negotiation: Saved PDO unavailable, using closest: %umV (PDO[%d])",
+                             _pdo_cache[target_idx].voltage_mv, target_idx);
+                }
+            }
+            break;
+        }
+    }
+
+    // Execute the negotiation
+    if (target_idx >= 0 && target_idx < _pdo_count) {
+        const SourceCapability& pdo = _pdo_cache[target_idx];
+
+        if (pdo.is_pps && target_pps_voltage_mv > 0) {
+            // PPS with specific voltage
+            return requestPpsVoltage(target_pps_voltage_mv, pdo.max_current_ma);
+        } else {
+            // Fixed or AVS - use requestContract
+            return requestContract(pdo);
+        }
     }
 
     return false;

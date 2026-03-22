@@ -127,6 +127,8 @@ private:
     bool _last_brightness_adjusting;
     bool _last_dim_adjusting;
     bool _last_melody_adjusting;
+    uint8_t _last_contract_mode;
+    bool _last_contract_mode_adjusting;
 
     // PPS tuning badge tracking
     bool _last_pps_converged;

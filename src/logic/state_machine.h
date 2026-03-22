@@ -41,6 +41,7 @@ enum class SettingsItem {
     BRIGHTNESS,
     DIM_TIMEOUT,
     STARTUP_MELODY,
+    STARTUP_CONTRACT,  // Startup contract negotiation mode
     SOUNDS,
     BACK,           // Back to main menu
     SETTINGS_COUNT  // Number of settings items
@@ -136,6 +137,8 @@ private:
     // Boot sequence
     uint8_t _boot_stage;
     bool _boot_pdos_found;              // True once PDOs loaded with results
+    bool _boot_contract_requested;      // True once startup contract negotiation initiated
+    bool _boot_contract_complete;       // True once negotiation finished (success or timeout)
     absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
 
     // Menu navigation
@@ -201,6 +204,10 @@ private:
     uint8_t _melody_value;          // Current melody index during adjustment
     bool _melody_adjusting;         // True when in melody adjust mode
 
+    // Startup contract mode adjustment state
+    uint8_t _contract_mode_value;   // Current contract mode during adjustment (0-2)
+    bool _contract_mode_adjusting;  // True when in contract mode adjust mode
+
 public:
     // Brightness state accessors (for display manager)
     uint8_t getBrightnessValue() const { return _brightness_value; }
@@ -213,6 +220,10 @@ public:
     // Melody state accessors (for display manager)
     uint8_t getMelodyValue() const { return _melody_value; }
     bool isMelodyAdjusting() const { return _melody_adjusting; }
+
+    // Contract mode state accessors (for display manager)
+    uint8_t getContractModeValue() const { return _contract_mode_value; }
+    bool isContractModeAdjusting() const { return _contract_mode_adjusting; }
 
     // Fault state accessors (for display manager)
     float getFaultLimitValue() const { return _fault_limit_value; }

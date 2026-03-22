@@ -393,17 +393,42 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
     printf("[DEBUG] Request: min=%umV max=%umV op_i=%umA pps=%d avs=%d\n",
            min_v, max_v, op_i, pps_en, avs_en);
 
+    // // 3. Trigger Re-negotiation
+    // // If requesting EPR (>21V), OR currently in an EPR contract, we MUST use ESrC instead of GSrC.
+    // const char* cmd = TPS_CMD_GSrC;
+    // uint32_t current_v = 0, current_i = 0;
+    
+    // if (avs_en || max_v > 21000 || (getActiveContract(current_v, current_i) && current_v > 21000)) {
+    //     cmd = TPS_CMD_ESrC;
+    // }
+
+    // bool result = sendCommand(cmd);
+    // printf("[DEBUG] %s command %s\n", cmd, result ? "sent" : "FAILED");
+    // return result;
+    
     // 3. Trigger Re-negotiation
     // If requesting EPR (>21V), OR currently in an EPR contract, we MUST use ESrC instead of GSrC.
+    // Additionally, if the source has previously advertised EPR capabilities, we must use ESrC
+    // to prevent wiping out the cached EPR PDOs by requesting SPR capabilities.
     const char* cmd = TPS_CMD_GSrC;
     uint32_t current_v = 0, current_i = 0;
     
-    if (avs_en || max_v > 21000 || (getActiveContract(current_v, current_i) && current_v > 21000)) {
+    // Check if we currently have EPR PDOs cached in the PD controller
+    uint8_t rx_caps_info = 0;
+    bool has_epr_caps = false;
+    if (readRegister(TPS_REG_RX_SOURCE_CAPS, &rx_caps_info, 1)) {
+        uint8_t num_epr = (rx_caps_info >> 3) & 0x07;
+        if (num_epr > 0) {
+            has_epr_caps = true;
+        }
+    }
+    
+    if (avs_en || max_v > 21000 || has_epr_caps || (getActiveContract(current_v, current_i) && current_v > 21000)) {
         cmd = TPS_CMD_ESrC;
     }
 
     bool result = sendCommand(cmd);
-    printf("[DEBUG] %s command %s\n", cmd, result ? "sent" : "FAILED");
+    printf("[DEBUG] %s command %s (has_epr_caps=%d)\n", cmd, result ? "sent" : "FAILED", has_epr_caps);
     return result;
 }
 

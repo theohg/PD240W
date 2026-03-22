@@ -1056,6 +1056,18 @@ void DisplayManager::drawSettingsMenu() {
     bool dim_adj = stateMachine.isDimTimeoutAdjusting();
     uint8_t mel_val = stateMachine.getMelodyValue();
     bool mel_adj = stateMachine.isMelodyAdjusting();
+    uint8_t contract_mode = stateMachine.getContractModeValue();
+    bool contract_adj = stateMachine.isContractModeAdjusting();
+
+    // Helper function to get contract mode name
+    auto getContractModeName = [](uint8_t mode) -> const char* {
+        switch (mode) {
+            case 0: return "Lowest V";
+            case 1: return "Highest V";
+            case 2: return "Last";
+            default: return "Unknown";
+        }
+    };
 
     // Helper: check if item at given index needs redraw due to selection change
     // Only the previously-selected and newly-selected items need highlight update
@@ -1106,15 +1118,22 @@ void DisplayManager::drawSettingsMenu() {
                            selected == SettingsItem::STARTUP_MELODY, mel_adj);
     }
 
-    // Item 6: Sounds toggle
-    if (_needs_full_redraw || sel_affects(6) || sounds != _last_sounds) {
-        drawSettingsItem(y_for(6), "Sounds", sounds,
+    // Item 6: Startup contract mode
+    if (_needs_full_redraw || sel_affects(6) || contract_mode != _last_contract_mode ||
+        contract_adj != _last_contract_mode_adjusting) {
+        drawValueAdjustItem(y_for(6), "Startup V:", getContractModeName(contract_mode),
+                           selected == SettingsItem::STARTUP_CONTRACT, contract_adj);
+    }
+
+    // Item 7: Sounds toggle
+    if (_needs_full_redraw || sel_affects(7) || sounds != _last_sounds) {
+        drawSettingsItem(y_for(7), "Sounds", sounds,
                         selected == SettingsItem::SOUNDS, true);
     }
 
-    // Item 7: Back
-    if (_needs_full_redraw || sel_affects(7)) {
-        drawMenuItemMuted(y_for(7), "Back", selected == SettingsItem::BACK);
+    // Item 8: Back
+    if (_needs_full_redraw || sel_affects(8)) {
+        drawMenuItemMuted(y_for(8), "Back", selected == SettingsItem::BACK);
     }
 
     // Update all tracking variables
@@ -1128,6 +1147,8 @@ void DisplayManager::drawSettingsMenu() {
     _last_dim_adjusting = dim_adj;
     _last_melody = mel_val;
     _last_melody_adjusting = mel_adj;
+    _last_contract_mode = contract_mode;
+    _last_contract_mode_adjusting = contract_adj;
 
     // Draw hint only on full redraw
     if (_needs_full_redraw) {

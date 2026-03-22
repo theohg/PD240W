@@ -18,18 +18,18 @@ StateMachine stateMachine;
 // ============================================================================
 
 static const char* BOOT_MESSAGES[] = {
-    "",                    // 0: Logo only (melody plays)
-    "Reading USB-PD...",   // 1: Reading PD contracts
-    "Ready!"               // 2: Complete
+    "",                      // 0: Logo only (melody plays)
+    "Reading USB-PD...",     // 1: Discovering PDOs with timeout
+    "Negotiating...",        // 2: Requesting startup contract
+    "Ready!"                 // 3: Complete
 };
-static constexpr uint8_t BOOT_STAGE_COUNT = 3;
+static constexpr uint8_t BOOT_STAGE_COUNT = 4;
 
-// Boot stage timing (cumulative milliseconds)
-static const uint32_t BOOT_STAGE_TIMES[] = {
-    0,                                            // 0: Logo + start melody
-    (uint32_t)(AppConfig::BOOT_DURATION_MS*0.25), // 1: Read USB-PD
-    (uint32_t)(AppConfig::BOOT_DURATION_MS*0.75)  // 2: Ready
-};
+// PDO discovery timeout during boot (ms)
+static constexpr uint32_t BOOT_PDO_TIMEOUT_MS = 800;
+
+// Contract negotiation timeout during boot (ms)
+static constexpr uint32_t BOOT_NEGOTIATION_TIMEOUT_MS = 1000;
 
 // Storage for PDO list (shared with display)
 static SourceCapability s_pdo_list[13];
@@ -47,6 +47,8 @@ StateMachine::StateMachine()
     , _encoder_button_held(false)
     , _boot_stage(0)
     , _boot_pdos_found(false)
+    , _boot_contract_requested(false)
+    , _boot_contract_complete(false)
     , _boot_ready_time(nil_time)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
     , _selected_settings_item(SettingsItem::FLASH_EEPROM)
@@ -72,6 +74,8 @@ StateMachine::StateMachine()
     , _dim_timeout_adjusting(false)
     , _melody_value(1)
     , _melody_adjusting(false)
+    , _contract_mode_value(2)
+    , _contract_mode_adjusting(false)
 {
 }
 
@@ -199,29 +203,80 @@ bool StateMachine::update() {
 void StateMachine::handleBootState() {
     uint32_t elapsed_ms = absolute_time_diff_us(_state_enter_time, get_absolute_time()) / 1000;
 
-    // Advance boot stage based on timing
-    while (_boot_stage < BOOT_STAGE_COUNT - 1 &&
-           elapsed_ms >= BOOT_STAGE_TIMES[_boot_stage + 1]) {
-        _boot_stage++;
-        advanceBootStage();
+    // Stage 0 -> 1: Show logo briefly, then start PDO discovery
+    if (_boot_stage == 0 && elapsed_ms >= AppConfig::BOOT_MIN_DISPLAY_MS / 2) {
+        _boot_stage = 1;  // Start PDO discovery
     }
 
-    // Track PDO discovery for adaptive early exit
-    if (_boot_stage >= 1 && _num_pdos > 0 && !_boot_pdos_found) {
-        _boot_pdos_found = true;
-    }
-
-    // Adaptive early exit: once PDOs found and minimum display time elapsed
-    if (_boot_pdos_found && elapsed_ms >= AppConfig::BOOT_MIN_DISPLAY_MS) {
-        // Jump to "Ready!" stage if not there yet
-        if (_boot_stage < BOOT_STAGE_COUNT - 1) {
-            _boot_stage = BOOT_STAGE_COUNT - 1;
+    // Stage 1: Wait for PDOs with timeout
+    if (_boot_stage == 1) {
+        if (pdManager.waitForPdos(BOOT_PDO_TIMEOUT_MS)) {
+            // PDO discovery finished (found PDOs or timed out)
+            _boot_pdos_found = pdManager.hasPdos();
+            if (_boot_pdos_found) {
+                _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+                LOG_INFO("Boot: Found %d PDOs", _num_pdos);
+            } else {
+                LOG_INFO("Boot: No PDOs found (non-PD charger or timeout)");
+            }
+            _boot_stage = 2;  // Move to negotiation stage
         }
-        // Record when "Ready!" was first shown
+    }
+
+    // Stage 2: Negotiate startup contract if PDOs available
+    if (_boot_stage == 2 && !_boot_contract_requested) {
+        if (_boot_pdos_found) {
+            // Initiate startup contract negotiation based on settings
+            if (pdManager.negotiateStartupContract()) {
+                LOG_INFO("Boot: Startup contract negotiation initiated");
+            } else {
+                LOG_INFO("Boot: No startup contract needed (keeping default)");
+                _boot_contract_complete = true;
+            }
+        } else {
+            // No PDOs, nothing to negotiate
+            _boot_contract_complete = true;
+        }
+        _boot_contract_requested = true;
+    }
+
+    // Wait for negotiation to complete (if in progress)
+    if (_boot_stage == 2 && _boot_contract_requested && !_boot_contract_complete) {
+        // Check negotiation state
+        NegotiationState neg_state = pdManager.getNegotiationState();
+        if (neg_state == NegotiationState::SUCCESS ||
+            neg_state == NegotiationState::FAILED ||
+            neg_state == NegotiationState::TIMEOUT ||
+            neg_state == NegotiationState::IDLE) {
+            _boot_contract_complete = true;
+            pdManager.refreshActiveContract();
+            LOG_INFO("Boot: Contract negotiation complete (state=%d)", static_cast<int>(neg_state));
+        }
+
+        // Timeout fallback for negotiation
+        static absolute_time_t neg_start = nil_time;
+        if (is_nil_time(neg_start)) {
+            neg_start = get_absolute_time();
+        }
+        uint32_t neg_elapsed = absolute_time_diff_us(neg_start, get_absolute_time()) / 1000;
+        if (neg_elapsed >= BOOT_NEGOTIATION_TIMEOUT_MS) {
+            _boot_contract_complete = true;
+            pdManager.refreshActiveContract();
+            LOG_WARN("Boot: Contract negotiation timeout");
+            neg_start = nil_time;  // Reset for potential future use
+        }
+    }
+
+    // Stage 2 -> 3: Move to "Ready!" once negotiation is complete
+    if (_boot_stage == 2 && _boot_contract_complete) {
+        _boot_stage = 3;  // Ready
+    }
+
+    // Stage 3: Show "Ready!" briefly, then transition to MAIN
+    if (_boot_stage >= 3) {
         if (is_nil_time(_boot_ready_time)) {
             _boot_ready_time = get_absolute_time();
         }
-        // Brief delay to show "Ready!" before transitioning
         uint32_t ready_elapsed = absolute_time_diff_us(_boot_ready_time, get_absolute_time()) / 1000;
         if (ready_elapsed >= AppConfig::BOOT_READY_DELAY_MS) {
             transitionTo(AppState::MAIN);
@@ -229,8 +284,9 @@ void StateMachine::handleBootState() {
         }
     }
 
-    // Fallback: original fixed timeout (handles case where no PDOs found)
+    // Ultimate fallback: prevent infinite boot
     if (elapsed_ms >= AppConfig::BOOT_DURATION_MS) {
+        LOG_WARN("Boot: Fallback timeout reached, transitioning to MAIN");
         transitionTo(AppState::MAIN);
     }
 }
@@ -307,6 +363,8 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     _dim_timeout_adjusting = false;
                     _melody_value = settings.getStartupMelody();
                     _melody_adjusting = false;
+                    _contract_mode_value = settings.getStartupNegotiation();
+                    _contract_mode_adjusting = false;
                     _adjust_mode = AdjustMode::SETTINGS_MENU;
                     transitionTo(AppState::ADJUST);
                     break;
@@ -542,6 +600,8 @@ void StateMachine::transitionTo(AppState new_state) {
         case AppState::BOOT:
             _boot_stage = 0;
             _boot_pdos_found = false;
+            _boot_contract_requested = false;
+            _boot_contract_complete = false;
             _boot_ready_time = nil_time;
             break;
 
@@ -560,24 +620,8 @@ void StateMachine::transitionTo(AppState new_state) {
                 hw.loadSwitch.on();
                 LOG_INFO("Auto-output enabled on boot");
             }
-            // Restore last PDO on boot (remember last voltage)
-            if (_previous_state == AppState::BOOT) {
-                int8_t saved_pdo = settings.getLastPdoIndex();
-                if (saved_pdo > 0) {  // 0 = default 5V, skip
-                    // Load PDO list and attempt to restore
-                    loadPdoList();
-                    if (saved_pdo < _num_pdos) {
-                        SourceCapability& pdo = s_pdo_list[saved_pdo];
-                        if (pdo.is_pps && settings.getLastPpsVoltageMv() > 0) {
-                            pdManager.requestPpsVoltage(settings.getLastPpsVoltageMv(), pdo.max_current_ma);
-                            LOG_INFO("Restored PPS voltage: %umV", settings.getLastPpsVoltageMv());
-                        } else if (!pdo.is_pps) {
-                            pdManager.requestContract(pdo);
-                            LOG_INFO("Restored PDO[%d]: %umV", saved_pdo, pdo.voltage_mv);
-                        }
-                    }
-                }
-            }
+            // Note: Startup contract negotiation is now done during BOOT state
+            // No need to restore PDO here as it's handled by negotiateStartupContract()
             break;
 
         case AppState::MENU:
@@ -757,28 +801,25 @@ void StateMachine::setFault(FaultType fault) {
 // ============================================================================
 
 void StateMachine::advanceBootStage() {
-    switch (_boot_stage) {
-        case 1:
-            // Read USB-PD source capabilities
-            loadPdoList();
-            break;
-
-        default:
-            break;
-    }
+    // Boot stages are now handled directly in handleBootState()
+    // This function is kept for compatibility but no longer does anything
 }
 
 uint8_t StateMachine::getBootProgress() const {
     if (_state != AppState::BOOT) return 100;
 
-    // When adaptive exit is active, show 100% at "Ready!" stage
-    if (_boot_pdos_found && _boot_stage >= BOOT_STAGE_COUNT - 1) {
-        return 100;
+    // Progress based on current boot stage
+    // Stage 0: 0-25%  (logo/melody)
+    // Stage 1: 25-50% (PDO discovery)
+    // Stage 2: 50-90% (negotiation)
+    // Stage 3: 100%   (ready)
+    switch (_boot_stage) {
+        case 0: return 10;
+        case 1: return 35;
+        case 2: return 70;
+        case 3: return 100;
+        default: return 100;
     }
-
-    uint32_t elapsed_ms = absolute_time_diff_us(_state_enter_time, get_absolute_time()) / 1000;
-    uint32_t progress = (elapsed_ms * 100) / AppConfig::BOOT_DURATION_MS;
-    return (progress > 100) ? 100 : static_cast<uint8_t>(progress);
 }
 
 const char* StateMachine::getBootStageMessage() const {
@@ -916,6 +957,13 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                         hw.buzzer.playMelody(melody, length);
                     }
                 }
+            } else if (_selected_settings_item == SettingsItem::STARTUP_CONTRACT && _contract_mode_adjusting) {
+                if (_contract_mode_value < 2) {
+                    _contract_mode_value++;
+                    settings.setStartupNegotiation(_contract_mode_value);
+                    settings.requestSave();
+                }
+                playNavBeep();
             } else {
                 // Move down in settings menu (with wrap-around)
                 int next = static_cast<int>(_selected_settings_item) + 1;
@@ -960,6 +1008,13 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                         hw.buzzer.stopMelody();  // Silent selected
                     }
                 }
+            } else if (_selected_settings_item == SettingsItem::STARTUP_CONTRACT && _contract_mode_adjusting) {
+                if (_contract_mode_value > 0) {
+                    _contract_mode_value--;
+                    settings.setStartupNegotiation(_contract_mode_value);
+                    settings.requestSave();
+                }
+                playNavBeep();
             } else {
                 // Move up in settings menu (with wrap-around)
                 int prev = static_cast<int>(_selected_settings_item) - 1;
@@ -1000,6 +1055,10 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
 
                 case SettingsItem::STARTUP_MELODY:
                     _melody_adjusting = !_melody_adjusting;
+                    break;
+
+                case SettingsItem::STARTUP_CONTRACT:
+                    _contract_mode_adjusting = !_contract_mode_adjusting;
                     break;
 
                 case SettingsItem::SOUNDS:

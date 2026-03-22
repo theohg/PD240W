@@ -15,7 +15,14 @@
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 2;
+constexpr uint8_t SETTINGS_VERSION = 3;
+
+// Startup contract negotiation modes
+enum class StartupContractMode : uint8_t {
+    LOWEST_VOLTAGE = 0,   // Negotiate lowest voltage available
+    HIGHEST_VOLTAGE = 1,  // Negotiate highest voltage available
+    LAST_USED = 2         // Restore last used contract (closest if unavailable)
+};
 
 // Debounce delay for flash writes (reduces wear)
 constexpr uint32_t SETTINGS_SAVE_DEBOUNCE_MS = 2000;
@@ -58,8 +65,11 @@ struct UserSettings {
     // Last PPS voltage for restore on boot
     uint32_t last_pps_voltage_mv;  // 0 = not set
 
+    // Startup contract negotiation mode
+    uint8_t startup_negotiation;  // 0=Lowest voltage, 1=Highest voltage, 2=Last used
+
     // Reserved for future use
-    uint8_t reserved[4];
+    uint8_t reserved[3];
 
     // CRC32 for data integrity
     uint32_t crc32;
@@ -87,6 +97,7 @@ public:
     void setStartupMelody(uint8_t melody);
     void setAutoOutput(bool enabled);
     void setLastPpsVoltageMv(uint32_t voltage_mv);
+    void setStartupNegotiation(uint8_t mode);
 
     // Accessors
     uint32_t getCurrentLimit() const { return _settings.current_limit_ma; }
@@ -100,6 +111,10 @@ public:
     uint8_t getStartupMelody() const { return _settings.startup_melody; }
     bool isAutoOutput() const { return _settings.auto_output; }
     uint32_t getLastPpsVoltageMv() const { return _settings.last_pps_voltage_mv; }
+    uint8_t getStartupNegotiation() const { return _settings.startup_negotiation; }
+    StartupContractMode getStartupNegotiationMode() const {
+        return static_cast<StartupContractMode>(_settings.startup_negotiation);
+    }
 
     // Persistence
     void requestSave();      // Request a debounced save (will save after 2s delay)

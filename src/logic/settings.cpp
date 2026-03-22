@@ -159,6 +159,14 @@ void Settings::setLastPpsVoltageMv(uint32_t voltage_mv) {
     }
 }
 
+void Settings::setStartupNegotiation(uint8_t mode) {
+    if (mode > 2) mode = 2;  // Clamp to valid range (0-2)
+    if (_settings.startup_negotiation != mode) {
+        _settings.startup_negotiation = mode;
+        _dirty = true;
+    }
+}
+
 // ============================================================================
 // Persistence
 // ============================================================================
@@ -256,6 +264,7 @@ void Settings::resetToDefaults() {
     _settings.startup_melody = 1;           // Mario Power-Up by default
     _settings.auto_output = false;          // Output disabled by default
     _settings.last_pps_voltage_mv = 0;      // No saved PPS voltage
+    _settings.startup_negotiation = 2;      // Last used (remember last contract)
 
     memset(_settings.reserved, 0, sizeof(_settings.reserved));
     _settings.crc32 = 0;  // Will be calculated on save
