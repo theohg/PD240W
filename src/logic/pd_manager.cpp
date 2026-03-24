@@ -3,7 +3,6 @@
 #include "config/board_config.h"
 #include "interrupts.h"
 #include "logic/settings.h"
-#include "ui/display_manager.h"
 #include "utils/logging.h"
 #include <cstring>
 #include <cstdlib>  // abs()
@@ -34,6 +33,11 @@ PdManager::PdManager()
     , _avs_voltage_mv(0)
     , _avs_current_ma(0)
     , _avs_last_refresh(nil_time)
+    , _avs_user_target_mv(0)
+    , _avs_correction_mv(0)
+    , _avs_tuning_converged(false)
+    , _avs_range_min_mv(0)
+    , _avs_range_max_mv(0)
     , _pre_request_voltage_mv(0)
     , _pre_request_current_ma(0)
 {
@@ -114,8 +118,8 @@ void PdManager::update() {
     if (_pd_revision[0] == '\0' && _charger_connected) {
         static absolute_time_t next_pdo_retry = {0};
         if (absolute_time_diff_us(next_pdo_retry, get_absolute_time()) >= 0) {
-            next_pdo_retry = make_timeout_time_ms(500);
-            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            next_pdo_retry = make_timeout_time_ms(PDO_RETRY_INTERVAL_MS);
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
             _pdos_valid = (_pdo_count > 0);
             if (_pdos_valid) {
                 detectPdRevision();
@@ -144,7 +148,7 @@ void PdManager::update() {
                 uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
 
                 // Only tune if we have a valid measurement (> 1V, likely PPS is delivering)
-                if (measured_mv > 1000) {
+                if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
                     int32_t error = (int32_t)_pps_user_target_mv - (int32_t)measured_mv;
 
                     if (abs(error) > PPS_TUNE_THRESHOLD_MV) {
@@ -175,7 +179,7 @@ void PdManager::update() {
                 }
 
                 // Round to 20mV steps (PD spec)
-                adjusted = (adjusted / 20) * 20;
+                adjusted = (adjusted / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
 
                 request_mv = (uint32_t)adjusted;
             }
@@ -191,18 +195,89 @@ void PdManager::update() {
         }
     }
 
+    // Fast convergence check: when PPS tuning is active but not converged,
+    // check more frequently (every 500ms) without re-requesting
+    if (_pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 && !_pps_tuning_converged) {
+        static absolute_time_t next_pps_convergence_check = {0};
+        if (absolute_time_diff_us(next_pps_convergence_check, get_absolute_time()) >= 0) {
+            next_pps_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
+            checkTuningConvergenceImmediate();
+        }
+    }
+
     // AVS keep-alive: EPR contracts also need periodic re-request to maintain the contract
     if (_avs_active && _avs_voltage_mv > 0) {
         uint32_t elapsed_ms = absolute_time_diff_us(_avs_last_refresh, get_absolute_time()) / 1000;
 
         if (elapsed_ms >= AVS_REFRESH_INTERVAL_MS) {
-            LOG_DEBUG("AVS keep-alive: requesting %umV @ %umA", _avs_voltage_mv, _avs_current_ma);
+            uint32_t request_mv = _avs_voltage_mv;
 
-            if (hw.pdController.requestAVSProfile(_avs_voltage_mv, _avs_current_ma)) {
+            // Auto AVS tuning: measure actual voltage and adjust request
+            if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0) {
+                // Measure actual output voltage
+                float measured_v;
+                if (gpio_get(Board::PIN_SWITCH_EN)) {
+                    measured_v = hw.powerMonitor.getBusVoltage();  // Post-switch (accurate)
+                } else {
+                    measured_v = hw.adc.getVBUS();  // Pre-switch (fallback)
+                }
+                uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
+
+                // Only tune if we have a valid measurement (> 1V, likely AVS is delivering)
+                if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
+                    int32_t error = (int32_t)_avs_user_target_mv - (int32_t)measured_mv;
+
+                    if (abs(error) > AVS_TUNE_THRESHOLD_MV) {
+                        // Accumulate correction
+                        _avs_correction_mv += error;
+
+                        // Clamp correction to safety limit
+                        if (_avs_correction_mv > AVS_TUNE_MAX_CORRECTION_MV)
+                            _avs_correction_mv = AVS_TUNE_MAX_CORRECTION_MV;
+                        if (_avs_correction_mv < -AVS_TUNE_MAX_CORRECTION_MV)
+                            _avs_correction_mv = -AVS_TUNE_MAX_CORRECTION_MV;
+
+                        _avs_tuning_converged = false;
+                        LOG_DEBUG("AVS tune: target=%umV measured=%umV error=%dmV correction=%dmV",
+                                  _avs_user_target_mv, measured_mv, error, _avs_correction_mv);
+                    } else {
+                        _avs_tuning_converged = true;
+                    }
+                }
+
+                // Compute adjusted request voltage
+                int32_t adjusted = (int32_t)_avs_user_target_mv + _avs_correction_mv;
+
+                // Clamp to AVS range
+                if (_avs_range_max_mv > 0) {
+                    if (adjusted < (int32_t)_avs_range_min_mv) adjusted = (int32_t)_avs_range_min_mv;
+                    if (adjusted > (int32_t)_avs_range_max_mv) adjusted = (int32_t)_avs_range_max_mv;
+                }
+
+                // Round to 25mV steps (AVS PD spec)
+                adjusted = (adjusted / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+
+                request_mv = (uint32_t)adjusted;
+            }
+
+            LOG_DEBUG("AVS keep-alive: requesting %umV @ %umA", request_mv, _avs_current_ma);
+
+            if (hw.pdController.requestAVSProfile(request_mv, _avs_current_ma)) {
                 _avs_last_refresh = get_absolute_time();
+                _avs_voltage_mv = request_mv;  // Track what we actually requested
             } else {
                 LOG_WARN("AVS keep-alive request failed");
             }
+        }
+    }
+
+    // Fast convergence check: when AVS tuning is active but not converged,
+    // check more frequently (every 500ms) without re-requesting
+    if (_avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 && !_avs_tuning_converged) {
+        static absolute_time_t next_avs_convergence_check = {0};
+        if (absolute_time_diff_us(next_avs_convergence_check, get_absolute_time()) >= 0) {
+            next_avs_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
+            checkTuningConvergenceImmediate();
         }
     }
 
@@ -210,7 +285,7 @@ void PdManager::update() {
     // Ensures displayed contract matches actual state after EPR transitions
     static absolute_time_t next_contract_refresh = {0};
     if (absolute_time_diff_us(next_contract_refresh, get_absolute_time()) >= 0) {
-        next_contract_refresh = make_timeout_time_ms(1000);
+        next_contract_refresh = make_timeout_time_ms(CONTRACT_REFRESH_INTERVAL_MS);
 
         uint32_t old_voltage = _active_contract.voltage_mv;
         refreshActiveContract();
@@ -230,7 +305,7 @@ void PdManager::update() {
 uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps) {
     // Refresh cache if needed
     if (!_pdos_valid) {
-        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
         _pdos_valid = (_pdo_count > 0);
         if (_pdos_valid) detectPdRevision();
     }
@@ -285,6 +360,9 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _avs_active = false;
         _avs_voltage_mv = 0;
         _avs_current_ma = 0;
+        _avs_user_target_mv = 0;
+        _avs_correction_mv = 0;
+        _avs_tuning_converged = false;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send Fixed contract request");
@@ -316,6 +394,9 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _avs_active = false;
         _avs_voltage_mv = 0;
         _avs_current_ma = 0;
+        _avs_user_target_mv = 0;
+        _avs_correction_mv = 0;
+        _avs_tuning_converged = false;
 
         // Auto PPS tuning: store user target and reset correction
         _pps_user_target_mv = voltage_mv;
@@ -366,6 +447,22 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _avs_voltage_mv = voltage_mv;
         _avs_current_ma = current_ma;
         _avs_last_refresh = get_absolute_time();
+
+        // Auto AVS tuning: store user target and reset correction
+        _avs_user_target_mv = voltage_mv;
+        _avs_correction_mv = 0;
+        _avs_tuning_converged = false;
+
+        // Find AVS range from cached PDOs for clamping
+        for (uint8_t i = 0; i < _pdo_count; i++) {
+            if (_pdo_cache[i].is_avs &&
+                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                voltage_mv <= _pdo_cache[i].voltage_mv) {
+                _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
+                _avs_range_max_mv = _pdo_cache[i].voltage_mv;
+                break;
+            }
+        }
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send AVS contract request");
@@ -387,12 +484,12 @@ bool PdManager::refreshActiveContract() {
         _active_contract.valid = true;
 
         // Detect PPS/AVS from tracked state or by matching against PDO cache.
-        // On warm MCU reset, _pps_active is false but TPS26750 still has a PPS contract.
+        // On warm MCU reset, _pps_active/_avs_active is false but TPS26750 still has a contract.
         // Detect this by checking if the active voltage matches a fixed PDO exactly.
         bool detected_pps = _pps_active;
-        bool detected_avs = false;
+        bool detected_avs = _avs_active;
 
-        if (!_pps_active && _pdos_valid && voltage_mv > 0) {
+        if (!_pps_active && !_avs_active && _pdos_valid && voltage_mv > 0) {
             // Check if this voltage matches any fixed PDO
             bool matches_fixed = false;
             for (uint8_t i = 0; i < _pdo_count; i++) {
@@ -513,7 +610,7 @@ void PdManager::handlePdInterrupt() {
 
         // Refresh PDO cache and PD revision if not yet valid (e.g. cold boot)
         if (!_pdos_valid) {
-            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+            _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
             _pdos_valid = (_pdo_count > 0);
             if (_pdos_valid) {
                 detectPdRevision();
@@ -537,7 +634,7 @@ void PdManager::handlePdInterrupt() {
 
         // Invalidate and refresh PDO cache
         _pdos_valid = false;
-        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
         _pdos_valid = (_pdo_count > 0);
 
         if (_pdos_valid) {
@@ -593,6 +690,31 @@ bool PdManager::isPpsTuningActive() const {
     return _pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0;
 }
 
+bool PdManager::isAvsTuningActive() const {
+    return _avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0;
+}
+
+void PdManager::checkTuningConvergenceImmediate() {
+    float measured_v;
+    if (gpio_get(Board::PIN_SWITCH_EN)) {
+        measured_v = hw.powerMonitor.getBusVoltage();
+    } else {
+        measured_v = hw.adc.getVBUS();
+    }
+    uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
+
+    if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
+        if (_pps_active && _pps_user_target_mv > 0) {
+            int32_t error = (int32_t)_pps_user_target_mv - (int32_t)measured_mv;
+            _pps_tuning_converged = (abs(error) <= PPS_TUNE_THRESHOLD_MV);
+        }
+        if (_avs_active && _avs_user_target_mv > 0) {
+            int32_t error = (int32_t)_avs_user_target_mv - (int32_t)measured_mv;
+            _avs_tuning_converged = (abs(error) <= AVS_TUNE_THRESHOLD_MV);
+        }
+    }
+}
+
 bool PdManager::checkNewContractEvent() {
     uint8_t events[11] = {0};
 
@@ -618,7 +740,7 @@ bool PdManager::waitForPdos(uint32_t timeout_ms) {
 
     // Check if PDOs are already available
     if (!_pdos_valid) {
-        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, 13);
+        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
         _pdos_valid = (_pdo_count > 0);
 
         if (_pdos_valid) {

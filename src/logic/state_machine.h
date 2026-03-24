@@ -37,6 +37,7 @@ enum class MenuItem {
 enum class SettingsItem {
     FLASH_EEPROM,
     AUTO_PPS,
+    AUTO_AVS,
     AUTO_OUTPUT,
     BRIGHTNESS,
     DIM_TIMEOUT,

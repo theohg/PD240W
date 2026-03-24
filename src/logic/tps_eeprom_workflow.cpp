@@ -1,5 +1,6 @@
 #include "tps_eeprom_workflow.h"
 #include "hardware.h"
+#include "config/app_config.h"
 #include "utils/logging.h"
 #include "utils/tps_eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
@@ -184,7 +185,7 @@ void TpsEepromWorkflow::runFlash() {
         LOG_INFO("EEPROM flash successful");
     } else {
         _message = "Flash failed!";
-        hw.buzzer.playTone(200, 300);  // Error beep
+        hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
         LOG_ERROR("EEPROM flash failed");
     }
 }

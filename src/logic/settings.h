@@ -68,8 +68,11 @@ struct UserSettings {
     // Startup contract negotiation mode
     uint8_t startup_negotiation;  // 0=Lowest voltage, 1=Highest voltage, 2=Last used
 
+    // Auto AVS tuning
+    bool auto_avs_enabled;   // ON/OFF for automatic AVS voltage calibration
+
     // Reserved for future use
-    uint8_t reserved[3];
+    uint8_t reserved[1];
 
     // CRC32 for data integrity
     uint32_t crc32;
@@ -93,6 +96,7 @@ public:
     void setLcdBrightness(uint8_t brightness);
     void setSoundsEnabled(bool enabled);
     void setAutoPpsEnabled(bool enabled);
+    void setAutoAvsEnabled(bool enabled);
     void setAutoDimMinutes(uint8_t minutes);
     void setStartupMelody(uint8_t melody);
     void setAutoOutput(bool enabled);
@@ -107,6 +111,7 @@ public:
     uint8_t getLcdBrightness() const { return _settings.lcd_brightness; }
     bool isSoundsEnabled() const { return _settings.sounds_enabled; }
     bool isAutoPpsEnabled() const { return _settings.auto_pps_enabled; }
+    bool isAutoAvsEnabled() const { return _settings.auto_avs_enabled; }
     uint8_t getAutoDimMinutes() const { return _settings.auto_dim_minutes; }
     uint8_t getStartupMelody() const { return _settings.startup_melody; }
     bool isAutoOutput() const { return _settings.auto_output; }

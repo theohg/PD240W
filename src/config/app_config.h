@@ -52,13 +52,51 @@ namespace AppConfig {
     // Display Settings
     // -------------------------------------------------------------------------
     constexpr uint8_t LCD_BRIGHTNESS_DEFAULT = 100;    // Default brightness (%)
+    constexpr uint8_t LCD_BRIGHTNESS_MIN = 5;          // Minimum brightness (%)
+    constexpr uint8_t LCD_BRIGHTNESS_MAX = 100;        // Maximum brightness (%)
+    constexpr uint8_t LCD_BRIGHTNESS_STEP = 5;         // Brightness adjustment step (%)
     constexpr uint8_t LCD_BRIGHTNESS_DIM = 5;          // Dimmed brightness (%)
     constexpr uint16_t LCD_WIDTH = 240;
     constexpr uint16_t LCD_HEIGHT = 320;
+
+    // -------------------------------------------------------------------------
+    // Settings Limits
+    // -------------------------------------------------------------------------
+    constexpr uint8_t AUTO_DIM_MIN_MINUTES = 1;        // Minimum dim timeout [min]
+    constexpr uint8_t AUTO_DIM_MAX_MINUTES = 10;       // Maximum dim timeout [min]
+    constexpr uint8_t STARTUP_MELODY_MAX = 3;          // Max melody index (0=Silent..3=TwoTone)
+    constexpr uint8_t STARTUP_CONTRACT_MODE_MAX = 2;   // Max contract mode (0=Lowest..2=LastUsed)
+
+    // -------------------------------------------------------------------------
+    // Buzzer Tones
+    // -------------------------------------------------------------------------
+    constexpr uint16_t BEEP_NAV_FREQ = 800;            // Navigation beep frequency [Hz]
+    constexpr uint16_t BEEP_NAV_DURATION = 20;         // Navigation beep duration [ms]
+    constexpr uint16_t BEEP_SELECT_FREQ = 1400;        // Select/confirm beep frequency [Hz]
+    constexpr uint16_t BEEP_SELECT_DURATION = 30;      // Select/confirm beep duration [ms]
+    constexpr uint16_t BEEP_EXIT_FREQ = 1000;          // Exit/back beep frequency [Hz]
+    constexpr uint16_t BEEP_EXIT_DURATION = 30;        // Exit/back beep duration [ms]
+    constexpr uint16_t BEEP_CONFIRM_FREQ = 1000;       // Confirm action beep frequency [Hz]
+    constexpr uint16_t BEEP_CONFIRM_DURATION = 50;     // Confirm action beep duration [ms]
+    constexpr uint16_t BEEP_ERROR_FREQ = 200;          // Error beep frequency [Hz]
+    constexpr uint16_t BEEP_ERROR_DURATION = 200;      // Error beep duration [ms]
+    constexpr uint16_t BEEP_WARNING_DURATION = 100;    // Warning beep duration [ms]
+    constexpr uint16_t BEEP_FAULT_FREQ = 1000;         // Fault alert frequency [Hz]
+    constexpr uint16_t BEEP_FAULT_DURATION = 500;      // Fault alert duration [ms]
 
     // -------------------------------------------------------------------------
     // RGB LED Settings
     // -------------------------------------------------------------------------
     constexpr uint8_t RGB_LED_BRIGHTNESS_NORMAL = 50;  // Normal brightness (%)
     constexpr uint8_t RGB_LED_BRIGHTNESS_DIM = 2;      // Dimmed brightness (%)
+
+    // -------------------------------------------------------------------------
+    // PDO Cache
+    // -------------------------------------------------------------------------
+    constexpr uint8_t MAX_PDO_COUNT = 13;              // Max PDOs (7 SPR + 6 EPR per USB-PD spec)
+
+    // -------------------------------------------------------------------------
+    // Temperature Display
+    // -------------------------------------------------------------------------
+    constexpr uint32_t CRITICAL_BLINK_INTERVAL_MS = 250; // Blink interval for critical temp [ms]
 }

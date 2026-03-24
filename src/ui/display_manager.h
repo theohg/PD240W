@@ -124,6 +124,7 @@ private:
 
     // Settings value tracking (redraw when any setting value changes)
     bool _last_auto_pps;
+    bool _last_auto_avs;
     bool _last_auto_output;
     bool _last_sounds;
     uint8_t _last_dim_timeout;
@@ -134,8 +135,9 @@ private:
     uint8_t _last_contract_mode;
     bool _last_contract_mode_adjusting;
 
-    // PPS tuning badge tracking
+    // PPS/AVS tuning badge tracking
     bool _last_pps_converged;
+    bool _last_avs_converged;
 
     // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
     int16_t _fault_now_temp_y;

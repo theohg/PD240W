@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "pico/stdlib.h"
+#include "config/app_config.h"
 #include "drivers/power/tps26750/tps26750.h"
 
 // ============================================================================
@@ -71,6 +72,17 @@ public:
     bool isPpsTuningConverged() const { return _pps_tuning_converged; }
     uint32_t getPpsUserTargetMv() const { return _pps_user_target_mv; }
 
+    // Auto AVS tuning
+    bool isAvsTuningActive() const;   // AVS active AND auto-tune enabled
+    bool isAvsTuningConverged() const { return _avs_tuning_converged; }
+    uint32_t getAvsUserTargetMv() const { return _avs_user_target_mv; }
+
+    // Check if AVS contract is active
+    bool isAvsActive() const { return _avs_active; }
+
+    // Immediate convergence check (call after applying PPS/AVS voltage)
+    void checkTuningConvergenceImmediate();
+
     // Get TPS26750 mode string
     bool getMode(char* mode_str);
 
@@ -111,7 +123,7 @@ private:
     bool _charger_connected;
 
     // Cached PDO list
-    SourceCapability _pdo_cache[13];
+    SourceCapability _pdo_cache[AppConfig::MAX_PDO_COUNT];
     uint8_t _pdo_count;
     bool _pdos_valid;
 
@@ -138,6 +150,15 @@ private:
     absolute_time_t _avs_last_refresh;  // Time of last AVS request
     static constexpr uint32_t AVS_REFRESH_INTERVAL_MS = 7000;  // Same as PPS
 
+    // Auto AVS tuning state
+    uint32_t _avs_user_target_mv;       // What the user asked for
+    int32_t  _avs_correction_mv;        // Accumulated correction offset
+    bool     _avs_tuning_converged;     // True when |error| < threshold
+    uint32_t _avs_range_min_mv;         // AVS PDO min voltage (for clamping)
+    uint32_t _avs_range_max_mv;         // AVS PDO max voltage (for clamping)
+    static constexpr int32_t AVS_TUNE_THRESHOLD_MV = 100;      // Converged when error < this (100mV steps)
+    static constexpr int32_t AVS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
+
     // PD revision string (cached)
     char _pd_revision[8];
 
@@ -145,6 +166,10 @@ private:
     uint32_t _pre_request_voltage_mv;
     uint32_t _pre_request_current_ma;
     static constexpr uint32_t POLLING_FALLBACK_MS = 500;
+    static constexpr uint32_t PDO_RETRY_INTERVAL_MS = 500;           // Deferred PDO discovery retry
+    static constexpr uint32_t TUNE_CONVERGENCE_CHECK_MS = 500;      // Fast convergence check interval
+    static constexpr uint32_t CONTRACT_REFRESH_INTERVAL_MS = 1000;   // Periodic contract refresh
+    static constexpr uint32_t MIN_TUNING_VOLTAGE_MV = 1000;         // Min voltage for tuning to engage
 
     // Detect PD revision from cached PDOs
     void detectPdRevision();

@@ -1,9 +1,8 @@
 #include "state_machine.h"
 #include "hardware.h"
 #include "interrupts.h"
-#include "app_config.h"
+#include "config/app_config.h"
 #include "utils/logging.h"
-#include "utils/tps_eeprom_loader.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
 #include "settings.h"
@@ -32,7 +31,7 @@ static constexpr uint32_t BOOT_PDO_TIMEOUT_MS = 800;
 static constexpr uint32_t BOOT_NEGOTIATION_TIMEOUT_MS = 1000;
 
 // Storage for PDO list (shared with display)
-static SourceCapability s_pdo_list[13];
+static SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
 
 // ============================================================================
 // Constructor
@@ -216,7 +215,7 @@ void StateMachine::handleBootState() {
             // PDO discovery finished (found PDOs or timed out)
             _boot_pdos_found = pdManager.hasPdos();
             if (_boot_pdos_found) {
-                _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+                _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
                 LOG_INFO("Boot: Found %d PDOs", _num_pdos);
             } else {
                 LOG_INFO("Boot: No PDOs found (non-PD charger or timeout)");
@@ -287,7 +286,7 @@ void StateMachine::handleBootState() {
         if (epr_elapsed >= 150 && epr_elapsed - last_epr_poll_ms >= 150) {
             last_epr_poll_ms = epr_elapsed;
             pdManager.invalidatePdoCache();
-            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
 
             // Check if EPR/AVS PDOs have arrived
@@ -326,7 +325,7 @@ void StateMachine::handleBootState() {
         uint32_t timeout_ms = epr_pdos_found ? 1200 : 600;
         if (_boot_stage == 2 && epr_elapsed >= timeout_ms) {
             pdManager.invalidatePdoCache();
-            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
             LOG_INFO("Boot: EPR probe timeout, proceeding with %d PDOs", _num_pdos);
             last_epr_poll_ms = 0;
@@ -355,9 +354,58 @@ void StateMachine::handleBootState() {
 }
 
 void StateMachine::handleMainState(EncoderEvent event) {
-    // Click enters menu (long press disabled but variable kept)
+    // Click enters menu
     if (event == EncoderEvent::CLICK) {
         transitionTo(AppState::MENU);
+    }
+    // Long press: quick voltage adjust when in PPS or AVS mode
+    else if (event == EncoderEvent::LONG_PRESS) {
+        const ActiveContract& contract = pdManager.getActiveContract();
+        if (contract.valid && contract.is_pps && pdManager.isPpsActive()) {
+            // Find PPS PDO that covers current voltage and set up adjustment
+            SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+            uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+            for (uint8_t i = 0; i < count; i++) {
+                if (caps[i].is_pps &&
+                    contract.voltage_mv >= caps[i].min_voltage_mv &&
+                    contract.voltage_mv <= caps[i].voltage_mv) {
+                    _pps_pdo_index = i;
+                    _pps_min_voltage_mv = caps[i].min_voltage_mv;
+                    _pps_max_voltage_mv = caps[i].voltage_mv;
+                    _pps_max_current_ma = caps[i].max_current_ma;
+                    _pps_target_voltage_mv = pdManager.getPpsUserTargetMv();
+                    if (_pps_target_voltage_mv == 0) _pps_target_voltage_mv = contract.voltage_mv;
+                    _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                    _adjust_mode = AdjustMode::PPS_VOLTAGE;
+                    transitionTo(AppState::ADJUST);
+                    LOG_INFO("Quick PPS voltage adjust: %u-%umV (current %umV)",
+                             _pps_min_voltage_mv, _pps_max_voltage_mv, _pps_target_voltage_mv);
+                    break;
+                }
+            }
+        } else if (contract.valid && contract.is_avs && pdManager.isAvsActive()) {
+            // Find AVS PDO that covers current voltage and set up adjustment
+            SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+            uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+            for (uint8_t i = 0; i < count; i++) {
+                if (caps[i].is_avs &&
+                    contract.voltage_mv >= caps[i].min_voltage_mv &&
+                    contract.voltage_mv <= caps[i].voltage_mv) {
+                    _avs_pdo_index = i;
+                    _avs_min_voltage_mv = caps[i].min_voltage_mv;
+                    _avs_max_voltage_mv = caps[i].voltage_mv;
+                    _avs_max_current_ma = caps[i].max_current_ma;
+                    _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
+                    if (_avs_target_voltage_mv == 0) _avs_target_voltage_mv = contract.voltage_mv;
+                    _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                    _adjust_mode = AdjustMode::AVS_VOLTAGE;
+                    transitionTo(AppState::ADJUST);
+                    LOG_INFO("Quick AVS voltage adjust: %u-%umV (current %umV)",
+                             _avs_min_voltage_mv, _avs_max_voltage_mv, _avs_target_voltage_mv);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -365,7 +413,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
     // Helper to play navigation beep (respects sound setting)
     auto playNavBeep = [this]() {
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(800, 20);
+            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
         }
     };
 
@@ -463,19 +511,19 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
     // Helper to play navigation beep (respects sound setting)
     auto playNavBeep = [this]() {
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(800, 20);
+            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
         }
     };
     
     auto playSelectBeep = [this]() {
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(1400, 30);
+            hw.buzzer.playTone(AppConfig::BEEP_SELECT_FREQ, AppConfig::BEEP_SELECT_DURATION);
         }
     };
     
     auto playExitBeep = [this]() {
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(1000, 30);
+            hw.buzzer.playTone(AppConfig::BEEP_EXIT_FREQ, AppConfig::BEEP_EXIT_DURATION);
         }
     };
 
@@ -544,7 +592,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _pps_target_voltage_mv = _pps_max_voltage_mv;
                 }
                 // Round to 20mV boundary (PD spec requirement)
-                _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
             } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
                 // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
                 uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
@@ -555,7 +603,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _avs_target_voltage_mv = _avs_max_voltage_mv;
                 }
                 // Round to 25mV boundary (AVS PD spec requirement)
-                _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
+                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -592,7 +640,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _pps_target_voltage_mv = _pps_min_voltage_mv;
                 }
                 // Round to 20mV boundary (PD spec requirement)
-                _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
             } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
                 // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
                 uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
@@ -603,7 +651,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _avs_target_voltage_mv = _avs_min_voltage_mv;
                 }
                 // Round to 25mV boundary (AVS PD spec requirement)
-                _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
+                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -613,7 +661,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
                 // If no PDOs or "Back" selected, return to menu
                 if (_num_pdos == 0 || _selected_pdo_index == _num_pdos) {
-                    hw.buzzer.playTone(1000, 30);  // Exit beep
+                    hw.buzzer.playTone(AppConfig::BEEP_EXIT_FREQ, AppConfig::BEEP_EXIT_DURATION);  // Exit beep
                     transitionTo(AppState::MENU);
                     _last_activity_time = get_absolute_time();
                     break;
@@ -630,7 +678,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         // Start at mid-range voltage
                         _pps_target_voltage_mv = (_pps_min_voltage_mv + _pps_max_voltage_mv) / 2;
                         // Round to 20mV step (PPS resolution)
-                        _pps_target_voltage_mv = (_pps_target_voltage_mv / 20) * 20;
+                        _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
                         _adjust_mode = AdjustMode::PPS_VOLTAGE;
                         LOG_INFO("Entering PPS voltage adjustment: %u-%umV", _pps_min_voltage_mv, _pps_max_voltage_mv);
                         // Force display redraw since we changed mode within same state
@@ -644,7 +692,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         // Start at mid-range voltage
                         _avs_target_voltage_mv = (_avs_min_voltage_mv + _avs_max_voltage_mv) / 2;
                         // Round to 25mV step (AVS resolution)
-                        _avs_target_voltage_mv = (_avs_target_voltage_mv / 25) * 25;
+                        _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
                         _adjust_mode = AdjustMode::AVS_VOLTAGE;
                         LOG_INFO("Entering AVS voltage adjustment: %u-%umV", _avs_min_voltage_mv, _avs_max_voltage_mv);
                         displayManager.invalidate();
@@ -659,16 +707,23 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 transitionTo(AppState::MENU);
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
                 applyPpsVoltage();
-                transitionTo(AppState::MENU);
+                pdManager.checkTuningConvergenceImmediate();
+                // Return to MAIN if quick-adjust from main screen, else MENU
+                transitionTo(_previous_state == AppState::MAIN ? AppState::MAIN : AppState::MENU);
             } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
                 applyAvsVoltage();
-                transitionTo(AppState::MENU);
+                pdManager.checkTuningConvergenceImmediate();
+                // Return to MAIN if quick-adjust from main screen, else MENU
+                transitionTo(_previous_state == AppState::MAIN ? AppState::MAIN : AppState::MENU);
             }
             _last_activity_time = get_absolute_time();
             break;
 
         case EncoderEvent::LONG_PRESS:
-            // Long press disabled (variable kept for future use)
+            // Long press: go back without applying (for PPS/AVS voltage adjust)
+            if (_adjust_mode == AdjustMode::PPS_VOLTAGE || _adjust_mode == AdjustMode::AVS_VOLTAGE) {
+                transitionTo(_previous_state == AppState::MAIN ? AppState::MAIN : AppState::MENU);
+            }
             break;
 
         default:
@@ -743,7 +798,7 @@ void StateMachine::transitionTo(AppState new_state) {
 
         case AppState::FAULT:
             hw.rgbLed.setColor(LedColor::RED);
-            hw.buzzer.playTone(1000, 500);  // Alert beep
+            hw.buzzer.playTone(AppConfig::BEEP_FAULT_FREQ, AppConfig::BEEP_FAULT_DURATION);  // Alert beep
             // Drain button ISR flags to prevent stale presses after acknowledgment
             Interrupts::checkBtn1Clicked();
             Interrupts::checkBtn2Clicked();
@@ -836,6 +891,8 @@ void StateMachine::handleOutputButtons() {
             hw.loadSwitch.on();
             LOG_INFO("Load switch ENABLED (BTN1)");
         }
+        // Recheck tuning convergence immediately (measurement source changed)
+        pdManager.checkTuningConvergenceImmediate();
     }
 
     // BTN2: Toggle 17V buck (only if VBUS > 18V)
@@ -854,7 +911,7 @@ void StateMachine::handleOutputButtons() {
             }
         } else {
             LOG_WARN("Cannot enable 17V buck: VBUS=%.1fV < 18V", vbus_mv / 1000.0f);
-            hw.buzzer.playTone(200, 100);  // Error beep
+            hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION / 2);  // Error beep
         }
     }
 }
@@ -962,13 +1019,15 @@ void StateMachine::requestSelectedPdo() {
 
     if (success) {
         LOG_INFO("PDO request sent successfully");
-        hw.buzzer.playTone(1000, 50);  // Confirmation beep
+        if (settings.isSoundsEnabled()) {
+            hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
+        }
         // Save selected PDO for boot restore
         settings.setLastPdoIndex(_selected_pdo_index);
         settings.requestSave();
     } else {
         LOG_ERROR("Failed to request PDO");
-        hw.buzzer.playTone(200, 200);  // Error beep
+        hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);  // Error beep
     }
 }
 
@@ -992,7 +1051,7 @@ void StateMachine::applyCurrentLimit() {
     settings.requestSave();
 
     if (settings.isSoundsEnabled()) {
-        hw.buzzer.playTone(1000, 50);  // Confirmation beep
+        hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
     }
 }
 
@@ -1005,7 +1064,7 @@ void StateMachine::applyPpsVoltage() {
     if (success) {
         LOG_INFO("PPS request sent successfully");
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(1000, 50);  // Confirmation beep
+            hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
         }
         // Save PPS state for boot restore
         settings.setLastPdoIndex(_pps_pdo_index);
@@ -1014,7 +1073,7 @@ void StateMachine::applyPpsVoltage() {
     } else {
         LOG_ERROR("Failed to request PPS");
         // Error beep always plays (safety feedback)
-        hw.buzzer.playTone(200, 200);
+        hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
     }
 }
 
@@ -1026,14 +1085,14 @@ void StateMachine::applyAvsVoltage() {
     if (success) {
         LOG_INFO("AVS request sent successfully");
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(1000, 50);
+            hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
         }
         settings.setLastPdoIndex(_avs_pdo_index);
         settings.setLastPpsVoltageMv(_avs_target_voltage_mv);
         settings.requestSave();
     } else {
         LOG_ERROR("Failed to request AVS");
-        hw.buzzer.playTone(200, 200);
+        hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
     }
 }
 
@@ -1045,7 +1104,7 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
     // Helper to play navigation beep (respects sound setting)
     auto playNavBeep = [this]() {
         if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(800, 20);
+            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
         }
     };
 
@@ -1053,23 +1112,23 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
         case EncoderEvent::ROTATE_CW:
             // Check if any adjustable item is in adjust mode
             if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
-                if (_brightness_value < 100) {
-                    _brightness_value += 5;
-                    if (_brightness_value > 100) _brightness_value = 100;
+                if (_brightness_value < AppConfig::LCD_BRIGHTNESS_MAX) {
+                    _brightness_value += AppConfig::LCD_BRIGHTNESS_STEP;
+                    if (_brightness_value > AppConfig::LCD_BRIGHTNESS_MAX) _brightness_value = AppConfig::LCD_BRIGHTNESS_MAX;
                     settings.setLcdBrightness(_brightness_value);
                     settings.requestSave();
                     hw.display.setBacklightBrightness(_brightness_value);
                 }
                 playNavBeep();
             } else if (_selected_settings_item == SettingsItem::DIM_TIMEOUT && _dim_timeout_adjusting) {
-                if (_dim_timeout_value < 10) {
+                if (_dim_timeout_value < AppConfig::AUTO_DIM_MAX_MINUTES) {
                     _dim_timeout_value++;
                     settings.setAutoDimMinutes(_dim_timeout_value);
                     settings.requestSave();
                 }
                 playNavBeep();
             } else if (_selected_settings_item == SettingsItem::STARTUP_MELODY && _melody_adjusting) {
-                if (_melody_value < 3) {
+                if (_melody_value < AppConfig::STARTUP_MELODY_MAX) {
                     _melody_value++;
                     settings.setStartupMelody(_melody_value);
                     settings.requestSave();
@@ -1081,7 +1140,7 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     }
                 }
             } else if (_selected_settings_item == SettingsItem::STARTUP_CONTRACT && _contract_mode_adjusting) {
-                if (_contract_mode_value < 2) {
+                if (_contract_mode_value < AppConfig::STARTUP_CONTRACT_MODE_MAX) {
                     _contract_mode_value++;
                     settings.setStartupNegotiation(_contract_mode_value);
                     settings.requestSave();
@@ -1101,17 +1160,17 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
 
         case EncoderEvent::ROTATE_CCW:
             if (_selected_settings_item == SettingsItem::BRIGHTNESS && _brightness_adjusting) {
-                if (_brightness_value > 5) {
-                    _brightness_value -= 5;
+                if (_brightness_value > AppConfig::LCD_BRIGHTNESS_MIN) {
+                    _brightness_value -= AppConfig::LCD_BRIGHTNESS_STEP;
                 } else {
-                    _brightness_value = 5;
+                    _brightness_value = AppConfig::LCD_BRIGHTNESS_MIN;
                 }
                 settings.setLcdBrightness(_brightness_value);
                 settings.requestSave();
                 hw.display.setBacklightBrightness(_brightness_value);
                 playNavBeep();
             } else if (_selected_settings_item == SettingsItem::DIM_TIMEOUT && _dim_timeout_adjusting) {
-                if (_dim_timeout_value > 1) {
+                if (_dim_timeout_value > AppConfig::AUTO_DIM_MIN_MINUTES) {
                     _dim_timeout_value--;
                     settings.setAutoDimMinutes(_dim_timeout_value);
                     settings.requestSave();
@@ -1160,6 +1219,11 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
 
                 case SettingsItem::AUTO_PPS:
                     settings.setAutoPpsEnabled(!settings.isAutoPpsEnabled());
+                    settings.requestSave();
+                    break;
+
+                case SettingsItem::AUTO_AVS:
+                    settings.setAutoAvsEnabled(!settings.isAutoAvsEnabled());
                     settings.requestSave();
                     break;
 

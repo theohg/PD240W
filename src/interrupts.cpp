@@ -1,6 +1,6 @@
 #include "interrupts.h"
 #include "hardware.h"
-#include "board_config.h"
+#include "config/board_config.h"
 
 namespace Interrupts {
 
@@ -19,7 +19,7 @@ volatile uint64_t last_btn2_time = 0;
 volatile uint64_t last_btn_enc_time = 0;
 
 // Debounce threshold in Microseconds (15ms is usually perfect for clicks)
-const uint64_t BTN_DEBOUNCE_US = 15000;
+constexpr uint64_t BTN_DEBOUNCE_US = 15000;
 
 // =========================================================================
 // Individual ISR Handlers

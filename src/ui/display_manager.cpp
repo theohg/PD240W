@@ -64,6 +64,7 @@ DisplayManager::DisplayManager()
     , _last_boot_message(nullptr)
     , _backlight_on(false)
     , _last_auto_pps(false)
+    , _last_auto_avs(false)
     , _last_auto_output(false)
     , _last_sounds(true)
     , _last_dim_timeout(1)
@@ -72,6 +73,7 @@ DisplayManager::DisplayManager()
     , _last_dim_adjusting(false)
     , _last_melody_adjusting(false)
     , _last_pps_converged(false)
+    , _last_avs_converged(false)
     , _fault_now_temp_y(219)
 {
 }
@@ -330,7 +332,8 @@ void DisplayManager::drawBootText() {
     // Stage message - only redraw when message changes (prevents flicker)
     const char* stage_msg = stateMachine.getBootStageMessage();
     if (stage_msg != _last_boot_message) {
-        hw.display.fillRect(0, 255, SCREEN_WIDTH, 16, UIColors::BACKGROUND);
+        // Clear full width with font lineHeight to remove AA artifacts from previous text
+        hw.display.fillRect(0, 255, SCREEN_WIDTH, FONT_SMALL->lineHeight + 2, UIColors::BACKGROUND);
         if (stage_msg && stage_msg[0] != '\0') {
             drawCenteredStringAA(255, stage_msg, UIColors::TEXT_PRIMARY, FONT_SMALL);
         }
@@ -355,6 +358,7 @@ void DisplayManager::drawActiveContract() {
         hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, 50, UIColors::BACKGROUND);
         hw.display.drawStringAA(MARGIN, y, "Contract:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         _last_pps_state = -1;  // Force redraw of badge
+        _last_epr_badge_drawn = false;  // Force redraw of EPR badge
     }
 
     // Get active contract
@@ -367,10 +371,12 @@ void DisplayManager::drawActiveContract() {
     // Use fixed-width format to avoid clearing
     char line1[32];
     if (contract.valid && contract.voltage_mv > 0) {
-        // When auto PPS tuning is active, show user's target voltage instead of negotiated
+        // When auto PPS/AVS tuning is active, show user's target voltage instead of negotiated
         uint32_t display_voltage_mv = contract.voltage_mv;
         if (pdManager.isPpsTuningActive()) {
             display_voltage_mv = pdManager.getPpsUserTargetMv();
+        } else if (pdManager.isAvsTuningActive()) {
+            display_voltage_mv = pdManager.getAvsUserTargetMv();
         }
         snprintf(line1, sizeof(line1), "%5.2fV @ %5.2fA  ",
                  display_voltage_mv / 1000.0f,
@@ -402,10 +408,15 @@ void DisplayManager::drawActiveContract() {
             _last_pd_revision_drawn = true;
             strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
             _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
+        }
 
-            // EPR badge: draw to the left of PD revision badge when EPR-capable
-            bool is_epr = (strstr(pd_rev, "3.1") != nullptr);
-            if (is_epr && !_last_epr_badge_drawn) {
+        // EPR badge: show when active contract is AVS or voltage > 20V (EPR territory)
+        // Evaluated independently of PD revision badge to update when contract changes
+        if (_last_pd_revision_drawn) {
+            int rev_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
+            int rev_x = RIGHTMOST_BADGE_X - rev_w - 4;
+            bool show_epr = contract.is_avs || (contract.valid && contract.voltage_mv > 20000);
+            if (show_epr && !_last_epr_badge_drawn) {
                 const char* epr_text = "EPR";
                 int epr_w = ST7789::getStringWidthAA(epr_text, FONT_SMALL) + 8;
                 int epr_x = rev_x - epr_w - 4;
@@ -415,7 +426,7 @@ void DisplayManager::drawActiveContract() {
                 int epr_ty = epr_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
                 hw.display.drawStringAA(epr_tx, epr_ty, epr_text, UIColors::TEXT_PRIMARY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
                 _last_epr_badge_drawn = true;
-            } else if (!is_epr && _last_epr_badge_drawn) {
+            } else if (!show_epr && _last_epr_badge_drawn) {
                 // Clear EPR badge
                 int epr_w = ST7789::getStringWidthAA("EPR", FONT_SMALL) + 8;
                 int epr_x = rev_x - epr_w - 4;
@@ -447,17 +458,26 @@ void DisplayManager::drawActiveContract() {
                 _last_pps_converged = tuning_converged;
             }
         } else if (contract.is_avs) {
-            // AVS badge - green, same position as PPS badge
-            if (_last_pps_state != 2) {
+            // AVS badge - with tuning convergence colors (like PPS), same position
+            bool tuning_converged = pdManager.isAvsTuningConverged();
+            bool tuning_active = pdManager.isAvsTuningActive();
+
+            // Redraw badge when AVS state changes OR convergence state changes
+            if (_last_pps_state != 2 || (tuning_active && tuning_converged != _last_avs_converged)) {
                 int badge_x = RIGHTMOST_BADGE_X;
                 int badge_y = y - 2;
                 int badge_w = RIGHTMOST_BADGE_W;
 
-                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, UIColors::ACCENT);
+                // Yellow badge while tuning is converging, green when converged or auto-tune off
+                uint16_t badge_color = (tuning_active && !tuning_converged)
+                    ? UIColors::CAUTION : UIColors::ACCENT;
+
+                hw.display.fillRoundRect(badge_x, badge_y, badge_w, BADGE_H, BADGE_R, badge_color);
                 int text_x = badge_x + (badge_w - ST7789::getStringWidthAA("AVS", FONT_SMALL)) / 2;
                 int text_y = badge_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(text_x, text_y, "AVS", UIColors::BACKGROUND, UIColors::ACCENT, FONT_SMALL);
+                hw.display.drawStringAA(text_x, text_y, "AVS", UIColors::BACKGROUND, badge_color, FONT_SMALL);
                 _last_pps_state = 2;
+                _last_avs_converged = tuning_converged;
             }
         } else {
             // Clear badge area when neither PPS nor AVS active
@@ -649,8 +669,8 @@ void DisplayManager::drawTemperature() {
     // Blinking logic (only affects val_color)
     if (state.max_temperature_c > AppConfig::TEMP_CRITICAL_WARNING_C) {
         uint32_t ms = to_ms_since_boot(get_absolute_time());
-        // Blink fast (250ms interval) & make a beeping sound
-        if ((ms / 250) % 2 == 1) {
+        // Blink fast & make a beeping sound
+        if ((ms / AppConfig::CRITICAL_BLINK_INTERVAL_MS) % 2 == 1) {
             blink_hide = true;
         }
     }
@@ -819,8 +839,8 @@ void DisplayManager::drawPdoList() {
     int8_t selected_idx = stateMachine.getSelectedPdoIndex();
 
     // Get PDO list and active contract for highlighting
-    SourceCapability pdos[13];
-    uint8_t count = pdManager.getSourceCapabilities(pdos, 13);
+    SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
+    uint8_t count = pdManager.getSourceCapabilities(pdos, AppConfig::MAX_PDO_COUNT);
     const ActiveContract& active = pdManager.getActiveContract();
 
     // No contracts found - show informational message
@@ -881,7 +901,8 @@ void DisplayManager::drawPdoList() {
                 if (active.valid) {
                     if (pdos[i].is_pps && active.is_pps) {
                         is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
-                                     active.voltage_mv <= pdos[i].voltage_mv);
+                                     active.voltage_mv <= pdos[i].voltage_mv &&
+                                     active.current_ma == pdos[i].max_current_ma);
                     } else if (pdos[i].is_avs && active.is_avs) {
                         is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
                                      active.voltage_mv <= pdos[i].voltage_mv);
@@ -1172,6 +1193,7 @@ void DisplayManager::drawSettingsMenu() {
 
     // Snapshot current values
     bool auto_pps = settings.isAutoPpsEnabled();
+    bool auto_avs = settings.isAutoAvsEnabled();
     bool auto_output = settings.isAutoOutput();
     bool sounds = settings.isSoundsEnabled();
     uint8_t brightness = stateMachine.getBrightnessValue();
@@ -1215,54 +1237,61 @@ void DisplayManager::drawSettingsMenu() {
                         selected == SettingsItem::AUTO_PPS, true);
     }
 
-    // Item 2: Auto Output toggle
-    if (_needs_full_redraw || sel_affects(2) || auto_output != _last_auto_output) {
-        drawSettingsItem(y_for(2), "Auto Output EN", auto_output,
+    // Item 2: Auto AVS toggle
+    if (_needs_full_redraw || sel_affects(2) || auto_avs != _last_auto_avs) {
+        drawSettingsItem(y_for(2), "Auto AVS tuning", auto_avs,
+                        selected == SettingsItem::AUTO_AVS, true);
+    }
+
+    // Item 3: Auto Output toggle
+    if (_needs_full_redraw || sel_affects(3) || auto_output != _last_auto_output) {
+        drawSettingsItem(y_for(3), "Auto Output EN", auto_output,
                         selected == SettingsItem::AUTO_OUTPUT, true);
     }
 
-    // Item 3: Brightness
-    if (_needs_full_redraw || sel_affects(3) || brightness != _last_brightness_value ||
+    // Item 4: Brightness
+    if (_needs_full_redraw || sel_affects(4) || brightness != _last_brightness_value ||
         brightness_adj != _last_brightness_adjusting) {
-        drawBrightnessItem(y_for(3), selected == SettingsItem::BRIGHTNESS);
+        drawBrightnessItem(y_for(4), selected == SettingsItem::BRIGHTNESS);
     }
 
-    // Item 4: Dim timeout
-    if (_needs_full_redraw || sel_affects(4) || dim_val != _last_dim_timeout ||
+    // Item 5: Dim timeout
+    if (_needs_full_redraw || sel_affects(5) || dim_val != _last_dim_timeout ||
         dim_adj != _last_dim_adjusting) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%d min", dim_val);
-        drawValueAdjustItem(y_for(4), "Auto Dim timeout:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
+        drawValueAdjustItem(y_for(5), "Auto Dim timeout:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
     }
 
-    // Item 5: Startup melody
-    if (_needs_full_redraw || sel_affects(5) || mel_val != _last_melody ||
+    // Item 6: Startup melody
+    if (_needs_full_redraw || sel_affects(6) || mel_val != _last_melody ||
         mel_adj != _last_melody_adjusting) {
-        drawValueAdjustItem(y_for(5), "Melody:", getStartupMelodyName(mel_val),
+        drawValueAdjustItem(y_for(6), "Melody:", getStartupMelodyName(mel_val),
                            selected == SettingsItem::STARTUP_MELODY, mel_adj);
     }
 
-    // Item 6: Startup contract mode
-    if (_needs_full_redraw || sel_affects(6) || contract_mode != _last_contract_mode ||
+    // Item 7: Startup contract mode
+    if (_needs_full_redraw || sel_affects(7) || contract_mode != _last_contract_mode ||
         contract_adj != _last_contract_mode_adjusting) {
-        drawValueAdjustItem(y_for(6), "Startup V:", getContractModeName(contract_mode),
+        drawValueAdjustItem(y_for(7), "Startup V:", getContractModeName(contract_mode),
                            selected == SettingsItem::STARTUP_CONTRACT, contract_adj);
     }
 
-    // Item 7: Sounds toggle
-    if (_needs_full_redraw || sel_affects(7) || sounds != _last_sounds) {
-        drawSettingsItem(y_for(7), "Sounds", sounds,
+    // Item 8: Sounds toggle
+    if (_needs_full_redraw || sel_affects(8) || sounds != _last_sounds) {
+        drawSettingsItem(y_for(8), "Sounds", sounds,
                         selected == SettingsItem::SOUNDS, true);
     }
 
-    // Item 8: Back
-    if (_needs_full_redraw || sel_affects(8)) {
-        drawMenuItemMuted(y_for(8), "Back", selected == SettingsItem::BACK);
+    // Item 9: Back
+    if (_needs_full_redraw || sel_affects(9)) {
+        drawMenuItemMuted(y_for(9), "Back", selected == SettingsItem::BACK);
     }
 
     // Update all tracking variables
     _last_settings_selection = sel_idx;
     _last_auto_pps = auto_pps;
+    _last_auto_avs = auto_avs;
     _last_auto_output = auto_output;
     _last_sounds = sounds;
     _last_brightness_value = brightness;

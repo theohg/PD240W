@@ -1,6 +1,6 @@
 #include "safety.h"
 #include "hardware.h"
-#include "app_config.h"
+#include "config/app_config.h"
 #include "utils/logging.h"
 #include "drivers/buzzer/buzzer.h"
 #include "logic/state_machine.h"
@@ -86,7 +86,7 @@ SafetyStatus Safety::update() {
 
     // Critical temperature audible alarm (75-80C range)
     // Melody repeats continuously while in critical range, stops on exit
-    static bool _critical_alarm_active = false;
+    static bool critical_alarm_active = false;
 
     bool in_critical_range = _state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)
                           && !_temp_fault_active
@@ -94,17 +94,17 @@ SafetyStatus Safety::update() {
 
     if (in_critical_range) {
         // Start or restart melody when it finishes playing
-        if (!_critical_alarm_active || !hw.buzzer.isPlayingMelody()) {
+        if (!critical_alarm_active || !hw.buzzer.isPlayingMelody()) {
             hw.buzzer.playMelody(CRITICAL_WARNING_ALARM, CRITICAL_WARNING_ALARM_LENGTH);
-            _critical_alarm_active = true;
+            critical_alarm_active = true;
         }
-    } else if (_critical_alarm_active) {
+    } else if (critical_alarm_active) {
         // Left critical range (below 75C with hysteresis, fault at 80C, or on fault screen)
         if (_temp_fault_active ||
             stateMachine.getState() == AppState::FAULT ||
             _state.max_temperature_c < static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C) - TEMP_HYSTERESIS_C) {
             hw.buzzer.stopMelody();
-            _critical_alarm_active = false;
+            critical_alarm_active = false;
         }
     }
 
@@ -253,7 +253,7 @@ void Safety::updateVoltage() {
         if (vbus_mv < AppConfig::MIN_VBUS_FOR_17V_MV) {
             hw.EN_17V.off();
             LOG_WARN("17V buck auto-disabled: VBUS=%.1fV < 18V", _state.vbus_voltage_v);
-            hw.buzzer.playTone(200, 100);  // Warning beep
+            hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_WARNING_DURATION);
         }
     }
 }
