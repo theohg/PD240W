@@ -58,13 +58,14 @@
 //
 //  CONSTRUCTOR
 //
-INA228::INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent)
+INA228::INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent, uint16_t shuntTempCoPpm)
 {
   _address          = address;
   _i2c              = i2c;
   _shunt            = shuntResistor;
   _maxCurrent       = maxCurrent;
   _overcurrentLimit = 0.0f;
+  _shuntTempCoPpm   = shuntTempCoPpm;
   _current_LSB      = _maxCurrent * pow(2, -19);
   _error            = 0;
 }
@@ -85,6 +86,10 @@ bool INA228::init()
 
   // Set VSHCT (Shunt Voltage Conversion Time) 
   setShuntVoltageConversionTime(INA228_50_us);
+
+  // Enable shunt temperature compensation (corrects for resistor drift with temp)
+  setShuntTemperatureCoefficent(_shuntTempCoPpm);
+  setTemperatureCompensation(true);
 
   return true;
 }
@@ -628,6 +633,72 @@ uint16_t INA228::getPowerOverLimitTH()
   //  P29
   //  Conversion factor: 256 × Power LSB.
   return _readRegister(INA228_POWER_LIMIT, 2);
+}
+
+
+////////////////////////////////////////////////////////
+//
+//  FLOAT-BASED THRESHOLD APIs
+//
+bool INA228::setShuntOvervoltageLimit_mV(float millivolts)
+{
+  float lsb_mv = _ADCRange ? 1.25e-3f : 5.0e-3f;
+  float raw_f = millivolts / lsb_mv;
+  if (raw_f < 0.0f || raw_f > 32767.0f) return false;
+  setShuntOvervoltageTH(static_cast<uint16_t>(raw_f));
+  return true;
+}
+
+bool INA228::setShuntUndervoltageLimit_mV(float millivolts)
+{
+  float lsb_mv = _ADCRange ? 1.25e-3f : 5.0e-3f;
+  float raw_f = millivolts / lsb_mv;
+  if (raw_f < -32768.0f || raw_f > 32767.0f) return false;
+  setShuntUndervoltageTH(static_cast<uint16_t>(static_cast<int16_t>(raw_f)));
+  return true;
+}
+
+bool INA228::setBusOvervoltageLimit_mV(float millivolts)
+{
+  float raw_f = millivolts / 3.125f;
+  if (raw_f < 0.0f || raw_f > 32767.0f) return false;
+  setBusOvervoltageTH(static_cast<uint16_t>(raw_f));
+  return true;
+}
+
+bool INA228::setBusUndervoltageLimit_mV(float millivolts)
+{
+  float raw_f = millivolts / 3.125f;
+  if (raw_f < 0.0f || raw_f > 32767.0f) return false;
+  setBusUndervoltageTH(static_cast<uint16_t>(raw_f));
+  return true;
+}
+
+bool INA228::setCurrentLimit_A(float amps)
+{
+  if (amps <= 0.0f || amps > _maxCurrent) return false;
+  float v_shunt_mv = amps * _shunt * 1000.0f;
+  return setShuntOvervoltageLimit_mV(v_shunt_mv);
+}
+
+
+////////////////////////////////////////////////////////
+//
+//  DIAGNOSTIC FLAG HELPERS
+//
+bool INA228::hasMathOverflow()
+{
+  return getDiagnoseAlertBit(INA228_DIAG_MATH_OVERFLOW) != 0;
+}
+
+bool INA228::hasEnergyOverflow()
+{
+  return getDiagnoseAlertBit(INA228_DIAG_ENERGY_OVERFLOW) != 0;
+}
+
+bool INA228::hasChargeOverflow()
+{
+  return getDiagnoseAlertBit(INA228_DIAG_CHARGE_OVERFLOW) != 0;
 }
 
 

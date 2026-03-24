@@ -175,6 +175,22 @@ void Settings::setStartupNegotiation(uint8_t mode) {
     }
 }
 
+void Settings::setEnergyDisplayMode(uint8_t mode) {
+    if (mode > 1) mode = 1;
+    if (_settings.energy_display_mode != mode) {
+        _settings.energy_display_mode = mode;
+        _dirty = true;
+    }
+}
+
+void Settings::setCcModeEnabled(bool enabled) {
+    if (_settings.cc_mode_enabled != enabled) {
+        _settings.cc_mode_enabled = enabled;
+        _dirty = true;
+        LOG_DEBUG("CC mode %s", enabled ? "enabled" : "disabled");
+    }
+}
+
 // ============================================================================
 // Persistence
 // ============================================================================
@@ -274,8 +290,8 @@ void Settings::resetToDefaults() {
     _settings.auto_output = false;          // Output disabled by default
     _settings.last_pps_voltage_mv = 0;      // No saved PPS voltage
     _settings.startup_negotiation = 2;      // Last used (remember last contract)
-
-    memset(_settings.reserved, 0, sizeof(_settings.reserved));
+    _settings.energy_display_mode = 0;       // mAh by default
+    _settings.cc_mode_enabled = false;       // OCP mode by default
     _settings.crc32 = 0;  // Will be calculated on save
 
     _dirty = false;

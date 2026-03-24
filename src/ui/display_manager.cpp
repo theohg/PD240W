@@ -5,6 +5,7 @@
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
+#include "logic/cc_controller.h"
 #include "config/version.h"
 #include "config/app_config.h"
 #include <cstdio>
@@ -74,6 +75,8 @@ DisplayManager::DisplayManager()
     , _last_melody_adjusting(false)
     , _last_pps_converged(false)
     , _last_avs_converged(false)
+    , _last_cc_badge_state(-1)
+    , _last_energy_mode(-1)
     , _fault_now_temp_y(219)
 {
 }
@@ -89,6 +92,8 @@ void DisplayManager::init() {
     _last_pd_revision_drawn = false;  // Force PD revision badge redraw
     _last_pd_revision[0] = '\0';
     _last_epr_badge_drawn = false;  // Force EPR badge redraw
+    _last_cc_badge_state = -1;     // Force CC badge redraw
+    _last_energy_mode = -1;        // Force energy unit redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 }
 
@@ -563,6 +568,28 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "A", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
+    // CC mode badge (white badge next to "A" when CC is active)
+    {
+        bool cc_active = CcController::isEnabled();
+        int8_t cc_state = cc_active ? 1 : 0;
+        if (cc_state != _last_cc_badge_state || _needs_full_redraw) {
+            const int CC_BADGE_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 4;
+            const int CC_BADGE_Y = y + 4;
+            const int CC_BADGE_W = 24;
+            const int CC_BADGE_H = 16;
+            if (cc_active) {
+                hw.display.fillRoundRect(CC_BADGE_X, CC_BADGE_Y, CC_BADGE_W, CC_BADGE_H, 3, UIColors::TEXT_PRIMARY);
+                int text_x = CC_BADGE_X + (CC_BADGE_W - ST7789::getStringWidthAA("CC", FONT_SMALL)) / 2;
+                int text_y = CC_BADGE_Y + (CC_BADGE_H - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(text_x, text_y, "CC", UIColors::BACKGROUND, UIColors::TEXT_PRIMARY, FONT_SMALL);
+            } else {
+                // Clear badge area
+                hw.display.fillRect(CC_BADGE_X, CC_BADGE_Y, CC_BADGE_W, CC_BADGE_H, UIColors::BACKGROUND);
+            }
+            _last_cc_badge_state = cc_state;
+        }
+    }
+
     // Secondary: Current Limit
     y += 32;
     float limit_a = stateMachine.getCurrentLimitMa() / 1000.0f;
@@ -583,47 +610,58 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "W", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
-    // --- Energy Section (mAh since boot) ---
+    // --- Energy Section (mAh or mWh since boot, toggled by long press) ---
     y += 32;
     {
-        double charge_c = hw.powerMonitor.getCharge();
-        // Zero out energy when current displays as zero (consistent with power)
-        double mah = (display_current == 0.0f) ? 0.0 : charge_c * 1000.0 / 3.6;
-        if (mah < 0.0) mah = 0.0;  // Clamp to zero (no negative energy)
+        bool show_mwh = stateMachine.isEnergyDisplayMwh();
+        double value;
+        if (show_mwh) {
+            double energy_j = hw.powerMonitor.getEnergy();
+            value = energy_j * (1e3 / 3600.0);
+        } else {
+            double charge_c = hw.powerMonitor.getCharge();
+            value = charge_c * 1000.0 / 3.6;
+        }
+        if (value < 0.0) value = 0.0;
 
         // Track previous value and unit to avoid flicker (only redraw on change)
-        static double last_mah = -1.0;
-        static bool last_was_ah = false;
-        bool is_ah = (mah >= 1000.0);
+        static double last_value = -1.0;
+        static bool last_was_high = false;
+        // mAh mode: high = Ah (>=1000 mAh), mWh mode: high = Wh (>=1000 mWh)
+        bool is_high = (value >= 1000.0);
+
+        // Check if energy display mode changed
+        int8_t current_mode = show_mwh ? 1 : 0;
+        bool mode_changed = (current_mode != _last_energy_mode);
+        if (mode_changed) _last_energy_mode = current_mode;
 
         // Quantize to display resolution to reduce unnecessary redraws
-        // mAh: 1 decimal (0.1 mAh), Ah: 2 decimals (0.01 Ah = 10 mAh)
-        bool value_changed = _needs_full_redraw;
-        if (is_ah) {
-            int32_t quantized = (int32_t)(mah / 10.0);  // 0.01 Ah resolution
-            int32_t last_quantized = (int32_t)(last_mah / 10.0);
+        bool value_changed = _needs_full_redraw || mode_changed;
+        if (is_high) {
+            int32_t quantized = (int32_t)(value / 10.0);
+            int32_t last_quantized = (int32_t)(last_value / 10.0);
             if (quantized != last_quantized) value_changed = true;
         } else {
-            int32_t quantized = (int32_t)(mah * 10.0);  // 0.1 mAh resolution
-            int32_t last_quantized = (int32_t)(last_mah * 10.0);
+            int32_t quantized = (int32_t)(value * 10.0);
+            int32_t last_quantized = (int32_t)(last_value * 10.0);
             if (quantized != last_quantized) value_changed = true;
         }
-        if (is_ah != last_was_ah) value_changed = true;
+        if (is_high != last_was_high) value_changed = true;
 
         if (value_changed) {
             const int NRG_VALUE_X = VALUE_X + 30;
             const int NRG_UNIT_X = NRG_VALUE_X + 48;  // Fixed unit position
 
-            // Draw label only on full redraw
-            if (_needs_full_redraw) {
+            // Draw label only on full redraw or mode change
+            if (_needs_full_redraw || mode_changed) {
                 hw.display.drawStringAA(VALUE_X, y, "Nrg:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
             }
 
             // Overwrite value directly (fixed-width format covers previous digits)
-            if (is_ah) {
-                snprintf(buf, sizeof(buf), "%6.2f", mah / 1000.0);
+            if (is_high) {
+                snprintf(buf, sizeof(buf), "%6.2f", value / 1000.0);
             } else {
-                snprintf(buf, sizeof(buf), "%6.1f", mah);
+                snprintf(buf, sizeof(buf), "%6.1f", value);
             }
             hw.display.drawStringAA(NRG_VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
@@ -632,14 +670,20 @@ void DisplayManager::drawPowerReadings() {
             if (NRG_VALUE_X + nrg_w < NRG_UNIT_X)
                 hw.display.fillRect(NRG_VALUE_X + nrg_w, y, NRG_UNIT_X - NRG_VALUE_X - nrg_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
 
-            // Only redraw unit text when it changes (mAh <-> Ah) or on full redraw
-            if (is_ah != last_was_ah || _needs_full_redraw) {
+            // Redraw unit text when it changes or on full redraw/mode change
+            if (is_high != last_was_high || _needs_full_redraw || mode_changed) {
                 hw.display.fillRect(NRG_UNIT_X, y, SCREEN_WIDTH - MARGIN - NRG_UNIT_X, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
-                hw.display.drawStringAA(NRG_UNIT_X, y, is_ah ? "Ah" : "mAh", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+                const char* unit;
+                if (show_mwh) {
+                    unit = is_high ? "Wh" : "mWh";
+                } else {
+                    unit = is_high ? "Ah" : "mAh";
+                }
+                hw.display.drawStringAA(NRG_UNIT_X, y, unit, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
             }
 
-            last_mah = mah;
-            last_was_ah = is_ah;
+            last_value = value;
+            last_was_high = is_high;
         }
     }
 }
@@ -980,9 +1024,12 @@ void DisplayManager::drawPdoList() {
 void DisplayManager::drawCurrentLimitAdjust() {
     uint32_t current_ma = stateMachine.getCurrentLimitMa();
     uint32_t max_ma = stateMachine.getEffectiveMaxCurrentMa();
+    bool cc_enabled = CcController::isEnabled();
+    int8_t cc_state = cc_enabled ? 1 : 0;
+    bool cc_changed = (cc_state != _last_cc_badge_state);
 
-    // Skip redraw if value hasn't changed
-    if (!_needs_full_redraw && current_ma == _last_adjust_value) {
+    // Skip redraw if nothing changed
+    if (!_needs_full_redraw && current_ma == _last_adjust_value && !cc_changed) {
         return;
     }
     _last_adjust_value = current_ma;
@@ -1010,6 +1057,22 @@ void DisplayManager::drawCurrentLimitAdjust() {
     hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
     hw.display.drawStringAA(UNIT_X, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
+    // CC/OCP mode indicator badge (next to "A")
+    {
+        const int MODE_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 6;
+        const int MODE_Y = y + 4;
+        const char* mode_text = cc_enabled ? "CC" : "OCP";
+        uint16_t badge_color = cc_enabled ? UIColors::TEXT_PRIMARY : UIColors::MUTED;
+        // Clear badge area first (OCP is wider than CC)
+        hw.display.fillRect(MODE_X, MODE_Y, 40, 16, UIColors::BACKGROUND);
+        int badge_w = ST7789::getStringWidthAA(mode_text, FONT_SMALL) + 8;
+        hw.display.fillRoundRect(MODE_X, MODE_Y, badge_w, 16, 3, badge_color);
+        int text_x = MODE_X + 4;
+        int text_y = MODE_Y + (16 - FONT_SMALL->lineHeight) / 2;
+        hw.display.drawStringAA(text_x, text_y, mode_text, UIColors::BACKGROUND, badge_color, FONT_SMALL);
+        _last_cc_badge_state = cc_state;
+    }
+
     // Draw progress bar (scaled to effective max)
     y += 50;
     uint32_t range = max_ma - AppConfig::CURRENT_LIMIT_MIN_MA;
@@ -1033,7 +1096,7 @@ void DisplayManager::drawCurrentLimitAdjust() {
                               UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
-                              "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                              "Rotate: Adjust  BTN2: CC/OCP", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
                               "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }

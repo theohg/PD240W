@@ -19,7 +19,7 @@ Hardware::Hardware() :
     buzzer(Board::PIN_BUZZER),
     rgbLed(Board::PIN_RGB_LED, pio0, Board::LED_IS_RGBW),
     pdController(i2c0, Board::I2C_ADDR_TPS26750),
-    powerMonitor(Board::I2C_ADDR_INA228, i2c0, Board::INA228_SHUNT_RESISTOR, Board::INA228_MAX_CURRENT),
+    powerMonitor(Board::I2C_ADDR_INA228, i2c0, Board::INA228_SHUNT_RESISTOR, Board::INA228_MAX_CURRENT, Board::INA228_SHUNT_TEMPCO_PPM),
     display(spi0, Board::PIN_LCD_CS, Board::PIN_LCD_DC, Board::PIN_LCD_RST, Board::PIN_LCD_BL)
 {}
 

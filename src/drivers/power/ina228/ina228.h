@@ -97,7 +97,7 @@ public:
    * @param shuntResistor Shunt resistor value in Ohms (e.g., 0.008 for 8mΩ)
    * @param maxCurrent Maximum expected current in Amps (e.g., 5.0)
    */
-  INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent);
+  INA228(uint8_t address, i2c_inst_t *i2c, float shuntResistor, float maxCurrent, uint16_t shuntTempCoPpm = 0);
 
   bool     init();
   bool     isConnected();
@@ -147,12 +147,14 @@ public:
   double   getMicroJoule()      { return getEnergy()       * 1e6; };
   double   getWattHour()        { return getEnergy()       * (1.0  / 3600.0); };
   double   getKiloWattHour()    { return getEnergy()       * (1e-3 / 3600.0); };
+  double   getMilliWattHour()   { return getEnergy()       * (1e3  / 3600.0); };
 
   //       CHARGE
   double   getCharge();         //  Coulombs
   double   getCoulomb()         { return getCharge(); };
   double   getMilliCoulomb()    { return getCharge()       * 1e3; };
   double   getMicroCoulomb()    { return getCharge()       * 1e6; };
+  double   getMilliAmpHour()    { return getCharge()       * (1e3 / 3.6); };
 
 
   //
@@ -258,6 +260,22 @@ public:
   uint16_t getBusOvervoltageTH();
   void     setBusUndervoltageTH(uint16_t threshold);
   uint16_t getBusUndervoltageTH();
+
+  //
+  //  FLOAT-BASED THRESHOLD APIs (handle ADCRANGE conversion automatically)
+  //
+  bool     setShuntOvervoltageLimit_mV(float millivolts);
+  bool     setShuntUndervoltageLimit_mV(float millivolts);
+  bool     setBusOvervoltageLimit_mV(float millivolts);
+  bool     setBusUndervoltageLimit_mV(float millivolts);
+  bool     setCurrentLimit_A(float amps);
+
+  //
+  //  DIAGNOSTIC FLAG HELPERS (non-destructive reads)
+  //
+  bool     hasMathOverflow();
+  bool     hasEnergyOverflow();
+  bool     hasChargeOverflow();
   void     setTemperatureOverLimitTH(uint16_t threshold);
   uint16_t getTemperatureOverLimitTH();
   void     setPowerOverLimitTH(uint16_t threshold);
@@ -288,6 +306,7 @@ private:
   float    _shunt;
   float    _maxCurrent;
   float    _overcurrentLimit;  // Configured overcurrent limit in Amps (0 = disabled)
+  uint16_t _shuntTempCoPpm;   // Shunt temperature coefficient in ppm/°C
   bool     _ADCRange;
 
   uint8_t   _address;

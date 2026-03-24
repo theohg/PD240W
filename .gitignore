@@ -108,3 +108,6 @@ DEV_CONTAINER.md
 # ============================================================================
 tools/clean_logo.py
 tools/convert_png_to_c.py
+src/utils/pwm_test.cpp
+src/utils/pwm_test.h
+PWM_BUG_REPORT.md

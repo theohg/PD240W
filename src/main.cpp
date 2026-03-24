@@ -8,6 +8,7 @@
 #include "logic/settings.h"
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
+#include "logic/cc_controller.h"
 #include "ui/display_manager.h"
 
 // ============================================================================
@@ -60,6 +61,9 @@ int main() {
     // Initialize state machine (starts in BOOT state)
     stateMachine.init();
 
+    // Initialize CC controller (restores CC mode from settings)
+    CcController::init();
+
     // Setup display refresh timer
     next_display_update = get_absolute_time();
 
@@ -98,6 +102,12 @@ int main() {
         // ---------------------------------------------------------------------
         // Handles USB-PD interrupt processing and negotiation state
         pdManager.update();
+
+        // ---------------------------------------------------------------------
+        // 3b. Update CC Controller
+        // ---------------------------------------------------------------------
+        // Constant current regulation via PD voltage adjustment
+        CcController::update();
 
         // ---------------------------------------------------------------------
         // 4. Update Settings (Debounced Flash Save)

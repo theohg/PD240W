@@ -15,7 +15,7 @@
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 3;
+constexpr uint8_t SETTINGS_VERSION = 4;
 
 // Startup contract negotiation modes
 enum class StartupContractMode : uint8_t {
@@ -71,8 +71,11 @@ struct UserSettings {
     // Auto AVS tuning
     bool auto_avs_enabled;   // ON/OFF for automatic AVS voltage calibration
 
-    // Reserved for future use
-    uint8_t reserved[1];
+    // Energy display mode: 0 = mAh, 1 = mWh
+    uint8_t energy_display_mode;
+
+    // Constant Current mode (vs OCP mode)
+    bool cc_mode_enabled;
 
     // CRC32 for data integrity
     uint32_t crc32;
@@ -102,6 +105,8 @@ public:
     void setAutoOutput(bool enabled);
     void setLastPpsVoltageMv(uint32_t voltage_mv);
     void setStartupNegotiation(uint8_t mode);
+    void setEnergyDisplayMode(uint8_t mode);
+    void setCcModeEnabled(bool enabled);
 
     // Accessors
     uint32_t getCurrentLimit() const { return _settings.current_limit_ma; }
@@ -120,6 +125,8 @@ public:
     StartupContractMode getStartupNegotiationMode() const {
         return static_cast<StartupContractMode>(_settings.startup_negotiation);
     }
+    uint8_t getEnergyDisplayMode() const { return _settings.energy_display_mode; }
+    bool isCcModeEnabled() const { return _settings.cc_mode_enabled; }
 
     // Persistence
     void requestSave();      // Request a debounced save (will save after 2s delay)

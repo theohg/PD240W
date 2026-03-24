@@ -7,6 +7,7 @@
 #include "pd_manager.h"
 #include "settings.h"
 #include "tps_eeprom_workflow.h"
+#include "cc_controller.h"
 #include "ui/display_manager.h"
 
 // Global instance
@@ -77,6 +78,7 @@ StateMachine::StateMachine()
     , _melody_adjusting(false)
     , _contract_mode_value(2)
     , _contract_mode_adjusting(false)
+    , _energy_display_mwh(false)
 {
 }
 
@@ -99,6 +101,9 @@ void StateMachine::init() {
     if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
         LOG_INFO("INA228 overcurrent alert initialized to %.3fA", limit_a);
     }
+
+    // Restore energy display mode from settings
+    _energy_display_mwh = (settings.getEnergyDisplayMode() != 0);
 
     // Play startup melody at boot (only if sounds enabled and melody != Silent)
     if (settings.isSoundsEnabled()) {
@@ -405,6 +410,15 @@ void StateMachine::handleMainState(EncoderEvent event) {
                     break;
                 }
             }
+        } else {
+            // No PPS/AVS active: toggle energy display mode (mAh ↔ mWh)
+            _energy_display_mwh = !_energy_display_mwh;
+            settings.setEnergyDisplayMode(_energy_display_mwh ? 1 : 0);
+            settings.requestSave();
+            if (settings.isSoundsEnabled()) {
+                hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
+            }
+            LOG_INFO("Energy display: %s", _energy_display_mwh ? "mWh" : "mAh");
         }
     }
 }
@@ -895,23 +909,33 @@ void StateMachine::handleOutputButtons() {
         pdManager.checkTuningConvergenceImmediate();
     }
 
-    // BTN2: Toggle 17V buck (only if VBUS > 18V)
+    // BTN2: Context-dependent action
     if (btn2_clicked) {
-        // Check VBUS voltage via INA228
-        float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
-
-        if (vbus_mv >= AppConfig::MIN_VBUS_FOR_17V_MV) {
-            bool current_state = hw.EN_17V.read();
-            if (current_state) {
-                hw.EN_17V.off();
-                LOG_INFO("17V buck DISABLED (BTN2)");
-            } else {
-                hw.EN_17V.on();
-                LOG_INFO("17V buck ENABLED (BTN2)");
+        if (_state == AppState::ADJUST && _adjust_mode == AdjustMode::CURRENT_LIMIT) {
+            // Toggle CC/OCP mode on current limit screen
+            bool cc_now = !settings.isCcModeEnabled();
+            CcController::setEnabled(cc_now);
+            if (settings.isSoundsEnabled()) {
+                hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
             }
-        } else {
-            LOG_WARN("Cannot enable 17V buck: VBUS=%.1fV < 18V", vbus_mv / 1000.0f);
-            hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION / 2);  // Error beep
+            LOG_INFO("CC mode toggled to %s (BTN2)", cc_now ? "CC" : "OCP");
+        } else if (_state == AppState::MAIN) {
+            // Toggle 17V buck (only if VBUS > 18V, only from MAIN screen)
+            float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
+
+            if (vbus_mv >= AppConfig::MIN_VBUS_FOR_17V_MV) {
+                bool current_state = hw.EN_17V.read();
+                if (current_state) {
+                    hw.EN_17V.off();
+                    LOG_INFO("17V buck DISABLED (BTN2)");
+                } else {
+                    hw.EN_17V.on();
+                    LOG_INFO("17V buck ENABLED (BTN2)");
+                }
+            } else {
+                LOG_WARN("Cannot enable 17V buck: VBUS=%.1fV < 18V", vbus_mv / 1000.0f);
+                hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION / 2);
+            }
         }
     }
 }
@@ -1022,9 +1046,11 @@ void StateMachine::requestSelectedPdo() {
         if (settings.isSoundsEnabled()) {
             hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
         }
-        // Save selected PDO for boot restore
-        settings.setLastPdoIndex(_selected_pdo_index);
-        settings.requestSave();
+        // Save selected PDO for boot restore (only in Last Used mode to reduce flash wear)
+        if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
+            settings.setLastPdoIndex(_selected_pdo_index);
+            settings.requestSave();
+        }
     } else {
         LOG_ERROR("Failed to request PDO");
         hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);  // Error beep
@@ -1038,12 +1064,21 @@ void StateMachine::requestSelectedPdo() {
 void StateMachine::applyCurrentLimit() {
     LOG_INFO("Current limit set to %u mA", _current_limit_ma);
 
+    // Update CC controller target (handles OCP margin internally)
+    CcController::setTargetCurrentMa(_current_limit_ma);
+
     // Configure INA228 hardware overcurrent alert threshold
-    float limit_a = _current_limit_ma / 1000.0f;
-    if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
-        LOG_INFO("INA228 overcurrent alert set to %.3fA", limit_a);
+    if (CcController::isEnabled()) {
+        // CC mode: OCP set with safety margin by CcController::setTargetCurrentMa
+        LOG_INFO("CC mode: OCP set with +%umA margin", AppConfig::CC_SAFETY_MARGIN_MA);
     } else {
-        LOG_ERROR("Failed to set INA228 overcurrent alert");
+        // OCP mode: set exact limit
+        float limit_a = _current_limit_ma / 1000.0f;
+        if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
+            LOG_INFO("INA228 overcurrent alert set to %.3fA", limit_a);
+        } else {
+            LOG_ERROR("Failed to set INA228 overcurrent alert");
+        }
     }
 
     // Persist to settings
@@ -1051,7 +1086,7 @@ void StateMachine::applyCurrentLimit() {
     settings.requestSave();
 
     if (settings.isSoundsEnabled()) {
-        hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
+        hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
     }
 }
 
@@ -1066,10 +1101,12 @@ void StateMachine::applyPpsVoltage() {
         if (settings.isSoundsEnabled()) {
             hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
         }
-        // Save PPS state for boot restore
-        settings.setLastPdoIndex(_pps_pdo_index);
-        settings.setLastPpsVoltageMv(_pps_target_voltage_mv);
-        settings.requestSave();
+        // Save PPS state for boot restore (only in Last Used mode to reduce flash wear)
+        if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
+            settings.setLastPdoIndex(_pps_pdo_index);
+            settings.setLastPpsVoltageMv(_pps_target_voltage_mv);
+            settings.requestSave();
+        }
     } else {
         LOG_ERROR("Failed to request PPS");
         // Error beep always plays (safety feedback)
@@ -1087,9 +1124,12 @@ void StateMachine::applyAvsVoltage() {
         if (settings.isSoundsEnabled()) {
             hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
         }
-        settings.setLastPdoIndex(_avs_pdo_index);
-        settings.setLastPpsVoltageMv(_avs_target_voltage_mv);
-        settings.requestSave();
+        // Save AVS state for boot restore (only in Last Used mode to reduce flash wear)
+        if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
+            settings.setLastPdoIndex(_avs_pdo_index);
+            settings.setLastPpsVoltageMv(_avs_target_voltage_mv);
+            settings.requestSave();
+        }
     } else {
         LOG_ERROR("Failed to request AVS");
         hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
@@ -1143,6 +1183,15 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                 if (_contract_mode_value < AppConfig::STARTUP_CONTRACT_MODE_MAX) {
                     _contract_mode_value++;
                     settings.setStartupNegotiation(_contract_mode_value);
+                    // When switching to Last Used, immediately snapshot current contract
+                    if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
+                        settings.setLastPdoIndex(_selected_pdo_index);
+                        if (pdManager.isPpsActive()) {
+                            settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
+                        } else if (pdManager.isAvsActive()) {
+                            settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                        }
+                    }
                     settings.requestSave();
                 }
                 playNavBeep();
@@ -1194,6 +1243,15 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                 if (_contract_mode_value > 0) {
                     _contract_mode_value--;
                     settings.setStartupNegotiation(_contract_mode_value);
+                    // When switching to Last Used, immediately snapshot current contract
+                    if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
+                        settings.setLastPdoIndex(_selected_pdo_index);
+                        if (pdManager.isPpsActive()) {
+                            settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
+                        } else if (pdManager.isAvsActive()) {
+                            settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                        }
+                    }
                     settings.requestSave();
                 }
                 playNavBeep();

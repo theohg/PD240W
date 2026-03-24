@@ -96,4 +96,5 @@ namespace Board {
     // -------------------------------------------------------------------------
     constexpr float INA228_SHUNT_RESISTOR = 0.008f;  // 8mΩ shunt resistor
     constexpr float INA228_MAX_CURRENT    = 5.0f;    // 5A max current
+    constexpr uint16_t INA228_SHUNT_TEMPCO_PPM = 50; // Shunt resistor temperature coefficient [ppm/°C]
 }

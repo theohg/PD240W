@@ -139,6 +139,12 @@ private:
     bool _last_pps_converged;
     bool _last_avs_converged;
 
+    // CC mode badge tracking
+    int8_t _last_cc_badge_state;  // -1=unknown, 0=not shown, 1=shown
+
+    // Energy display mode tracking
+    int8_t _last_energy_mode;  // -1=unknown, 0=mAh, 1=mWh
+
     // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
     int16_t _fault_now_temp_y;
 };

@@ -220,6 +220,9 @@ private:
     uint8_t _contract_mode_value;   // Current contract mode during adjustment (0-2)
     bool _contract_mode_adjusting;  // True when in contract mode adjust mode
 
+    // Energy display mode (toggled by long press on MAIN when no PPS/AVS)
+    bool _energy_display_mwh;       // false = mAh (default), true = mWh
+
 public:
     // Brightness state accessors (for display manager)
     uint8_t getBrightnessValue() const { return _brightness_value; }
@@ -236,6 +239,9 @@ public:
     // Contract mode state accessors (for display manager)
     uint8_t getContractModeValue() const { return _contract_mode_value; }
     bool isContractModeAdjusting() const { return _contract_mode_adjusting; }
+
+    // Energy display mode toggle (long press on MAIN when no PPS/AVS)
+    bool isEnergyDisplayMwh() const { return _energy_display_mwh; }
 
     // Fault state accessors (for display manager)
     float getFaultLimitValue() const { return _fault_limit_value; }

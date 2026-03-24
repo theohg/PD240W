@@ -96,6 +96,14 @@ namespace AppConfig {
     constexpr uint8_t MAX_PDO_COUNT = 13;              // Max PDOs (7 SPR + 6 EPR per USB-PD spec)
 
     // -------------------------------------------------------------------------
+    // Constant Current Mode
+    // -------------------------------------------------------------------------
+    constexpr uint32_t CC_SAFETY_MARGIN_MA = 500;          // OCP margin above CC target [mA]
+    constexpr uint32_t CC_POLL_INTERVAL_MS = 10;           // CC control loop interval [ms] (100Hz)
+    constexpr uint32_t CC_PD_REQUEST_COOLDOWN_MS = 100;    // Min interval between PD voltage requests [ms]
+    constexpr uint32_t CC_VOLTAGE_STEP_MV = 100;            // PD voltage adjustment step [mV]
+
+    // -------------------------------------------------------------------------
     // Temperature Display
     // -------------------------------------------------------------------------
     constexpr uint32_t CRITICAL_BLINK_INTERVAL_MS = 250; // Blink interval for critical temp [ms]
