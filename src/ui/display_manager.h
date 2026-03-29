@@ -146,6 +146,18 @@ private:
     // Energy display mode tracking
     int8_t _last_energy_mode;  // -1=unknown, 0=mAh, 1=mWh
 
+    // Render-function tracking variables (member vars to avoid stale state on warm reset)
+    float _last_ntc_temp;
+    float _last_ina_temp;
+    bool _last_blink_hide;
+    bool _last_load_on;
+    bool _last_buck_on;
+    double _last_energy_value;
+    bool _last_energy_high;
+    uint8_t _last_eeprom_stage;
+    uint8_t _last_eeprom_progress;
+    bool _last_eeprom_confirm;
+
     // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
     int16_t _fault_now_temp_y;
 };

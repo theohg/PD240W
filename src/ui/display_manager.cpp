@@ -16,9 +16,9 @@
 // Global instance
 DisplayManager displayManager;
 
-// Screen dimensions
-static constexpr int SCREEN_WIDTH = 240;
-static constexpr int SCREEN_HEIGHT = 320;
+// Screen dimensions (derived from AppConfig — single source of truth)
+static constexpr int SCREEN_WIDTH = AppConfig::LCD_WIDTH;
+static constexpr int SCREEN_HEIGHT = AppConfig::LCD_HEIGHT;
 
 // Layout constants
 static constexpr int HEADER_HEIGHT = 40;
@@ -78,7 +78,17 @@ DisplayManager::DisplayManager()
     , _last_cc_badge_state(-1)
     , _last_cc_adjust_state(-1)
     , _last_energy_mode(-1)
-    , _fault_now_temp_y(219)
+    , _last_ntc_temp(-999.0f)
+    , _last_ina_temp(-999.0f)
+    , _last_blink_hide(false)
+    , _last_load_on(false)
+    , _last_buck_on(false)
+    , _last_energy_value(-1.0)
+    , _last_energy_high(false)
+    , _last_eeprom_stage(255)
+    , _last_eeprom_progress(255)
+    , _last_eeprom_confirm(false)
+    , _fault_now_temp_y(0)
 {
 }
 
@@ -97,6 +107,19 @@ void DisplayManager::init() {
     _last_cc_adjust_state = -1;    // Force CC adjust badge redraw
     _last_energy_mode = -1;        // Force energy unit redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
+
+    // Reset main screen tracking state (prevents stale data after warm reset)
+    _last_ntc_temp = -999.0f;
+    _last_ina_temp = -999.0f;
+    _last_blink_hide = false;
+    _last_load_on = false;
+    _last_buck_on = false;
+    _last_energy_value = -1.0;
+    _last_energy_high = false;
+    _last_eeprom_stage = 255;
+    _last_eeprom_progress = 255;
+    _last_eeprom_confirm = false;
+    _fault_now_temp_y = 0;
 }
 
 // ============================================================================
@@ -664,8 +687,6 @@ void DisplayManager::drawPowerReadings() {
         if (value < 0.0) value = 0.0;
 
         // Track previous value and unit to avoid flicker (only redraw on change)
-        static double last_value = -1.0;
-        static bool last_was_high = false;
         // mAh mode: high = Ah (>=1000 mAh), mWh mode: high = Wh (>=1000 mWh)
         bool is_high = (value >= 1000.0);
 
@@ -678,14 +699,14 @@ void DisplayManager::drawPowerReadings() {
         bool value_changed = _needs_full_redraw || mode_changed;
         if (is_high) {
             int32_t quantized = (int32_t)(value / 10.0);
-            int32_t last_quantized = (int32_t)(last_value / 10.0);
+            int32_t last_quantized = (int32_t)(_last_energy_value / 10.0);
             if (quantized != last_quantized) value_changed = true;
         } else {
             int32_t quantized = (int32_t)(value * 10.0);
-            int32_t last_quantized = (int32_t)(last_value * 10.0);
+            int32_t last_quantized = (int32_t)(_last_energy_value * 10.0);
             if (quantized != last_quantized) value_changed = true;
         }
-        if (is_high != last_was_high) value_changed = true;
+        if (is_high != _last_energy_high) value_changed = true;
 
         if (value_changed) {
             const int NRG_VALUE_X = VALUE_X + 30;
@@ -710,7 +731,7 @@ void DisplayManager::drawPowerReadings() {
                 hw.display.fillRect(NRG_VALUE_X + nrg_w, y, NRG_UNIT_X - NRG_VALUE_X - nrg_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
 
             // Redraw unit text when it changes or on full redraw/mode change
-            if (is_high != last_was_high || _needs_full_redraw || mode_changed) {
+            if (is_high != _last_energy_high || _needs_full_redraw || mode_changed) {
                 hw.display.fillRect(NRG_UNIT_X, y, SCREEN_WIDTH - MARGIN - NRG_UNIT_X, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
                 const char* unit;
                 if (show_mwh) {
@@ -721,8 +742,8 @@ void DisplayManager::drawPowerReadings() {
                 hw.display.drawStringAA(NRG_UNIT_X, y, unit, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
             }
 
-            last_value = value;
-            last_was_high = is_high;
+            _last_energy_value = value;
+            _last_energy_high = is_high;
         }
     }
 }
@@ -731,11 +752,6 @@ void DisplayManager::drawTemperature() {
     // Position below the power readings frame (frame ends at CONTENT_Y_START + 45 + 152 = 197)
     int y = CONTENT_Y_START + 202;
     const SafetyState& state = safety.getState();
-
-    // Static tracking for flicker prevention
-    static float last_ntc_temp = -999.0f;
-    static float last_ina_temp = -999.0f;
-    static bool last_blink_hide = false;
 
     // 1. Determine the dynamic color for the values
     uint16_t val_color = UIColors::TEXT_PRIMARY;
@@ -759,8 +775,8 @@ void DisplayManager::drawTemperature() {
     }
 
     // Only redraw if values or blink state changed
-    bool ntc_changed = (state.temperature_c != last_ntc_temp) || (blink_hide != last_blink_hide) || _needs_full_redraw;
-    bool ina_changed = (state.ina_temperature_c != last_ina_temp) || (blink_hide != last_blink_hide) || _needs_full_redraw;
+    bool ntc_changed = (state.temperature_c != _last_ntc_temp) || (blink_hide != _last_blink_hide) || _needs_full_redraw;
+    bool ina_changed = (state.ina_temperature_c != _last_ina_temp) || (blink_hide != _last_blink_hide) || _needs_full_redraw;
 
     // 2. Draw using AA font with fixed X positions to prevent flicker
     char buf[16];
@@ -792,7 +808,7 @@ void DisplayManager::drawTemperature() {
             if (NTC_VALUE_X + num_w < NTC_UNIT_X)
                 hw.display.fillRect(NTC_VALUE_X + num_w, y, NTC_UNIT_X - NTC_VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
         }
-        last_ntc_temp = state.temperature_c;
+        _last_ntc_temp = state.temperature_c;
     }
 
     // --- INA temperature ---
@@ -813,10 +829,10 @@ void DisplayManager::drawTemperature() {
             if (INA_VALUE_X + num_w < INA_UNIT_X)
                 hw.display.fillRect(INA_VALUE_X + num_w, y, INA_UNIT_X - INA_VALUE_X - num_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
         }
-        last_ina_temp = state.ina_temperature_c;
+        _last_ina_temp = state.ina_temperature_c;
     }
 
-    last_blink_hide = blink_hide;
+    _last_blink_hide = blink_hide;
 }
 
 void DisplayManager::drawOutputStatus() {
@@ -829,10 +845,6 @@ void DisplayManager::drawOutputStatus() {
     const int BADGE_R = 3;
     const int BADGE_X = SCREEN_WIDTH - MARGIN - BADGE_W;  // Right-aligned badges
 
-    // Static tracking for flicker prevention
-    static bool last_load_on = false;
-    static bool last_buck_on = false;
-
     bool load_on = hw.loadSwitch.read();
     bool buck_on = hw.EN_17V.read();
 
@@ -842,12 +854,12 @@ void DisplayManager::drawOutputStatus() {
         hw.display.drawStringAA(MARGIN, y + 22, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         // hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         // Force badge redraw
-        last_load_on = !load_on;
-        last_buck_on = !buck_on;
+        _last_load_on = !load_on;
+        _last_buck_on = !buck_on;
     }
 
     // --- Load Switch Badge ---
-    if (load_on != last_load_on || _needs_full_redraw) {
+    if (load_on != _last_load_on || _needs_full_redraw) {
         // Clear badge area first to avoid corner artifacts (+1px margin for rounding)
         hw.display.fillRect(BADGE_X - 1, y - 1, BADGE_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
         if (load_on) {
@@ -865,11 +877,11 @@ void DisplayManager::drawOutputStatus() {
             int text_y = y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
             hw.display.drawStringAA(text_x, text_y, "OFF", UIColors::BACKGROUND, UIColors::ERROR, FONT_SMALL);
         }
-        last_load_on = load_on;
+        _last_load_on = load_on;
     }
 
     // --- 17V Buck Badge (aligned vertically with Load badge) ---
-    if (buck_on != last_buck_on || _needs_full_redraw) {
+    if (buck_on != _last_buck_on || _needs_full_redraw) {
         int buck_y = y + 20;
         // Clear badge area first to avoid corner artifacts (+1px margin for rounding)
         hw.display.fillRect(BADGE_X - 1, buck_y - 1, BADGE_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
@@ -888,7 +900,7 @@ void DisplayManager::drawOutputStatus() {
             int text_y = buck_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
             hw.display.drawStringAA(text_x, text_y, "OFF", UIColors::BACKGROUND, UIColors::MUTED, FONT_SMALL);
         }
-        last_buck_on = buck_on;
+        _last_buck_on = buck_on;
     }
 }
 
@@ -1517,17 +1529,13 @@ void DisplayManager::drawEepromFlashScreen() {
     const char* message = tpsEepromWorkflow.getMessage();
 
     // Clear content area on full redraw or stage change
-    static uint8_t last_stage = 255;
-    static uint8_t last_progress = 255;
-    static bool last_confirm_yes = false;
-
-    bool stage_changed = (stage != last_stage);
-    bool progress_changed = (progress != last_progress);
-    bool confirm_changed = (confirm_yes != last_confirm_yes);
+    bool stage_changed = (stage != _last_eeprom_stage);
+    bool progress_changed = (progress != _last_eeprom_progress);
+    bool confirm_changed = (confirm_yes != _last_eeprom_confirm);
 
     if (_needs_full_redraw || stage_changed) {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, UIColors::BACKGROUND);
-        last_stage = stage;
+        _last_eeprom_stage = stage;
     }
 
     int y = CONTENT_Y_START + 20;
@@ -1572,7 +1580,7 @@ void DisplayManager::drawEepromFlashScreen() {
                 int yes_x = start_x + btn_width + spacing + (btn_width - ST7789::getStringWidthAA("Yes", FONT_MEDIUM)) / 2;
                 hw.display.drawStringAA(yes_x, y + 5, "Yes", yes_fg, yes_bg, FONT_MEDIUM);
 
-                last_confirm_yes = confirm_yes;
+                _last_eeprom_confirm = confirm_yes;
             }
 
             hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
@@ -1597,7 +1605,7 @@ void DisplayManager::drawEepromFlashScreen() {
             // Progress bar
             if (_needs_full_redraw || progress_changed) {
                 drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 25, progress, UIColors::SYNAPTICON_PINK);
-                last_progress = progress;
+                _last_eeprom_progress = progress;
             }
             y += 35;
 

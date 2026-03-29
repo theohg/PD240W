@@ -151,7 +151,7 @@ void PdManager::update() {
             _pps_active = false;
             _pps_voltage_mv = 0;
             _pps_current_ma = 0;
-            if (!hw.pdController.requestFixedProfile(5000, 3000)) {
+            if (!hw.pdController.requestFixedProfile(EPR_EXIT_SAFE_MV, EPR_EXIT_SAFE_CURRENT_MA)) {
                 LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
                 _epr_exit_state = EprExitState::NONE;
             } else {
@@ -402,19 +402,19 @@ bool PdManager::needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) con
     // EPR exit needed when:
     // 1. Currently in EPR territory (>20V)
     // 2. Target is SPR (fixed <=20V or any PPS which is always SPR)
-    if (_active_contract.voltage_mv <= EPR_SPR_MAX_MV) {
+    if (_active_contract.voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
         return false;  // Already in SPR range
     }
     if (target_is_pps) {
         return true;  // PPS is always SPR (max 21V)
     }
-    return target_voltage_mv <= EPR_SPR_MAX_MV;
+    return target_voltage_mv <= AppConfig::EPR_SPR_MAX_MV;
 }
 
 bool PdManager::isSafeEprExitPossible() const {
     // Check if we have an AVS PDO that can reach SPR range
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= EPR_SPR_MAX_MV) {
+        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
             return true;
         }
     }
@@ -424,7 +424,7 @@ bool PdManager::isSafeEprExitPossible() const {
 bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const {
     // Find an AVS PDO and return its minimum voltage (lowest possible = safest exit)
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= EPR_SPR_MAX_MV) {
+        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
             // Use AVS PDO min voltage, rounded up to nearest 25mV boundary
             uint32_t min_mv = _pdo_cache[i].min_voltage_mv;
             avs_voltage_mv = ((min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
@@ -875,16 +875,6 @@ void PdManager::checkTuningConvergenceImmediate() {
     }
 }
 
-bool PdManager::checkNewContractEvent() {
-    uint8_t events[11] = {0};
-
-    if (hw.pdController.readInterrupts(events)) {
-        return hw.pdController.isInterruptSet(events, 12);
-    }
-
-    return false;
-}
-
 // ============================================================================
 // Startup Contract Negotiation
 // ============================================================================
@@ -1042,7 +1032,7 @@ bool PdManager::negotiateStartupContract() {
 void PdManager::probeEpr() {
     bool has_epr = false;
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs || _pdo_cache[i].voltage_mv > 20000) {
+        if (_pdo_cache[i].is_avs || _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
             has_epr = true;
             break;
         }

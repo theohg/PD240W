@@ -25,12 +25,6 @@ static const char* BOOT_MESSAGES[] = {
 };
 static constexpr uint8_t BOOT_STAGE_COUNT = 4;
 
-// PDO discovery timeout during boot (ms)
-static constexpr uint32_t BOOT_PDO_TIMEOUT_MS = 800;
-
-// Contract negotiation timeout during boot (ms)
-static constexpr uint32_t BOOT_NEGOTIATION_TIMEOUT_MS = 1000;
-
 // Storage for PDO list (shared with display)
 static SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
 
@@ -69,6 +63,11 @@ StateMachine::StateMachine()
     , _pps_max_voltage_mv(0)
     , _pps_max_current_ma(0)
     , _pps_pdo_index(0)
+    , _avs_target_voltage_mv(0)
+    , _avs_min_voltage_mv(0)
+    , _avs_max_voltage_mv(0)
+    , _avs_max_current_ma(0)
+    , _avs_pdo_index(0)
     , _brightness_value(100)
     , _brightness_adjusting(false)
     , _screen_dimmed(false)
@@ -79,8 +78,8 @@ StateMachine::StateMachine()
     , _contract_mode_value(2)
     , _contract_mode_adjusting(false)
     , _energy_display_mwh(false)
-{
-}
+    , _boot_neg_start(nil_time)
+{}
 
 // ============================================================================
 // Initialization
@@ -216,7 +215,7 @@ void StateMachine::handleBootState() {
 
     // Stage 1: Wait for PDOs with timeout
     if (_boot_stage == 1) {
-        if (pdManager.waitForPdos(BOOT_PDO_TIMEOUT_MS)) {
+        if (pdManager.waitForPdos(AppConfig::BOOT_PDO_TIMEOUT_MS)) {
             // PDO discovery finished (found PDOs or timed out)
             _boot_pdos_found = pdManager.hasPdos();
             if (_boot_pdos_found) {
@@ -260,16 +259,14 @@ void StateMachine::handleBootState() {
         }
 
         // Timeout fallback for negotiation
-        static absolute_time_t neg_start = nil_time;
-        if (is_nil_time(neg_start)) {
-            neg_start = get_absolute_time();
+        if (is_nil_time(_boot_neg_start)) {
+            _boot_neg_start = get_absolute_time();
         }
-        uint32_t neg_elapsed = absolute_time_diff_us(neg_start, get_absolute_time()) / 1000;
-        if (neg_elapsed >= BOOT_NEGOTIATION_TIMEOUT_MS) {
+        uint32_t neg_elapsed = absolute_time_diff_us(_boot_neg_start, get_absolute_time()) / 1000;
+        if (neg_elapsed >= AppConfig::BOOT_NEGOTIATION_TIMEOUT_MS) {
             _boot_contract_complete = true;
             pdManager.refreshActiveContract();
             LOG_WARN("Boot: Contract negotiation timeout");
-            neg_start = nil_time;  // Reset for potential future use
         }
     }
 
@@ -288,7 +285,7 @@ void StateMachine::handleBootState() {
         // Poll for EPR PDOs every ~150ms during the wait window
         static uint32_t last_epr_poll_ms = 0;
         static bool epr_pdos_found = false;
-        if (epr_elapsed >= 150 && epr_elapsed - last_epr_poll_ms >= 150) {
+        if (epr_elapsed >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS && epr_elapsed - last_epr_poll_ms >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS) {
             last_epr_poll_ms = epr_elapsed;
             pdManager.invalidatePdoCache();
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
@@ -297,7 +294,7 @@ void StateMachine::handleBootState() {
             // Check if EPR/AVS PDOs have arrived
             if (!epr_pdos_found) {
                 for (uint8_t i = 0; i < _num_pdos; i++) {
-                    if (s_pdo_list[i].is_avs || s_pdo_list[i].voltage_mv > 20000) {
+                    if (s_pdo_list[i].is_avs || s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                         epr_pdos_found = true;
                         LOG_INFO("Boot: EPR PDOs found after %ums: %d PDOs", epr_elapsed, _num_pdos);
                         break;
@@ -318,7 +315,7 @@ void StateMachine::handleBootState() {
         if (epr_pdos_found && is_highest_mode && _boot_stage == 2) {
             pdManager.refreshActiveContract();
             const auto& contract = pdManager.getActiveContract();
-            if (contract.valid && contract.voltage_mv > 20000) {
+            if (contract.valid && contract.voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                 LOG_INFO("Boot: Contract settled at %umV after %ums", contract.voltage_mv, epr_elapsed);
                 last_epr_poll_ms = 0;
                 epr_pdos_found = false;
@@ -326,8 +323,8 @@ void StateMachine::handleBootState() {
             }
         }
 
-        // Timeouts: 600ms for non-EPR chargers, 1200ms when waiting for EPR contract
-        uint32_t timeout_ms = epr_pdos_found ? 1200 : 600;
+        // Timeouts: non-EPR chargers get shorter timeout, EPR needs more time for contract settlement
+        uint32_t timeout_ms = epr_pdos_found ? AppConfig::BOOT_EPR_CONTRACT_TIMEOUT_MS : AppConfig::BOOT_EPR_TIMEOUT_MS;
         if (_boot_stage == 2 && epr_elapsed >= timeout_ms) {
             pdManager.invalidatePdoCache();
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
@@ -463,7 +460,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
             switch (_selected_menu_item) {
                 case MenuItem::SELECT_VOLTAGE:
                     pdManager.probeEpr();
-                    sleep_ms(150); // Give the charger a moment to respond with EPR caps
+                    sleep_ms(AppConfig::EPR_PROBE_DELAY_MS); // Brief blocking wait for charger to respond with EPR caps
                     pdManager.invalidatePdoCache(); // Force an absolute reload of the _pdo_cache
                     loadPdoList();
                     _adjust_mode = AdjustMode::PDO_SELECT;
@@ -779,6 +776,7 @@ void StateMachine::transitionTo(AppState new_state) {
             _boot_contract_requested = false;
             _boot_contract_complete = false;
             _boot_ready_time = nil_time;
+            _boot_neg_start = nil_time;
             break;
 
         case AppState::MAIN:
@@ -863,7 +861,7 @@ EncoderEvent StateMachine::readEncoderEvent() {
             // Button released
             if (press_duration >= AppConfig::ENCODER_LONG_PRESS_MS) {
                 event = EncoderEvent::LONG_PRESS;
-            } else if (press_duration > 30) {  // Minimum press time (debounce)
+            } else if (press_duration > AppConfig::ENCODER_MIN_PRESS_MS) {
                 event = EncoderEvent::CLICK;
             }
             _encoder_button_held = false;
@@ -988,11 +986,6 @@ void StateMachine::setFault(FaultType fault) {
 // Boot Sequence Helpers
 // ============================================================================
 
-void StateMachine::advanceBootStage() {
-    // Boot stages are now handled directly in handleBootState()
-    // This function is kept for compatibility but no longer does anything
-}
-
 uint8_t StateMachine::getBootProgress() const {
     if (_state != AppState::BOOT) return 100;
 
@@ -1023,7 +1016,7 @@ const char* StateMachine::getBootStageMessage() const {
 
 void StateMachine::loadPdoList() {
     pdManager.refreshActiveContract();  // Ensure we have the latest active contract for highlighting
-    _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, 13);
+    _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
     _selected_pdo_index = 0;
 
     LOG_INFO("Loaded %d PDOs from charger", _num_pdos);

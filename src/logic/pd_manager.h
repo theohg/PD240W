@@ -192,7 +192,8 @@ private:
     bool _epr_deferred_is_pps;          // True if deferred request is PPS (vs fixed)
     absolute_time_t _epr_exit_start;    // Timeout tracking for full sequence
     static constexpr uint32_t EPR_EXIT_TIMEOUT_MS = 5000;   // Total timeout for 3-step sequence
-    static constexpr uint32_t EPR_SPR_MAX_MV = 20000;       // Target <=20V is SPR (triggers EPR exit)
+    static constexpr uint32_t EPR_EXIT_SAFE_MV = 5000;       // Intermediate 5V request voltage [mV]
+    static constexpr uint32_t EPR_EXIT_SAFE_CURRENT_MA = 3000; // Intermediate 5V request current [mA]
 
     // EPR exit helpers
     bool findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const;
@@ -202,9 +203,6 @@ private:
 
     // Process PD interrupt events
     void handlePdInterrupt();
-
-    // Check for new contract event
-    bool checkNewContractEvent();
 };
 
 // Global instance

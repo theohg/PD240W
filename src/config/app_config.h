@@ -16,6 +16,16 @@ namespace AppConfig {
     constexpr uint32_t MENU_TIMEOUT_MS = 15000;        // Auto-return from menu [ms]
     constexpr uint32_t DISPLAY_UPDATE_MS = 100;        // Main screen refresh rate [ms]
     constexpr uint32_t ENCODER_LONG_PRESS_MS = 700;    // Long press threshold [ms]
+    constexpr uint32_t ENCODER_MIN_PRESS_MS = 30;       // Minimum press time for debounce [ms]
+
+    // -------------------------------------------------------------------------
+    // Boot Timing
+    // -------------------------------------------------------------------------
+    constexpr uint32_t BOOT_PDO_TIMEOUT_MS = 800;             // PDO discovery timeout during boot [ms]
+    constexpr uint32_t BOOT_NEGOTIATION_TIMEOUT_MS = 1000;    // Contract negotiation timeout during boot [ms]
+    constexpr uint32_t BOOT_EPR_POLL_INTERVAL_MS = 150;       // EPR PDO poll interval during boot [ms]
+    constexpr uint32_t BOOT_EPR_TIMEOUT_MS = 600;             // Non-EPR charger EPR probe timeout [ms]
+    constexpr uint32_t BOOT_EPR_CONTRACT_TIMEOUT_MS = 1200;   // EPR contract settlement timeout [ms]
 
     // -------------------------------------------------------------------------
     // Safety Thresholds
@@ -91,9 +101,11 @@ namespace AppConfig {
     constexpr uint8_t RGB_LED_BRIGHTNESS_DIM = 2;      // Dimmed brightness (%)
 
     // -------------------------------------------------------------------------
-    // PDO Cache
+    // USB PD Constants
     // -------------------------------------------------------------------------
     constexpr uint8_t MAX_PDO_COUNT = 13;              // Max PDOs (7 SPR + 6 EPR per USB-PD spec)
+    constexpr uint32_t EPR_SPR_MAX_MV = 20000;         // EPR/SPR boundary: voltages >20V are EPR [mV]
+    constexpr uint32_t EPR_PROBE_DELAY_MS = 150;       // Delay after EPR probe before reading PDOs [ms]
 
     // -------------------------------------------------------------------------
     // Constant Current Mode

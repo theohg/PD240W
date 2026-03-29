@@ -144,6 +144,7 @@ private:
     bool _boot_epr_probed;              // True once EPR probe sent after negotiation
     absolute_time_t _boot_epr_probe_time; // When EPR probe was sent
     absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
+    absolute_time_t _boot_neg_start;    // When contract negotiation started (for timeout)
 
     // Menu navigation
     MenuItem _selected_menu_item;
@@ -192,9 +193,6 @@ private:
     // Input processing
     EncoderEvent readEncoderEvent();
     void handleOutputButtons();
-
-    // Boot sequence helpers
-    void advanceBootStage();
 
     // Menu/Adjust helpers
     void loadPdoList();
