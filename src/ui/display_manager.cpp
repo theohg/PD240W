@@ -76,6 +76,7 @@ DisplayManager::DisplayManager()
     , _last_pps_converged(false)
     , _last_avs_converged(false)
     , _last_cc_badge_state(-1)
+    , _last_cc_adjust_state(-1)
     , _last_energy_mode(-1)
     , _fault_now_temp_y(219)
 {
@@ -93,6 +94,7 @@ void DisplayManager::init() {
     _last_pd_revision[0] = '\0';
     _last_epr_badge_drawn = false;  // Force EPR badge redraw
     _last_cc_badge_state = -1;     // Force CC badge redraw
+    _last_cc_adjust_state = -1;    // Force CC adjust badge redraw
     _last_energy_mode = -1;        // Force energy unit redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 }
@@ -376,15 +378,9 @@ void DisplayManager::drawActiveContract() {
     // Use fixed-width format to avoid clearing
     char line1[32];
     if (contract.valid && contract.voltage_mv > 0) {
-        // When auto PPS/AVS tuning is active, show user's target voltage instead of negotiated
-        uint32_t display_voltage_mv = contract.voltage_mv;
-        if (pdManager.isPpsTuningActive()) {
-            display_voltage_mv = pdManager.getPpsUserTargetMv();
-        } else if (pdManager.isAvsTuningActive()) {
-            display_voltage_mv = pdManager.getAvsUserTargetMv();
-        }
+        // Always show the actual negotiated contract from the charger
         snprintf(line1, sizeof(line1), "%5.2fV @ %5.2fA  ",
-                 display_voltage_mv / 1000.0f,
+                 contract.voltage_mv / 1000.0f,
                  contract.current_ma / 1000.0f);
         hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
 
@@ -520,7 +516,7 @@ void DisplayManager::drawPowerReadings() {
     // Layout Constants
     const int LABEL_X = MARGIN + 3;
     const int VALUE_X = MARGIN + 43; // Align all big numbers here
-    const int UNIT_X  = 165;         // Fixed X for unit letters (V, A, W) — prevents shifting
+    const int UNIT_X  = 155;         // Fixed X for unit letters (V, A, W) — prevents shifting
 
     const SafetyState& state = safety.getState();
     char buf[32];
@@ -535,19 +531,43 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "V", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
-    // Secondary: Input Voltage - split into fixed-position parts to prevent shifting
+    // Secondary line: Vin (pre-switch VBUS) always on left, Vset (user target) on right when PPS/AVS
     y += 32;
     {
+        // Vin always on left at the same position
         const int VIN_VALUE_X = VALUE_X + 30;
         const int VIN_UNIT_X = VALUE_X + 72;
         hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         snprintf(buf, sizeof(buf), "%5.2f", state.vbus_voltage_v);
         hw.display.drawStringAA(VIN_VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
-        // Gap-fill between value and unit (prevents AA artifacts from wider old digits)
         int vin_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
         if (VIN_VALUE_X + vin_w < VIN_UNIT_X)
             hw.display.fillRect(VIN_VALUE_X + vin_w, y, VIN_UNIT_X - VIN_VALUE_X - vin_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
         hw.display.drawStringAA(VIN_UNIT_X, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+
+        // Vset on right when PPS or AVS target is known
+        uint32_t vset_mv = 0;
+        if (pdManager.isPpsActive() && pdManager.getPpsUserTargetMv() > 0) {
+            vset_mv = pdManager.getPpsUserTargetMv();
+        } else if (pdManager.isAvsActive() && pdManager.getAvsUserTargetMv() > 0) {
+            vset_mv = pdManager.getAvsUserTargetMv();
+        }
+
+        const int VSET_LABEL_X = VIN_UNIT_X + 16;
+        const int VSET_VAL_X = VSET_LABEL_X + 36;
+        const int VSET_UNIT_X = VSET_VAL_X + 42;
+        if (vset_mv > 0) {
+            hw.display.drawStringAA(VSET_LABEL_X, y, "Vset:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+            snprintf(buf, sizeof(buf), "%5.2f", vset_mv / 1000.0f);
+            hw.display.drawStringAA(VSET_VAL_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+            int vset_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
+            if (VSET_VAL_X + vset_w < VSET_UNIT_X)
+                hw.display.fillRect(VSET_VAL_X + vset_w, y, VSET_UNIT_X - VSET_VAL_X - vset_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+            hw.display.drawStringAA(VSET_UNIT_X, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        } else {
+            // Clear Vset area when not in PPS/AVS
+            hw.display.fillRect(VSET_LABEL_X, y, VSET_UNIT_X + 10 - VSET_LABEL_X, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        }
     }
 
     // --- Current Section ---
@@ -568,25 +588,44 @@ void DisplayManager::drawPowerReadings() {
         hw.display.fillRect(VALUE_X + num_w, y, UNIT_X - VALUE_X - num_w, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
     hw.display.drawStringAA(UNIT_X, y, "A", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
-    // CC mode badge (white badge next to "A" when CC is active)
+    // OCP/CC mode badge (next to "A" on current row)
+    // OCP always shown when not in PPS/AVS (regardless of CC setting)
+    // CC shown only in PPS/AVS: grey=not regulating, white=regulating
     {
-        bool cc_active = CcController::isEnabled();
-        int8_t cc_state = cc_active ? 1 : 0;
-        if (cc_state != _last_cc_badge_state || _needs_full_redraw) {
-            const int CC_BADGE_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 4;
-            const int CC_BADGE_Y = y + 4;
-            const int CC_BADGE_W = 24;
-            const int CC_BADGE_H = 16;
-            if (cc_active) {
-                hw.display.fillRoundRect(CC_BADGE_X, CC_BADGE_Y, CC_BADGE_W, CC_BADGE_H, 3, UIColors::TEXT_PRIMARY);
-                int text_x = CC_BADGE_X + (CC_BADGE_W - ST7789::getStringWidthAA("CC", FONT_SMALL)) / 2;
-                int text_y = CC_BADGE_Y + (CC_BADGE_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(text_x, text_y, "CC", UIColors::BACKGROUND, UIColors::TEXT_PRIMARY, FONT_SMALL);
+        bool cc_enabled = CcController::isEnabled();
+        bool in_pps_avs = pdManager.isPpsActive() || pdManager.isAvsActive();
+        bool cc_regulating = CcController::isRegulating();
+        // 0=OCP grey, 1=CC white (regulating), 2=CC grey (enabled+PPS/AVS, not regulating)
+        int8_t badge_state;
+        if (cc_enabled && in_pps_avs) {
+            badge_state = cc_regulating ? 1 : 2;
+        } else {
+            badge_state = 0;  // OCP
+        }
+        if (badge_state != _last_cc_badge_state || _needs_full_redraw) {
+            const int BADGE_AREA_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 6;
+            const int BADGE_H = 16;
+            const int BADGE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
+            // OCP is the widest badge — use its width as the clear/centering area
+            int ocp_w = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 8;
+            hw.display.fillRect(BADGE_AREA_X, BADGE_Y, ocp_w, BADGE_H, UIColors::BACKGROUND);
+
+            const char* txt;
+            uint16_t badge_color;
+            if (badge_state == 1) {
+                txt = "CC"; badge_color = UIColors::TEXT_PRIMARY;
+            } else if (badge_state == 2) {
+                txt = "CC"; badge_color = UIColors::MUTED;
             } else {
-                // Clear badge area
-                hw.display.fillRect(CC_BADGE_X, CC_BADGE_Y, CC_BADGE_W, CC_BADGE_H, UIColors::BACKGROUND);
+                txt = "OCP"; badge_color = UIColors::MUTED;
             }
-            _last_cc_badge_state = cc_state;
+            int badge_w = ST7789::getStringWidthAA(txt, FONT_SMALL) + 8;
+            int badge_x = BADGE_AREA_X + (ocp_w - badge_w) / 2;
+            hw.display.fillRoundRect(badge_x, BADGE_Y, badge_w, BADGE_H, 3, badge_color);
+            int tx = badge_x + (badge_w - ST7789::getStringWidthAA(txt, FONT_SMALL)) / 2;
+            int ty = BADGE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+            hw.display.drawStringAA(tx, ty, txt, UIColors::BACKGROUND, badge_color, FONT_SMALL);
+            _last_cc_badge_state = badge_state;
         }
     }
 
@@ -1026,13 +1065,13 @@ void DisplayManager::drawCurrentLimitAdjust() {
     uint32_t max_ma = stateMachine.getEffectiveMaxCurrentMa();
     bool cc_enabled = CcController::isEnabled();
     int8_t cc_state = cc_enabled ? 1 : 0;
-    bool cc_changed = (cc_state != _last_cc_badge_state);
+    bool cc_changed = (cc_state != _last_cc_adjust_state);
+    bool value_changed = (current_ma != _last_adjust_value);
 
     // Skip redraw if nothing changed
-    if (!_needs_full_redraw && current_ma == _last_adjust_value && !cc_changed) {
+    if (!_needs_full_redraw && !value_changed && !cc_changed) {
         return;
     }
-    _last_adjust_value = current_ma;
 
     int y = CONTENT_Y_START + 40;
 
@@ -1041,36 +1080,40 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
     }
 
-    // Draw current value with A unit at fixed position
-    // Value right-aligned, A at fixed position for stable layout
+    // Compute layout positions (needed for both value and badge)
     char buf[32];
     snprintf(buf, sizeof(buf), "%5.2f", current_ma / 1000.0f);
-    
-    // Fixed layout: center point at screen middle, A after the number area
-    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;  // Fixed position for "A"
-    const int VALUE_RIGHT = UNIT_X - 8;  // Right edge of value area
+    const int A_WIDTH = ST7789::getStringWidthAA("A", FONT_LARGE);
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
-    int value_x = VALUE_RIGHT - value_width;
-    
-    // Clear value area and redraw
-    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
-    hw.display.drawStringAA(UNIT_X, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    const int GAP = 4;
+    int total_w = value_width + GAP + A_WIDTH;
+    int value_x = (SCREEN_WIDTH - total_w) / 2;
+    int unit_x = value_x + value_width + GAP;
 
-    // CC/OCP mode indicator badge (next to "A")
-    {
-        const int MODE_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 6;
-        const int MODE_Y = y + 4;
+    // Only redraw value+unit when the current value changed (avoids flicker on badge toggle)
+    if (value_changed || _needs_full_redraw) {
+        _last_adjust_value = current_ma;
+        hw.display.fillRect(value_x - 20, y, total_w + 40, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        hw.display.drawStringAA(unit_x, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    }
+
+    // CC/OCP mode indicator badge — only redraw when badge state changes
+    if (cc_changed || _needs_full_redraw) {
+        const int BADGE_H = 16;
+        const int MODE_X = unit_x + A_WIDTH + 6;
+        const int MODE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
         const char* mode_text = cc_enabled ? "CC" : "OCP";
-        uint16_t badge_color = cc_enabled ? UIColors::TEXT_PRIMARY : UIColors::MUTED;
-        // Clear badge area first (OCP is wider than CC)
-        hw.display.fillRect(MODE_X, MODE_Y, 40, 16, UIColors::BACKGROUND);
+        uint16_t badge_color = cc_enabled ? UIColors::ACCENT : UIColors::MUTED;
+        int ocp_w = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 8;
+        hw.display.fillRect(MODE_X - 1, MODE_Y - 1, ocp_w + 2, BADGE_H + 2, UIColors::BACKGROUND);
         int badge_w = ST7789::getStringWidthAA(mode_text, FONT_SMALL) + 8;
-        hw.display.fillRoundRect(MODE_X, MODE_Y, badge_w, 16, 3, badge_color);
-        int text_x = MODE_X + 4;
-        int text_y = MODE_Y + (16 - FONT_SMALL->lineHeight) / 2;
+        int badge_x = MODE_X + (ocp_w - badge_w) / 2;
+        hw.display.fillRoundRect(badge_x, MODE_Y, badge_w, BADGE_H, 3, badge_color);
+        int text_x = badge_x + (badge_w - ST7789::getStringWidthAA(mode_text, FONT_SMALL)) / 2;
+        int text_y = MODE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
         hw.display.drawStringAA(text_x, text_y, mode_text, UIColors::BACKGROUND, badge_color, FONT_SMALL);
-        _last_cc_badge_state = cc_state;
+        _last_cc_adjust_state = cc_state;
     }
 
     // Draw progress bar (scaled to effective max)

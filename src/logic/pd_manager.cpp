@@ -2,6 +2,7 @@
 #include "hardware.h"
 #include "config/board_config.h"
 #include "interrupts.h"
+#include "logic/cc_controller.h"
 #include "logic/settings.h"
 #include "utils/logging.h"
 #include <cstring>
@@ -40,6 +41,11 @@ PdManager::PdManager()
     , _avs_range_max_mv(0)
     , _pre_request_voltage_mv(0)
     , _pre_request_current_ma(0)
+    , _epr_exit_state(EprExitState::NONE)
+    , _epr_deferred_voltage_mv(0)
+    , _epr_deferred_current_ma(0)
+    , _epr_deferred_is_pps(false)
+    , _epr_exit_start(nil_time)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
@@ -112,6 +118,73 @@ void PdManager::update() {
         }
     }
 
+    // EPR safe exit 3-step state machine:
+    // STEPPING_DOWN -> REQUESTING_5V -> REQUESTING_TARGET -> NONE
+    if (_epr_exit_state != EprExitState::NONE) {
+        // Global timeout for entire EPR exit sequence
+        uint32_t epr_elapsed = absolute_time_diff_us(_epr_exit_start, get_absolute_time()) / 1000;
+        if (epr_elapsed >= EPR_EXIT_TIMEOUT_MS) {
+            LOG_ERROR("EPR exit sequence timed out after %ums -- aborting", epr_elapsed);
+            _epr_exit_state = EprExitState::NONE;
+        }
+        // Step failed or timed out at negotiation level
+        else if (_negotiation_state == NegotiationState::FAILED ||
+                 _negotiation_state == NegotiationState::TIMEOUT) {
+            LOG_ERROR("EPR exit step failed (state=%d, exit_step=%d) -- aborting",
+                      (int)_negotiation_state, (int)_epr_exit_state);
+            _epr_exit_state = EprExitState::NONE;
+        }
+        // Step 1 complete: AVS step-down succeeded -> request 5V Fixed to cleanly exit EPR
+        else if (_epr_exit_state == EprExitState::STEPPING_DOWN &&
+                 _negotiation_state == NegotiationState::SUCCESS) {
+            refreshActiveContract();
+            LOG_INFO("EPR step 1/3 complete: AVS at %umV. Requesting 5V Fixed to exit EPR",
+                     _active_contract.voltage_mv);
+            _epr_exit_state = EprExitState::REQUESTING_5V;
+            // Request 5V Fixed -- bypass EPR interception by setting state first
+            _pre_request_voltage_mv = _active_contract.voltage_mv;
+            _pre_request_current_ma = _active_contract.current_ma;
+            // Deactivate AVS/PPS tracking for the intermediate 5V request
+            _avs_active = false;
+            _avs_voltage_mv = 0;
+            _avs_current_ma = 0;
+            _pps_active = false;
+            _pps_voltage_mv = 0;
+            _pps_current_ma = 0;
+            if (!hw.pdController.requestFixedProfile(5000, 3000)) {
+                LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
+                _epr_exit_state = EprExitState::NONE;
+            } else {
+                _negotiation_state = NegotiationState::REQUESTING;
+                _negotiation_start = get_absolute_time();
+            }
+        }
+        // Step 2 complete: 5V Fixed succeeded -> now request user's actual target
+        else if (_epr_exit_state == EprExitState::REQUESTING_5V &&
+                 _negotiation_state == NegotiationState::SUCCESS) {
+            refreshActiveContract();
+            LOG_INFO("EPR step 2/3 complete: at %umV (SPR). Requesting target: %s %umV @ %umA",
+                     _active_contract.voltage_mv,
+                     _epr_deferred_is_pps ? "PPS" : "Fixed",
+                     _epr_deferred_voltage_mv, _epr_deferred_current_ma);
+            _epr_exit_state = EprExitState::REQUESTING_TARGET;
+            // Fire the user's actual request (EPR exit state prevents re-interception)
+            if (_epr_deferred_is_pps) {
+                requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+            } else {
+                requestFixedVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+            }
+        }
+        // Step 3 complete: target request succeeded -> done
+        else if (_epr_exit_state == EprExitState::REQUESTING_TARGET &&
+                 _negotiation_state == NegotiationState::SUCCESS) {
+            refreshActiveContract();
+            LOG_INFO("EPR step 3/3 complete: safely transitioned to %umV @ %umA",
+                     _active_contract.voltage_mv, _active_contract.current_ma);
+            _epr_exit_state = EprExitState::NONE;
+        }
+    }
+
     // Deferred PDO discovery: if PD revision is unknown, TPS26750 may have negotiated
     // before RP2040 GPIO interrupts were set up (missed edge at cold boot).
     // Retry every 500ms until PDOs are found.
@@ -137,7 +210,8 @@ void PdManager::update() {
             uint32_t request_mv = _pps_voltage_mv;
 
             // Auto PPS tuning: measure actual voltage and adjust request
-            if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0) {
+            // Skip auto-tuning when CC controller is regulating (CC adjusts voltage for current)
+            if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 && !CcController::isRegulating()) {
                 // Measure actual output voltage
                 float measured_v;
                 if (gpio_get(Board::PIN_SWITCH_EN)) {
@@ -195,9 +269,9 @@ void PdManager::update() {
         }
     }
 
-    // Fast convergence check: when PPS tuning is active but not converged,
-    // check more frequently (every 500ms) without re-requesting
-    if (_pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 && !_pps_tuning_converged) {
+    // Fast convergence check: when PPS tuning is active,
+    // check frequently (every 500ms) to detect drift in either direction
+    if (_pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0) {
         static absolute_time_t next_pps_convergence_check = {0};
         if (absolute_time_diff_us(next_pps_convergence_check, get_absolute_time()) >= 0) {
             next_pps_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
@@ -213,7 +287,8 @@ void PdManager::update() {
             uint32_t request_mv = _avs_voltage_mv;
 
             // Auto AVS tuning: measure actual voltage and adjust request
-            if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0) {
+            // Skip auto-tuning when CC controller is regulating (CC adjusts voltage for current)
+            if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 && !CcController::isRegulating()) {
                 // Measure actual output voltage
                 float measured_v;
                 if (gpio_get(Board::PIN_SWITCH_EN)) {
@@ -271,9 +346,9 @@ void PdManager::update() {
         }
     }
 
-    // Fast convergence check: when AVS tuning is active but not converged,
-    // check more frequently (every 500ms) without re-requesting
-    if (_avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 && !_avs_tuning_converged) {
+    // Fast convergence check: when AVS tuning is active,
+    // check frequently (every 500ms) to detect drift in either direction
+    if (_avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0) {
         static absolute_time_t next_avs_convergence_check = {0};
         if (absolute_time_diff_us(next_avs_convergence_check, get_absolute_time()) >= 0) {
             next_avs_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
@@ -320,6 +395,47 @@ uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_cap
 }
 
 // ============================================================================
+// EPR Safe Exit Helpers
+// ============================================================================
+
+bool PdManager::needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) const {
+    // EPR exit needed when:
+    // 1. Currently in EPR territory (>20V)
+    // 2. Target is SPR (fixed <=20V or any PPS which is always SPR)
+    if (_active_contract.voltage_mv <= EPR_SPR_MAX_MV) {
+        return false;  // Already in SPR range
+    }
+    if (target_is_pps) {
+        return true;  // PPS is always SPR (max 21V)
+    }
+    return target_voltage_mv <= EPR_SPR_MAX_MV;
+}
+
+bool PdManager::isSafeEprExitPossible() const {
+    // Check if we have an AVS PDO that can reach SPR range
+    for (uint8_t i = 0; i < _pdo_count; i++) {
+        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= EPR_SPR_MAX_MV) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const {
+    // Find an AVS PDO and return its minimum voltage (lowest possible = safest exit)
+    for (uint8_t i = 0; i < _pdo_count; i++) {
+        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= EPR_SPR_MAX_MV) {
+            // Use AVS PDO min voltage, rounded up to nearest 25mV boundary
+            uint32_t min_mv = _pdo_cache[i].min_voltage_mv;
+            avs_voltage_mv = ((min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+            avs_current_ma = _pdo_cache[i].max_current_ma;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
 // Contract Negotiation
 // ============================================================================
 
@@ -337,6 +453,23 @@ bool PdManager::requestContract(const SourceCapability& pdo) {
 
 bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     LOG_INFO("Requesting Fixed: %umV @ %umA", voltage_mv, current_ma);
+
+    // EPR safe exit: if currently in EPR and target is SPR, initiate 3-step exit
+    if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, false)) {
+        uint32_t avs_v, avs_i;
+        if (findAvsSafeVoltage(avs_v, avs_i)) {
+            LOG_INFO("EPR exit: 3-step sequence for Fixed %umV (AVS %umV -> 5V -> %umV)",
+                     voltage_mv, avs_v, voltage_mv);
+            _epr_deferred_voltage_mv = voltage_mv;
+            _epr_deferred_current_ma = current_ma;
+            _epr_deferred_is_pps = false;
+            _epr_exit_state = EprExitState::STEPPING_DOWN;
+            _epr_exit_start = get_absolute_time();
+            return requestAvsVoltage(avs_v, avs_i);
+        } else {
+            LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
+        }
+    }
 
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
@@ -373,6 +506,23 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
 
 bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     LOG_INFO("Requesting PPS: %umV @ %umA", voltage_mv, current_ma);
+
+    // EPR safe exit: if currently in EPR and target is PPS (SPR), initiate 3-step exit
+    if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, true)) {
+        uint32_t avs_v, avs_i;
+        if (findAvsSafeVoltage(avs_v, avs_i)) {
+            LOG_INFO("EPR exit: 3-step sequence for PPS %umV (AVS %umV -> 5V -> PPS %umV)",
+                     voltage_mv, avs_v, voltage_mv);
+            _epr_deferred_voltage_mv = voltage_mv;
+            _epr_deferred_current_ma = current_ma;
+            _epr_deferred_is_pps = true;
+            _epr_exit_state = EprExitState::STEPPING_DOWN;
+            _epr_exit_start = get_absolute_time();
+            return requestAvsVoltage(avs_v, avs_i);
+        } else {
+            LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
+        }
+    }
 
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
@@ -469,6 +619,16 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     }
 
     return success;
+}
+
+void PdManager::setCcKeepAliveVoltage(uint32_t voltage_mv) {
+    if (_pps_active) {
+        _pps_voltage_mv = voltage_mv;
+        _pps_last_refresh = get_absolute_time();
+    } else if (_avs_active) {
+        _avs_voltage_mv = voltage_mv;
+        _avs_last_refresh = get_absolute_time();
+    }
 }
 
 // ============================================================================

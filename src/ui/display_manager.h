@@ -140,7 +140,8 @@ private:
     bool _last_avs_converged;
 
     // CC mode badge tracking
-    int8_t _last_cc_badge_state;  // -1=unknown, 0=not shown, 1=shown
+    int8_t _last_cc_badge_state;  // -1=unknown, 0=hidden, 1=grey(enabled but fixed), 2=white(regulating)
+    int8_t _last_cc_adjust_state; // Separate tracker for current limit adjust screen
 
     // Energy display mode tracking
     int8_t _last_energy_mode;  // -1=unknown, 0=mAh, 1=mWh

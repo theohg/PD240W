@@ -703,9 +703,12 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         _avs_min_voltage_mv = pdo.min_voltage_mv;
                         _avs_max_voltage_mv = pdo.voltage_mv;
                         _avs_max_current_ma = pdo.max_current_ma;
-                        // Start at mid-range voltage
-                        _avs_target_voltage_mv = (_avs_min_voltage_mv + _avs_max_voltage_mv) / 2;
-                        // Round to 25mV step (AVS resolution)
+                        // Start at current AVS voltage if already active, otherwise mid-range
+                        _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
+                        if (_avs_target_voltage_mv == 0) {
+                            _avs_target_voltage_mv = (_avs_min_voltage_mv + _avs_max_voltage_mv) / 2;
+                        }
+                        // Round to step boundary
                         _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
                         _adjust_mode = AdjustMode::AVS_VOLTAGE;
                         LOG_INFO("Entering AVS voltage adjustment: %u-%umV", _avs_min_voltage_mv, _avs_max_voltage_mv);

@@ -80,6 +80,10 @@ public:
     // Check if AVS contract is active
     bool isAvsActive() const { return _avs_active; }
 
+    // Update keep-alive voltage from CC controller (avoids fighting with CC regulation)
+    // Only updates internal tracking, does NOT send a PD request
+    void setCcKeepAliveVoltage(uint32_t voltage_mv);
+
     // Immediate convergence check (call after applying PPS/AVS voltage)
     void checkTuningConvergenceImmediate();
 
@@ -109,6 +113,12 @@ public:
     
     // Force a probe for EPR capabilities (useful before opening menus)
     void probeEpr();
+
+    // EPR safe exit: check if transitioning from EPR to SPR requires AVS step-down
+    bool needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) const;
+
+    // Check if a safe EPR exit path exists (AVS PDO with min <= 20V)
+    bool isSafeEprExitPossible() const;
 
 private:
     // Negotiation state
@@ -140,7 +150,7 @@ private:
     bool     _pps_tuning_converged;     // True when |error| < threshold
     uint32_t _pps_range_min_mv;         // PPS PDO min voltage (for clamping)
     uint32_t _pps_range_max_mv;         // PPS PDO max voltage (for clamping)
-    static constexpr int32_t PPS_TUNE_THRESHOLD_MV = 30;       // Converged when error < this
+    static constexpr int32_t PPS_TUNE_THRESHOLD_MV = 12;       // Converged when error < this
     static constexpr int32_t PPS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
 
     // AVS keep-alive state (EPR contracts also need periodic re-request)
@@ -156,7 +166,7 @@ private:
     bool     _avs_tuning_converged;     // True when |error| < threshold
     uint32_t _avs_range_min_mv;         // AVS PDO min voltage (for clamping)
     uint32_t _avs_range_max_mv;         // AVS PDO max voltage (for clamping)
-    static constexpr int32_t AVS_TUNE_THRESHOLD_MV = 100;      // Converged when error < this (100mV steps)
+    static constexpr int32_t AVS_TUNE_THRESHOLD_MV = 55;       // Converged when error < half a step (100mV steps)
     static constexpr int32_t AVS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
 
     // PD revision string (cached)
@@ -170,6 +180,22 @@ private:
     static constexpr uint32_t TUNE_CONVERGENCE_CHECK_MS = 500;      // Fast convergence check interval
     static constexpr uint32_t CONTRACT_REFRESH_INTERVAL_MS = 1000;   // Periodic contract refresh
     static constexpr uint32_t MIN_TUNING_VOLTAGE_MV = 1000;         // Min voltage for tuning to engage
+
+    // EPR safe exit: 3-step sequence to avoid hard reset when exiting EPR to SPR
+    // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
+    // Step 2 (REQUESTING_5V): Request 5V Fixed — cleanly exits EPR mode (no voltage rise)
+    // Step 3 (REQUESTING_TARGET): Request user's actual SPR target (e.g. 20V) — standard SPR transition
+    enum class EprExitState { NONE, STEPPING_DOWN, REQUESTING_5V, REQUESTING_TARGET };
+    EprExitState _epr_exit_state;
+    uint32_t _epr_deferred_voltage_mv;  // User's real target voltage
+    uint32_t _epr_deferred_current_ma;  // User's real target current
+    bool _epr_deferred_is_pps;          // True if deferred request is PPS (vs fixed)
+    absolute_time_t _epr_exit_start;    // Timeout tracking for full sequence
+    static constexpr uint32_t EPR_EXIT_TIMEOUT_MS = 5000;   // Total timeout for 3-step sequence
+    static constexpr uint32_t EPR_SPR_MAX_MV = 20000;       // Target <=20V is SPR (triggers EPR exit)
+
+    // EPR exit helpers
+    bool findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const;
 
     // Detect PD revision from cached PDOs
     void detectPdRevision();
