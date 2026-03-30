@@ -158,6 +158,9 @@ private:
     uint8_t _last_eeprom_progress;
     bool _last_eeprom_confirm;
 
+    // Remote mode badge tracking
+    bool _last_remote_mode;
+
     // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
     int16_t _fault_now_temp_y;
 };

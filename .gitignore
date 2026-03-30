@@ -95,19 +95,9 @@ cmake-build-*/
 # generated/  # Uncomment if you have auto-generated files
 
 # ============================================================================
-# CLAUDE Code & Agent
-# ============================================================================
-CLAUDE.md
-DEVELOPMENT_PLAN.md
-.claude
-UNIT_TEST.md
-DEV_CONTAINER.md
-
-# ============================================================================
 # Custom project files
 # ============================================================================
-tools/clean_logo.py
-tools/convert_png_to_c.py
+dev_tools/
 src/utils/pwm_test.cpp
 src/utils/pwm_test.h
-PWM_BUG_REPORT.md
+notes/

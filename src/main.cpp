@@ -9,6 +9,7 @@
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
 #include "logic/cc_controller.h"
+#include "cli/cli.h"
 #include "ui/display_manager.h"
 
 // ============================================================================
@@ -63,6 +64,9 @@ int main() {
 
     // Initialize CC controller (restores CC mode from settings)
     CcController::init();
+
+    // Initialize serial CLI (command interface over UART/USB)
+    Cli::init();
 
     // Setup display refresh timer
     next_display_update = get_absolute_time();
@@ -127,7 +131,13 @@ int main() {
         }
 
         // ---------------------------------------------------------------------
-        // 6. Update Hardware
+        // 6. Process Serial CLI
+        // ---------------------------------------------------------------------
+        // Non-blocking: reads available characters, dispatches complete commands
+        Cli::update();
+
+        // ---------------------------------------------------------------------
+        // 7. Update Hardware
         // ---------------------------------------------------------------------
         // Required for RGB LED blinking and other timed operations
         hw.update();

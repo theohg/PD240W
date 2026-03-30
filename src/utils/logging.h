@@ -11,6 +11,10 @@
     #define DEBUG_BUILD 1  // Set to 0 for production builds
 #endif
 
+// CLI log suppression gate (set by LOG:OFF command)
+// Declared as extern to avoid circular include with cli.h
+extern bool g_cli_log_enabled;
+
 // ANSI color codes for better readability (optional, works with most terminals)
 #define LOG_COLOR_RESET   "\033[0m"
 #define LOG_COLOR_RED     "\033[31m"
@@ -23,7 +27,8 @@
 #if DEBUG_BUILD
     #define LOG_DEBUG(fmt, ...) \
         do { \
-            printf(LOG_COLOR_CYAN "[DEBUG] " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
+            if (g_cli_log_enabled) \
+                printf(LOG_COLOR_CYAN "[DEBUG] " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
         } while(0)
 #else
     #define LOG_DEBUG(fmt, ...) ((void)0)  // No-op in production
@@ -31,20 +36,23 @@
 
 #define LOG_INFO(fmt, ...) \
     do { \
-        printf(LOG_COLOR_GREEN "[INFO]  " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
+        if (g_cli_log_enabled) \
+            printf(LOG_COLOR_GREEN "[INFO]  " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
     } while(0)
 
 #define LOG_WARN(fmt, ...) \
     do { \
-        printf(LOG_COLOR_YELLOW "[WARN]  " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
+        if (g_cli_log_enabled) \
+            printf(LOG_COLOR_YELLOW "[WARN]  " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
     } while(0)
 
 #define LOG_ERROR(fmt, ...) \
     do { \
-        printf(LOG_COLOR_RED "[ERROR] " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
+        if (g_cli_log_enabled) \
+            printf(LOG_COLOR_RED "[ERROR] " LOG_COLOR_RESET fmt "\n", ##__VA_ARGS__); \
     } while(0)
 
-// Special logging for critical safety events
+// Special logging for critical safety events (always output, even when logs suppressed)
 #define LOG_CRITICAL(fmt, ...) \
     do { \
         printf(LOG_COLOR_RED "!!! [CRITICAL] " fmt " !!!" LOG_COLOR_RESET "\n", ##__VA_ARGS__); \

@@ -64,6 +64,10 @@ add_executable(PD240W
         src/logic/tps_eeprom_workflow.cpp
         src/logic/cc_controller.cpp
 
+        # CLI (Serial command interface)
+        src/cli/cli.cpp
+        src/cli/cli_commands.cpp
+
         # UI
         src/ui/display_manager.cpp
 )

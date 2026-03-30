@@ -9,6 +9,7 @@
 #include "tps_eeprom_workflow.h"
 #include "cc_controller.h"
 #include "ui/display_manager.h"
+#include "cli/cli.h"
 
 // Global instance
 StateMachine stateMachine;
@@ -828,6 +829,35 @@ void StateMachine::transitionTo(AppState new_state) {
 EncoderEvent StateMachine::readEncoderEvent() {
     EncoderEvent event = EncoderEvent::NONE;
 
+    // In REMOTE mode, only allow long-press (to exit remote)
+    // Drain all other encoder events so they don't queue up
+    if (Cli::isRemoteMode()) {
+        // Still read ticks to keep encoder tracking in sync
+        _last_encoder_ticks = hw.encoder.getTicks();
+        _encoder_delta = 0;
+
+        // Only process button for long-press detection
+        bool button_pressed = hw.btnEnc.isPressed();
+
+        if (button_pressed && !_encoder_button_held) {
+            _encoder_press_start = get_absolute_time();
+            _encoder_button_held = true;
+            Interrupts::checkBtnEncClicked();
+        } else if (_encoder_button_held && !button_pressed) {
+            uint32_t press_duration = absolute_time_diff_us(_encoder_press_start, get_absolute_time()) / 1000;
+            if (press_duration >= AppConfig::ENCODER_LONG_PRESS_MS) {
+                Cli::exitRemoteMode();
+                LOG_INFO("Remote mode exited (encoder long press)");
+            }
+            _encoder_button_held = false;
+            Interrupts::checkBtnEncClicked();
+        } else if (!_encoder_button_held) {
+            Interrupts::checkBtnEncClicked();  // Drain ISR flags
+        }
+
+        return EncoderEvent::NONE;
+    }
+
     // Check encoder rotation
     int current_ticks = hw.encoder.getTicks();
     int delta = _last_encoder_ticks - current_ticks;  // Inverted: physical CW = positive delta
@@ -880,6 +910,13 @@ EncoderEvent StateMachine::readEncoderEvent() {
 }
 
 void StateMachine::handleOutputButtons() {
+    // In REMOTE mode, drain button ISR flags but don't act on them
+    if (Cli::isRemoteMode()) {
+        Interrupts::checkBtn1Clicked();
+        Interrupts::checkBtn2Clicked();
+        return;
+    }
+
     // Check for button presses to wake from dim
     bool btn1_clicked = Interrupts::checkBtn1Clicked();
     bool btn2_clicked = Interrupts::checkBtn2Clicked();

@@ -6,6 +6,7 @@
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
 #include "logic/cc_controller.h"
+#include "cli/cli.h"
 #include "config/version.h"
 #include "config/app_config.h"
 #include <cstdio>
@@ -88,6 +89,7 @@ DisplayManager::DisplayManager()
     , _last_eeprom_stage(255)
     , _last_eeprom_progress(255)
     , _last_eeprom_confirm(false)
+    , _last_remote_mode(false)
     , _fault_now_temp_y(0)
 {
 }
@@ -105,6 +107,7 @@ void DisplayManager::init() {
     _last_epr_badge_drawn = false;  // Force EPR badge redraw
     _last_cc_badge_state = -1;     // Force CC badge redraw
     _last_cc_adjust_state = -1;    // Force CC adjust badge redraw
+    _last_remote_mode = false;     // Force RMT badge redraw
     _last_energy_mode = -1;        // Force energy unit redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 
@@ -161,6 +164,26 @@ void DisplayManager::render() {
         case AppState::FAULT:
             renderFaultScreen();
             break;
+    }
+
+    // Remote mode overlay badge (shown on all screens except BOOT)
+    if (current_state != AppState::BOOT) {
+        bool remote = Cli::isRemoteMode();
+        if (remote != _last_remote_mode || _needs_full_redraw) {
+            const int RMT_W = 38;
+            const int RMT_H = 16;
+            const int RMT_X = SCREEN_WIDTH - MARGIN - RMT_W;
+            const int RMT_Y = 2;
+            if (remote) {
+                hw.display.fillRoundRect(RMT_X, RMT_Y, RMT_W, RMT_H, 3, UIColors::ERROR);
+                int tx = RMT_X + (RMT_W - ST7789::getStringWidthAA("RMT", FONT_SMALL)) / 2;
+                int ty = RMT_Y + (RMT_H - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(tx, ty, "RMT", UIColors::TEXT_PRIMARY, UIColors::ERROR, FONT_SMALL);
+            } else {
+                hw.display.fillRect(RMT_X, RMT_Y, RMT_W, RMT_H, UIColors::BACKGROUND);
+            }
+            _last_remote_mode = remote;
+        }
     }
 
     _needs_full_redraw = false;
