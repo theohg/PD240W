@@ -137,8 +137,8 @@ void Settings::setAutoAvsEnabled(bool enabled) {
 }
 
 void Settings::setAutoDimMinutes(uint8_t minutes) {
-    if (minutes < 1) minutes = 1;
-    if (minutes > 10) minutes = 10;
+    if (minutes < AppConfig::AUTO_DIM_MIN_MINUTES) minutes = AppConfig::AUTO_DIM_MIN_MINUTES;
+    if (minutes > AppConfig::AUTO_DIM_MAX_MINUTES) minutes = AppConfig::AUTO_DIM_MAX_MINUTES;
     if (_settings.auto_dim_minutes != minutes) {
         _settings.auto_dim_minutes = minutes;
         _dirty = true;

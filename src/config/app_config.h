@@ -26,6 +26,7 @@ namespace AppConfig {
     constexpr uint32_t BOOT_EPR_POLL_INTERVAL_MS = 150;       // EPR PDO poll interval during boot [ms]
     constexpr uint32_t BOOT_EPR_TIMEOUT_MS = 600;             // Non-EPR charger EPR probe timeout [ms]
     constexpr uint32_t BOOT_EPR_CONTRACT_TIMEOUT_MS = 1200;   // EPR contract settlement timeout [ms]
+    constexpr uint32_t BOOT_PENDING_CONTRACT_TIMEOUT_MS = 5000; // Max total boot time while waiting for delayed startup contract [ms]
 
     // -------------------------------------------------------------------------
     // Safety Thresholds
@@ -72,7 +73,7 @@ namespace AppConfig {
     // -------------------------------------------------------------------------
     // Settings Limits
     // -------------------------------------------------------------------------
-    constexpr uint8_t AUTO_DIM_MIN_MINUTES = 1;        // Minimum dim timeout [min]
+    constexpr uint8_t AUTO_DIM_MIN_MINUTES = 0;        // Minimum dim timeout [min], 0 = OFF
     constexpr uint8_t AUTO_DIM_MAX_MINUTES = 10;       // Maximum dim timeout [min]
     constexpr uint8_t STARTUP_MELODY_MAX = 3;          // Max melody index (0=Silent..3=TwoTone)
     constexpr uint8_t STARTUP_CONTRACT_MODE_MAX = 2;   // Max contract mode (0=Lowest..2=LastUsed)

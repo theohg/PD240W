@@ -54,7 +54,7 @@ struct UserSettings {
     bool auto_pps_enabled;   // ON/OFF for automatic PPS voltage calibration
 
     // Auto-dim timeout (minutes)
-    uint8_t auto_dim_minutes;  // 1-10, default 1
+    uint8_t auto_dim_minutes;  // 0-10, 0 = OFF, default 1
 
     // Startup melody selection
     uint8_t startup_melody;    // 0=Silent, 1=Mario, 2=Chime, 3=TwoTone

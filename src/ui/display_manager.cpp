@@ -1115,38 +1115,42 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
     }
 
-    // Compute layout positions (needed for both value and badge)
+    // Use fixed anchors so the number, unit, and badge do not jump around.
     char buf[32];
     snprintf(buf, sizeof(buf), "%5.2f", current_ma / 1000.0f);
+    const int VALUE_X = 64;
+    const int UNIT_X = 146;
+    const int VALUE_AREA_W = UNIT_X - VALUE_X;
     const int A_WIDTH = ST7789::getStringWidthAA("A", FONT_LARGE);
-    int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
-    const int GAP = 4;
-    int total_w = value_width + GAP + A_WIDTH;
-    int value_x = (SCREEN_WIDTH - total_w) / 2;
-    int unit_x = value_x + value_width + GAP;
+    const int BADGE_H = 16;
+    const int BADGE_AREA_X = UNIT_X + A_WIDTH + 12;
+    const int BADGE_AREA_W = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 12;
+    const int BADGE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
 
     // Only redraw value+unit when the current value changed (avoids flicker on badge toggle)
     if (value_changed || _needs_full_redraw) {
         _last_adjust_value = current_ma;
-        hw.display.fillRect(value_x - 20, y, total_w + 40, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-        hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
-        hw.display.drawStringAA(unit_x, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
+        if (VALUE_X + value_width < UNIT_X) {
+            hw.display.fillRect(VALUE_X + value_width, y,
+                                UNIT_X - VALUE_X - value_width,
+                                FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        }
+        hw.display.drawStringAA(UNIT_X, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
     }
 
     // CC/OCP mode indicator badge — only redraw when badge state changes
     if (cc_changed || _needs_full_redraw) {
-        const int BADGE_H = 16;
-        const int MODE_X = unit_x + A_WIDTH + 6;
-        const int MODE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
         const char* mode_text = cc_enabled ? "CC" : "OCP";
         uint16_t badge_color = cc_enabled ? UIColors::ACCENT : UIColors::MUTED;
-        int ocp_w = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 8;
-        hw.display.fillRect(MODE_X - 1, MODE_Y - 1, ocp_w + 2, BADGE_H + 2, UIColors::BACKGROUND);
+        hw.display.fillRect(BADGE_AREA_X - 1, BADGE_Y - 1, BADGE_AREA_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
         int badge_w = ST7789::getStringWidthAA(mode_text, FONT_SMALL) + 8;
-        int badge_x = MODE_X + (ocp_w - badge_w) / 2;
-        hw.display.fillRoundRect(badge_x, MODE_Y, badge_w, BADGE_H, 3, badge_color);
+        int badge_x = BADGE_AREA_X + (BADGE_AREA_W - badge_w) / 2;
+        hw.display.fillRoundRect(badge_x, BADGE_Y, badge_w, BADGE_H, 3, badge_color);
         int text_x = badge_x + (badge_w - ST7789::getStringWidthAA(mode_text, FONT_SMALL)) / 2;
-        int text_y = MODE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+        int text_y = BADGE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
         hw.display.drawStringAA(text_x, text_y, mode_text, UIColors::BACKGROUND, badge_color, FONT_SMALL);
         _last_cc_adjust_state = cc_state;
     }
@@ -1205,20 +1209,23 @@ void DisplayManager::drawPpsVoltageAdjust() {
         y += 18;
     }
 
-    // Draw target voltage - large display with V at fixed position
+    // Draw target voltage with fixed anchors so the value stays visually stable.
     y += 10;
     char buf[32];
     snprintf(buf, sizeof(buf), "%5.2f", target_mv / 1000.0f);
 
-    // Fixed layout: center point at screen middle, V after the number area
-    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;  // Fixed position for "V"
-    const int VALUE_RIGHT = UNIT_X - 8;  // Right edge of value area
+    const int VALUE_X = 72;
+    const int UNIT_X = 162;
+    const int VALUE_AREA_W = UNIT_X - VALUE_X;
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
-    int value_x = VALUE_RIGHT - value_width;
     
-    // Clear value area and redraw
-    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    if (VALUE_X + value_width < UNIT_X) {
+        hw.display.fillRect(VALUE_X + value_width, y,
+                            UNIT_X - VALUE_X - value_width,
+                            FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    }
     hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to PPS range)
@@ -1279,18 +1286,23 @@ void DisplayManager::drawAvsVoltageAdjust() {
         y += 18;
     }
 
-    // Draw target voltage - large display with V at fixed position
+    // Draw target voltage with fixed anchors so the value stays visually stable.
     y += 10;
     char buf[32];
     snprintf(buf, sizeof(buf), "%5.2f", target_mv / 1000.0f);
 
-    const int UNIT_X = (SCREEN_WIDTH / 2) + 42;
-    const int VALUE_RIGHT = UNIT_X - 8;
+    const int VALUE_X = 72;
+    const int UNIT_X = 162;
+    const int VALUE_AREA_W = UNIT_X - VALUE_X;
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
-    int value_x = VALUE_RIGHT - value_width;
 
-    hw.display.fillRect(value_x - 20, y, VALUE_RIGHT - value_x + 20, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-    hw.display.drawStringAA(value_x, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+    if (VALUE_X + value_width < UNIT_X) {
+        hw.display.fillRect(VALUE_X + value_width, y,
+                            UNIT_X - VALUE_X - value_width,
+                            FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    }
     hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to AVS range)
@@ -1318,7 +1330,7 @@ void DisplayManager::drawAvsVoltageAdjust() {
         drawCenteredStringAA(y, buf, UIColors::TEXT_SECONDARY, FONT_SMALL);
 
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
-                              "Rotate: 25mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                              "Rotate: 100mV steps", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
                               "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
@@ -1400,7 +1412,11 @@ void DisplayManager::drawSettingsMenu() {
     if (_needs_full_redraw || sel_affects(5) || dim_val != _last_dim_timeout ||
         dim_adj != _last_dim_adjusting) {
         char buf[8];
-        snprintf(buf, sizeof(buf), "%d min", dim_val);
+        if (dim_val == 0) {
+            snprintf(buf, sizeof(buf), "OFF");
+        } else {
+            snprintf(buf, sizeof(buf), "%d min", dim_val);
+        }
         drawValueAdjustItem(y_for(5), "Auto Dim timeout:", buf, selected == SettingsItem::DIM_TIMEOUT, dim_adj);
     }
 

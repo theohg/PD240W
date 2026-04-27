@@ -41,6 +41,9 @@ PdManager::PdManager()
     , _avs_range_max_mv(0)
     , _pre_request_voltage_mv(0)
     , _pre_request_current_ma(0)
+    , _requested_contract_type(RequestedContractType::NONE)
+    , _requested_voltage_mv(0)
+    , _requested_current_ma(0)
     , _epr_exit_state(EprExitState::NONE)
     , _epr_deferred_voltage_mv(0)
     , _epr_deferred_current_ma(0)
@@ -101,13 +104,23 @@ void PdManager::update() {
         if (elapsed_ms >= POLLING_FALLBACK_MS) {
             uint32_t current_voltage_mv, current_current_ma;
             if (hw.pdController.getActiveContract(current_voltage_mv, current_current_ma)) {
+                bool contract_changed =
+                    (current_voltage_mv != _pre_request_voltage_mv ||
+                     current_current_ma != _pre_request_current_ma);
+
                 // Check if contract changed from pre-request state
-                if (current_voltage_mv != _pre_request_voltage_mv ||
-                    current_current_ma != _pre_request_current_ma) {
+                if (contract_changed) {
                     LOG_INFO("Contract change detected via polling: %umV @ %umA",
                              current_voltage_mv, current_current_ma);
-                    refreshActiveContract();
+                }
+
+                refreshActiveContract();
+
+                if (isRequestedContractReached()) {
                     _negotiation_state = NegotiationState::SUCCESS;
+                } else if (contract_changed) {
+                    LOG_WARN("Ignoring intermediate contract while waiting for requested %umV",
+                             _requested_voltage_mv);
                 }
             }
         }
@@ -474,6 +487,9 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
     _pre_request_current_ma = _active_contract.current_ma;
+    _requested_contract_type = RequestedContractType::FIXED;
+    _requested_voltage_mv = voltage_mv;
+    _requested_current_ma = current_ma;
 
     bool success = hw.pdController.requestFixedProfile(voltage_mv, current_ma);
 
@@ -527,6 +543,9 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
     _pre_request_current_ma = _active_contract.current_ma;
+    _requested_contract_type = RequestedContractType::PPS;
+    _requested_voltage_mv = voltage_mv;
+    _requested_current_ma = current_ma;
 
     bool success = hw.pdController.requestPPSProfile(voltage_mv, current_ma);
 
@@ -577,6 +596,9 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
     _pre_request_current_ma = _active_contract.current_ma;
+    _requested_contract_type = RequestedContractType::AVS;
+    _requested_voltage_mv = voltage_mv;
+    _requested_current_ma = current_ma;
 
     bool success = hw.pdController.requestAVSProfile(voltage_mv, current_ma);
 
@@ -680,6 +702,13 @@ bool PdManager::refreshActiveContract() {
                         voltage_mv >= _pdo_cache[i].min_voltage_mv &&
                         voltage_mv <= _pdo_cache[i].voltage_mv) {
                         detected_avs = true;
+                        _avs_active = true;
+                        _avs_voltage_mv = voltage_mv;
+                        _avs_current_ma = current_ma;
+                        _avs_last_refresh = get_absolute_time();
+                        _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
+                        _avs_range_max_mv = _pdo_cache[i].voltage_mv;
+                        LOG_INFO("Detected active AVS contract on warm reset: %umV", voltage_mv);
                         break;
                     }
                 }
@@ -688,6 +717,14 @@ bool PdManager::refreshActiveContract() {
 
         _active_contract.is_pps = detected_pps;
         _active_contract.is_avs = detected_avs;
+
+        // Prefer the requested programmable current when a PPS/AVS contract overlaps
+        // a fixed PDO and the controller reports the fixed-PDO current instead.
+        if (detected_pps && _pps_current_ma > 0) {
+            _active_contract.current_ma = _pps_current_ma;
+        } else if (detected_avs && _avs_current_ma > 0) {
+            _active_contract.current_ma = _avs_current_ma;
+        }
 
         // Store PPS voltage range if active
         if (detected_pps) {
@@ -778,7 +815,7 @@ void PdManager::handlePdInterrupt() {
         }
 
         // Update negotiation state
-        if (_negotiation_state == NegotiationState::REQUESTING) {
+        if (_negotiation_state == NegotiationState::REQUESTING && isRequestedContractReached()) {
             _negotiation_state = NegotiationState::SUCCESS;
         }
 
@@ -844,6 +881,47 @@ void PdManager::handlePdInterrupt() {
         clear_mask[0] = (1 << 1);  // Bit 1
         hw.pdController.clearInterrupts(clear_mask);
     }
+}
+
+bool PdManager::isRequestedContractReached() const {
+    if (!_active_contract.valid) {
+        return false;
+    }
+
+    auto within_tolerance = [](uint32_t lhs, uint32_t rhs, uint32_t tolerance_mv) {
+        return (lhs > rhs) ? (lhs - rhs <= tolerance_mv) : (rhs - lhs <= tolerance_mv);
+    };
+
+    switch (_requested_contract_type) {
+        case RequestedContractType::FIXED:
+            return !_active_contract.is_pps && !_active_contract.is_avs &&
+                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                                    FIXED_MATCH_TOLERANCE_MV);
+
+        case RequestedContractType::PPS:
+            return _active_contract.is_pps &&
+                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                                    PPS_MATCH_TOLERANCE_MV);
+
+        case RequestedContractType::AVS:
+            return _active_contract.is_avs &&
+                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                                    AVS_MATCH_TOLERANCE_MV);
+
+        case RequestedContractType::NONE:
+        default:
+            return false;
+    }
+}
+
+bool PdManager::hasPendingRequestedContract() const {
+    return _requested_contract_type != RequestedContractType::NONE &&
+           !isRequestedContractReached();
+}
+
+bool PdManager::isRequestedContractSatisfied() const {
+    return _requested_contract_type == RequestedContractType::NONE ||
+           isRequestedContractReached();
 }
 
 bool PdManager::isPpsTuningActive() const {
@@ -943,7 +1021,7 @@ bool PdManager::negotiateStartupContract() {
     }
 
     int8_t target_idx = -1;
-    uint32_t target_pps_voltage_mv = 0; 
+    uint32_t target_programmable_voltage_mv = 0;
 
     switch (mode) {
         case StartupContractMode::LOWEST_VOLTAGE:
@@ -967,18 +1045,22 @@ bool PdManager::negotiateStartupContract() {
             if (saved_idx < _pdo_count) {
                 const SourceCapability& saved_pdo = _pdo_cache[saved_idx];
 
-                if (saved_pdo.is_pps && saved_pps_voltage > 0) {
+                if ((saved_pdo.is_pps || saved_pdo.is_avs) && saved_pps_voltage > 0) {
                     if (saved_pps_voltage >= saved_pdo.min_voltage_mv &&
                         saved_pps_voltage <= saved_pdo.voltage_mv) {
                         target_idx = saved_idx;
-                        target_pps_voltage_mv = saved_pps_voltage;
-                        LOG_INFO("Startup negotiation: Restoring PPS %umV (PDO[%d])",
+                        target_programmable_voltage_mv = saved_pps_voltage;
+                        LOG_INFO("Startup negotiation: Restoring %s %umV (PDO[%d])",
+                                 saved_pdo.is_avs ? "AVS" : "PPS",
                                  saved_pps_voltage, saved_idx);
                     }
-                } else if (!saved_pdo.is_pps) {
+                } else if (!saved_pdo.is_pps && !saved_pdo.is_avs) {
                     target_idx = saved_idx;
-                    LOG_INFO("Startup negotiation: Restoring %s %umV (PDO[%d])",
-                             saved_pdo.is_avs ? "AVS" : "Fixed",
+                    LOG_INFO("Startup negotiation: Restoring Fixed %umV (PDO[%d])",
+                             saved_pdo.voltage_mv, saved_idx);
+                } else if (saved_pdo.is_avs) {
+                    target_idx = saved_idx;
+                    LOG_WARN("Startup negotiation: Missing saved AVS target, restoring max %umV (PDO[%d])",
                              saved_pdo.voltage_mv, saved_idx);
                 }
             }
@@ -1019,8 +1101,10 @@ bool PdManager::negotiateStartupContract() {
     if (target_idx >= 0 && target_idx < _pdo_count) {
         const SourceCapability& pdo = _pdo_cache[target_idx];
 
-        if (pdo.is_pps && target_pps_voltage_mv > 0) {
-            return requestPpsVoltage(target_pps_voltage_mv, pdo.max_current_ma);
+        if (pdo.is_pps && target_programmable_voltage_mv > 0) {
+            return requestPpsVoltage(target_programmable_voltage_mv, pdo.max_current_ma);
+        } else if (pdo.is_avs && target_programmable_voltage_mv > 0) {
+            return requestAvsVoltage(target_programmable_voltage_mv, pdo.max_current_ma);
         } else {
             return requestContract(pdo);
         }

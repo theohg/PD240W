@@ -120,7 +120,13 @@ public:
     // Check if a safe EPR exit path exists (AVS PDO with min <= 20V)
     bool isSafeEprExitPossible() const;
 
+    // Startup request status helpers
+    bool hasPendingRequestedContract() const;
+    bool isRequestedContractSatisfied() const;
+
 private:
+    enum class RequestedContractType { NONE, FIXED, PPS, AVS };
+
     // Negotiation state
     NegotiationState _negotiation_state;
     absolute_time_t _negotiation_start;
@@ -175,11 +181,17 @@ private:
     // Polling fallback state (for chargers that don't fire interrupt)
     uint32_t _pre_request_voltage_mv;
     uint32_t _pre_request_current_ma;
+    RequestedContractType _requested_contract_type;
+    uint32_t _requested_voltage_mv;
+    uint32_t _requested_current_ma;
     static constexpr uint32_t POLLING_FALLBACK_MS = 500;
     static constexpr uint32_t PDO_RETRY_INTERVAL_MS = 500;           // Deferred PDO discovery retry
     static constexpr uint32_t TUNE_CONVERGENCE_CHECK_MS = 500;      // Fast convergence check interval
     static constexpr uint32_t CONTRACT_REFRESH_INTERVAL_MS = 1000;   // Periodic contract refresh
     static constexpr uint32_t MIN_TUNING_VOLTAGE_MV = 1000;         // Min voltage for tuning to engage
+    static constexpr uint32_t FIXED_MATCH_TOLERANCE_MV = 50;
+    static constexpr uint32_t PPS_MATCH_TOLERANCE_MV = 20;
+    static constexpr uint32_t AVS_MATCH_TOLERANCE_MV = 25;
 
     // EPR safe exit: 3-step sequence to avoid hard reset when exiting EPR to SPR
     // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
@@ -203,6 +215,9 @@ private:
 
     // Process PD interrupt events
     void handlePdInterrupt();
+
+    // Check whether the active contract matches the pending request
+    bool isRequestedContractReached() const;
 };
 
 // Global instance

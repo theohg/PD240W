@@ -101,3 +101,5 @@ dev_tools/
 src/utils/pwm_test.cpp
 src/utils/pwm_test.h
 notes/
+tools/
+build/PD240W.uf2

@@ -44,6 +44,7 @@ StateMachine::StateMachine()
     , _boot_pdos_found(false)
     , _boot_contract_requested(false)
     , _boot_contract_complete(false)
+    , _boot_retry_after_epr(false)
     , _boot_epr_probed(false)
     , _boot_epr_probe_time(nil_time)
     , _boot_ready_time(nil_time)
@@ -188,14 +189,25 @@ bool StateMachine::update() {
     }
 
     // Auto-dim check: dim screen after inactivity (applies in all states except BOOT)
-    if (_state != AppState::BOOT && !_screen_dimmed) {
+    if (_state != AppState::BOOT) {
         int64_t idle_ms = absolute_time_diff_us(_last_activity_time, get_absolute_time()) / 1000;
-        uint32_t dim_timeout_ms = static_cast<uint32_t>(settings.getAutoDimMinutes()) * 60000;
-        if (idle_ms > (int64_t)dim_timeout_ms) {
-            _screen_dimmed = true;
-            hw.display.setBacklightBrightness(AppConfig::LCD_BRIGHTNESS_DIM);
-            hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_DIM);  // Dim RGB LED too
-            LOG_INFO("Screen auto-dimmed after %lld ms inactivity", idle_ms);
+        uint8_t dim_minutes = settings.getAutoDimMinutes();
+
+        if (dim_minutes == 0) {
+            if (_screen_dimmed) {
+                _screen_dimmed = false;
+                hw.display.setBacklightBrightness(settings.getLcdBrightness());
+                hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+                LOG_INFO("Screen auto-dim disabled while dimmed; restoring brightness");
+            }
+        } else if (!_screen_dimmed) {
+            uint32_t dim_timeout_ms = static_cast<uint32_t>(dim_minutes) * 60000;
+            if (idle_ms > (int64_t)dim_timeout_ms) {
+                _screen_dimmed = true;
+                hw.display.setBacklightBrightness(AppConfig::LCD_BRIGHTNESS_DIM);
+                hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_DIM);  // Dim RGB LED too
+                LOG_INFO("Screen auto-dimmed after %lld ms inactivity", idle_ms);
+            }
         }
     }
 
@@ -236,6 +248,12 @@ void StateMachine::handleBootState() {
             if (pdManager.negotiateStartupContract()) {
                 LOG_INFO("Boot: Startup contract negotiation initiated");
             } else {
+                _boot_retry_after_epr =
+                    (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED &&
+                     settings.getLastPdoIndex() >= _num_pdos);
+                if (_boot_retry_after_epr) {
+                    LOG_INFO("Boot: Deferring startup contract until EPR PDOs arrive");
+                }
                 LOG_INFO("Boot: No startup contract needed (keeping default)");
                 _boot_contract_complete = true;
             }
@@ -303,6 +321,19 @@ void StateMachine::handleBootState() {
                 }
             }
 
+            if (epr_pdos_found && _boot_retry_after_epr) {
+                LOG_INFO("Boot: Retrying deferred startup contract after EPR discovery");
+                _boot_retry_after_epr = false;
+
+                if (pdManager.negotiateStartupContract()) {
+                    _boot_contract_complete = false;
+                    _boot_neg_start = nil_time;
+                    return;
+                }
+
+                LOG_WARN("Boot: Deferred startup contract retry did not start");
+            }
+
             // EPR found but not in highest-voltage mode: proceed immediately
             // (contract was already explicitly negotiated in stage 2)
             if (epr_pdos_found && !is_highest_mode) {
@@ -339,6 +370,9 @@ void StateMachine::handleBootState() {
 
     // Stage 3: Show "Ready!" briefly, then transition to MAIN
     if (_boot_stage >= 3) {
+        if (!pdManager.isRequestedContractSatisfied()) {
+            _boot_ready_time = nil_time;
+        } else {
         if (is_nil_time(_boot_ready_time)) {
             _boot_ready_time = get_absolute_time();
         }
@@ -347,11 +381,19 @@ void StateMachine::handleBootState() {
             transitionTo(AppState::MAIN);
             return;
         }
+        }
     }
 
     // Ultimate fallback: prevent infinite boot
     if (elapsed_ms >= AppConfig::BOOT_DURATION_MS) {
-        LOG_WARN("Boot: Fallback timeout reached, transitioning to MAIN");
+        if (pdManager.hasPendingRequestedContract()) {
+            if (elapsed_ms < AppConfig::BOOT_PENDING_CONTRACT_TIMEOUT_MS) {
+                return;
+            }
+            LOG_WARN("Boot: Extended startup-contract timeout reached; transitioning to MAIN with output held off");
+        } else {
+            LOG_WARN("Boot: Fallback timeout reached, transitioning to MAIN");
+        }
         transitionTo(AppState::MAIN);
     }
 }
@@ -776,6 +818,7 @@ void StateMachine::transitionTo(AppState new_state) {
             _boot_pdos_found = false;
             _boot_contract_requested = false;
             _boot_contract_complete = false;
+            _boot_retry_after_epr = false;
             _boot_ready_time = nil_time;
             _boot_neg_start = nil_time;
             break;
@@ -791,9 +834,13 @@ void StateMachine::transitionTo(AppState new_state) {
             }
             // Auto-output on boot: enable load switch after boot completes
             if (_previous_state == AppState::BOOT && settings.isAutoOutput()) {
-                hw.powerMonitor.getDiagnoseAlert();  // Clear INA228 fault latch
-                hw.loadSwitch.on();
-                LOG_INFO("Auto-output enabled on boot");
+                if (pdManager.isRequestedContractSatisfied()) {
+                    hw.powerMonitor.getDiagnoseAlert();  // Clear INA228 fault latch
+                    hw.loadSwitch.on();
+                    LOG_INFO("Auto-output enabled on boot");
+                } else {
+                    LOG_WARN("Auto-output suppressed on boot: startup contract unresolved");
+                }
             }
             // Note: Startup contract negotiation is now done during BOOT state
             // No need to restore PDO here as it's handled by negotiateStartupContract()
