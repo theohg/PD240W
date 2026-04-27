@@ -1129,6 +1129,7 @@ void StateMachine::requestSelectedPdo() {
         // Save selected PDO for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
             settings.setLastPdoIndex(_selected_pdo_index);
+            settings.setLastPpsVoltageMv((pdo.is_pps || pdo.is_avs) ? pdo.voltage_mv : 0);
             settings.requestSave();
         }
     } else {
@@ -1270,6 +1271,8 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                             settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
                         } else if (pdManager.isAvsActive()) {
                             settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                        } else {
+                            settings.setLastPpsVoltageMv(0);
                         }
                     }
                     settings.requestSave();
@@ -1330,6 +1333,8 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                             settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
                         } else if (pdManager.isAvsActive()) {
                             settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                        } else {
+                            settings.setLastPpsVoltageMv(0);
                         }
                     }
                     settings.requestSave();

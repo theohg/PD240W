@@ -452,6 +452,61 @@ bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_curre
 // Contract Negotiation
 // ============================================================================
 
+static bool is_standard_fixed_rail(uint32_t voltage_mv) {
+    return voltage_mv == 5000 ||
+           voltage_mv == 9000 ||
+           voltage_mv == 15000 ||
+           voltage_mv == 20000;
+}
+
+bool PdManager::primeStartupContract() {
+    StartupContractMode mode = settings.getStartupNegotiationMode();
+    if (mode == StartupContractMode::HIGHEST_VOLTAGE) {
+        return false;
+    }
+
+    uint32_t startup_current_ma = settings.getCurrentLimit();
+    if (startup_current_ma < 500) {
+        startup_current_ma = 500;
+    }
+    if (startup_current_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
+        startup_current_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
+    }
+
+    if (mode == StartupContractMode::LOWEST_VOLTAGE) {
+        LOG_INFO("Startup prime: requesting 5V fixed floor before boot negotiation");
+        return requestFixedVoltage(5000, startup_current_ma);
+    }
+
+    uint32_t saved_target_mv = settings.getLastPpsVoltageMv();
+    if (saved_target_mv > AppConfig::EPR_SPR_MAX_MV) {
+        LOG_INFO("Startup prime: requesting saved EPR target %umV before boot restore",
+                 saved_target_mv);
+        return requestAvsVoltage(saved_target_mv, startup_current_ma);
+    }
+
+    if (saved_target_mv > 0 && saved_target_mv < 5000) {
+        LOG_INFO("Startup prime: requesting saved low-PPS target %umV before boot restore",
+                 saved_target_mv);
+        return requestPpsVoltage(saved_target_mv, startup_current_ma);
+    }
+
+    if (is_standard_fixed_rail(saved_target_mv)) {
+        LOG_INFO("Startup prime: requesting saved fixed rail %umV before boot restore",
+                 saved_target_mv);
+        return requestFixedVoltage(saved_target_mv, startup_current_ma);
+    }
+
+    if (saved_target_mv > 0) {
+        LOG_INFO("Startup prime: clamping to 5V before restoring programmable SPR target %umV",
+                 saved_target_mv);
+    } else {
+        LOG_INFO("Startup prime: clamping to 5V before restoring saved fixed contract");
+    }
+
+    return requestFixedVoltage(5000, startup_current_ma);
+}
+
 bool PdManager::requestContract(const SourceCapability& pdo) {
     if (pdo.is_pps) {
         // For PPS, request max voltage as default (user can adjust via PPS voltage mode)

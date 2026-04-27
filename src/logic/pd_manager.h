@@ -101,6 +101,11 @@ public:
     // Returns true if a contract request was initiated
     bool negotiateStartupContract();
 
+    // Apply a best-effort early startup request before the boot UI delays the
+    // normal restore path. This keeps the autonomous TPS26750 boot contract at
+    // or below the remembered target until full PDO-based restore runs.
+    bool primeStartupContract();
+
     // Wait for PDOs with timeout (non-blocking polling, call repeatedly in loop)
     // Returns true when PDOs are available, false if still waiting
     bool waitForPdos(uint32_t timeout_ms);
