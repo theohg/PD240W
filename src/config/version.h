@@ -5,7 +5,7 @@
 // ============================================================================
 
 namespace Version {
-    constexpr const char* FIRMWARE_VERSION = "v1.0.0";
+    constexpr const char* FIRMWARE_VERSION = "v1.1.0";
     constexpr const char* HARDWARE_VERSION = "A.1";
     constexpr const char* PRODUCT_NAME = "PD240W";
     constexpr const char* PRODUCT_SUBTITLE = "Power Supply";

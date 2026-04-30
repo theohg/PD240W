@@ -218,6 +218,11 @@ private:
     // Detect PD revision from cached PDOs
     void detectPdRevision();
 
+    // Clear tracked programmable contract state when the source no longer matches it
+    void clearPpsTracking();
+    void clearAvsTracking();
+    void clearRequestedContract();
+
     // Process PD interrupt events
     void handlePdInterrupt();
 

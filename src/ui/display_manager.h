@@ -22,11 +22,11 @@ namespace UIColors {
     constexpr uint16_t CAUTION = 0xFFE0;         // Yellow
     constexpr uint16_t WARNING = 0xFD20;         // Orange
     constexpr uint16_t ERROR = 0xF800;           // Red
-    constexpr uint16_t HIGHLIGHT_BG = 0xE00F;    // Synapticon Pink
+    constexpr uint16_t HIGHLIGHT_BG = 0xF81F;    // Bright Magenta, Was Pink (0xE00F)
     constexpr uint16_t HIGHLIGHT_FG = 0xFFFF;    // White
-    constexpr uint16_t HEADER_LINE = 0xE00F;     // Synapticon Pink
+    constexpr uint16_t HEADER_LINE = 0x001F;     // Deep Blue, Was Pink (0xE00F)
     constexpr uint16_t MUTED = 0x7BEF;           // Dark gray
-    constexpr uint16_t SYNAPTICON_PINK = 0xE00F; // Brand Magenta
+    constexpr uint16_t PINK = 0xF81F;            // Bright Magenta, Was Pink (0xE00F)
     constexpr uint16_t LINK_BLUE = 0x5D9F;       // Hyperlink blue
 }
 

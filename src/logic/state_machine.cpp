@@ -234,10 +234,13 @@ void StateMachine::handleBootState() {
             if (_boot_pdos_found) {
                 _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
                 LOG_INFO("Boot: Found %d PDOs", _num_pdos);
+                _boot_stage = 2;  // Move to negotiation stage
             } else {
                 LOG_INFO("Boot: No PDOs found (non-PD charger or timeout)");
+                _boot_contract_requested = true;
+                _boot_contract_complete = true;
+                _boot_stage = 3;  // No PD source: skip negotiation/EPR probe and finish boot
             }
-            _boot_stage = 2;  // Move to negotiation stage
         }
     }
 
@@ -715,7 +718,9 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
                 // If no PDOs or "Back" selected, return to menu
                 if (_num_pdos == 0 || _selected_pdo_index == _num_pdos) {
-                    hw.buzzer.playTone(AppConfig::BEEP_EXIT_FREQ, AppConfig::BEEP_EXIT_DURATION);  // Exit beep
+                    if (settings.isSoundsEnabled()) {
+                        hw.buzzer.playTone(AppConfig::BEEP_EXIT_FREQ, AppConfig::BEEP_EXIT_DURATION);  // Exit beep
+                    }
                     transitionTo(AppState::MENU);
                     _last_activity_time = get_absolute_time();
                     break;
@@ -826,7 +831,7 @@ void StateMachine::transitionTo(AppState new_state) {
         case AppState::MAIN:
             _adjust_mode = AdjustMode::NONE;
             pdManager.refreshActiveContract();  // Ensure fresh contract data for display
-            hw.rgbLed.setColor(LedColor::GREEN, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+            hw.rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             // Drain any button presses that occurred during BOOT or FAULT
             if (_previous_state == AppState::BOOT || _previous_state == AppState::FAULT) {
                 Interrupts::checkBtn1Clicked();
@@ -852,7 +857,7 @@ void StateMachine::transitionTo(AppState new_state) {
             if (_previous_state != AppState::ADJUST) {
                 _selected_menu_item = MenuItem::SELECT_VOLTAGE;
             }
-            hw.rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+            hw.rgbLed.setColor(LedColor::MAGENTA, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
             break;
 
         case AppState::ADJUST:

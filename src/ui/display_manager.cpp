@@ -11,7 +11,7 @@
 #include "config/app_config.h"
 #include <cstdio>
 #include <cstring>
-#include "ui/assets/synapticon_logo.h"
+#include "ui/assets/pd240w_logo.h"
 #include "ui/font_config.h"
 
 // Global instance
@@ -169,7 +169,8 @@ void DisplayManager::render() {
     // Remote mode overlay badge (shown on all screens except BOOT)
     if (current_state != AppState::BOOT) {
         bool remote = Cli::isRemoteMode();
-        if (remote != _last_remote_mode || _needs_full_redraw) {
+        if ((remote && (_needs_full_redraw || remote != _last_remote_mode)) ||
+            (!remote && remote != _last_remote_mode)) {
             const int RMT_W = 38;
             const int RMT_H = 16;
             const int RMT_X = SCREEN_WIDTH - MARGIN - RMT_W;
@@ -213,11 +214,13 @@ void DisplayManager::setPdoList(const SourceCapability* pdos, uint8_t count) {
 void DisplayManager::renderBootScreen() {
     if (_needs_full_redraw) {
         // Draw scaled version of logo (centered)
-        int logo_size = 130;
+        int logo_size = 210;
         int logo_x = (SCREEN_WIDTH - logo_size) / 2;
-        int y = CONTENT_Y_START;
-        hw.display.drawBitmapScaled(logo_x, y, logo_size, logo_size,
-                                    SYNAPTICON_WIDTH, SYNAPTICON_HEIGHT, synapticon_data);
+        float aspect_ratio = static_cast<float>(PD240W_WIDTH) / PD240W_HEIGHT;
+        // center the logo on the middle of the screen
+        int y = (SCREEN_HEIGHT - logo_size / aspect_ratio) / 2;
+        hw.display.drawBitmapScaled(logo_x, y, logo_size, logo_size/aspect_ratio,
+                                    PD240W_WIDTH, PD240W_HEIGHT, pd240w_data);
     }
 
     // Update boot text and progress
@@ -343,8 +346,19 @@ void DisplayManager::drawHeader(const char* title) {
     // Clear header area
     hw.display.fillRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, UIColors::BACKGROUND);
 
-    // Draw title centered using AA font
-    drawCenteredStringAA(10, title, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+    // Use the product logo on the main screen header while keeping the same header band.
+    if (strcmp(title, Version::PRODUCT_NAME) == 0) {
+        const int logo_h = HEADER_HEIGHT - 6;
+        const float aspect_ratio = static_cast<float>(PD240W_WIDTH) / PD240W_HEIGHT;
+        const int logo_w = static_cast<int>(logo_h * aspect_ratio);
+        const int logo_x = (SCREEN_WIDTH - logo_w) / 2;
+        const int logo_y = (HEADER_HEIGHT - 2 - logo_h) / 2;
+        hw.display.drawBitmapScaled(logo_x, logo_y, logo_w, logo_h,
+                                    PD240W_WIDTH, PD240W_HEIGHT, pd240w_data);
+    } else {
+        // Draw title centered using AA font
+        drawCenteredStringAA(10, title, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+    }
 
     // Draw separator line
     hw.display.drawLine(MARGIN, HEADER_HEIGHT - 2, SCREEN_WIDTH - MARGIN, HEADER_HEIGHT - 2, UIColors::HEADER_LINE);
@@ -373,11 +387,8 @@ void DisplayManager::drawProgressBar(int x, int y, int width, int height, uint8_
 // ============================================================================
 
 void DisplayManager::drawBootText() {
-    // Static text below the 220x220 logo (logo occupies y=5 to y=225)
+    // Static text below the logo
     if (_needs_full_redraw) {
-        // Product name
-        drawCenteredStringAA(200, Version::PRODUCT_NAME, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
-
         // Version
         drawCenteredStringAA(225, Version::FIRMWARE_VERSION, UIColors::TEXT_SECONDARY, FONT_SMALL);
     }
@@ -396,7 +407,7 @@ void DisplayManager::drawBootText() {
 
 void DisplayManager::drawBootProgress() {
     uint8_t progress = stateMachine.getBootProgress();
-    drawProgressBar(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 15, progress, UIColors::SYNAPTICON_PINK);
+    drawProgressBar(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 15, progress, UIColors::PINK);
 }
 
 // ============================================================================
@@ -404,11 +415,11 @@ void DisplayManager::drawBootProgress() {
 // ============================================================================
 
 void DisplayManager::drawActiveContract() {
-    int y = CONTENT_Y_START + 5;
+    int y = CONTENT_Y_START + 2;
 
     // Only clear on full redraw
     if (_needs_full_redraw) {
-        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, 50, UIColors::BACKGROUND);
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, 42, UIColors::BACKGROUND);
         hw.display.drawStringAA(MARGIN, y, "Contract:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         _last_pps_state = -1;  // Force redraw of badge
         _last_epr_badge_drawn = false;  // Force redraw of EPR badge
@@ -455,6 +466,11 @@ void DisplayManager::drawActiveContract() {
             _last_pd_revision_drawn = true;
             strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
             _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
+        } else if (pd_rev[0] == '\0' && (_last_pd_revision_drawn || _last_epr_badge_drawn)) {
+            hw.display.fillRect(SCREEN_WIDTH - 120, y - 3, 110, BADGE_H + 4, UIColors::BACKGROUND);
+            _last_pd_revision_drawn = false;
+            _last_pd_revision[0] = '\0';
+            _last_epr_badge_drawn = false;
         }
 
         // EPR badge: show when active contract is AVS or voltage > 20V (EPR territory)
@@ -468,10 +484,10 @@ void DisplayManager::drawActiveContract() {
                 int epr_w = ST7789::getStringWidthAA(epr_text, FONT_SMALL) + 8;
                 int epr_x = rev_x - epr_w - 4;
                 int epr_y = y - 2;
-                hw.display.fillRoundRect(epr_x, epr_y, epr_w, BADGE_H, BADGE_R, UIColors::SYNAPTICON_PINK);
+                hw.display.fillRoundRect(epr_x, epr_y, epr_w, BADGE_H, BADGE_R, UIColors::PINK);
                 int epr_tx = epr_x + (epr_w - ST7789::getStringWidthAA(epr_text, FONT_SMALL)) / 2;
                 int epr_ty = epr_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(epr_tx, epr_ty, epr_text, UIColors::TEXT_PRIMARY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
+                hw.display.drawStringAA(epr_tx, epr_ty, epr_text, UIColors::TEXT_PRIMARY, UIColors::PINK, FONT_SMALL);
                 _last_epr_badge_drawn = true;
             } else if (!show_epr && _last_epr_badge_drawn) {
                 // Clear EPR badge
@@ -536,10 +552,11 @@ void DisplayManager::drawActiveContract() {
     } else {
         // Non-PD charger or no contract: show USB default
         hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
-        if (_last_pps_state != 0) {
-            hw.display.fillRect(SCREEN_WIDTH - MARGIN - 38, y - 3, 42, 22, UIColors::BACKGROUND);
-            _last_pps_state = 0;
-        }
+        hw.display.fillRect(SCREEN_WIDTH - 120, y - 3, 110, BADGE_H + 4, UIColors::BACKGROUND);
+        _last_pps_state = 0;
+        _last_epr_badge_drawn = false;
+        _last_pd_revision_drawn = false;
+        _last_pd_revision[0] = '\0';
     }
 }
 
@@ -1161,7 +1178,7 @@ void DisplayManager::drawCurrentLimitAdjust() {
     uint8_t percent = (range > 0)
         ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
         : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
+    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
 
     // Draw min/max labels and hints only on full redraw
     if (_needs_full_redraw) {
@@ -1203,7 +1220,7 @@ void DisplayManager::drawPpsVoltageAdjust() {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
 
         // Draw "PPS" badge
-        drawCenteredStringAA(y, "Programmable Power", UIColors::SYNAPTICON_PINK, FONT_SMALL);
+        drawCenteredStringAA(y, "Programmable Power", UIColors::PINK, FONT_SMALL);
         y += 18;
     } else {
         y += 18;
@@ -1234,7 +1251,7 @@ void DisplayManager::drawPpsVoltageAdjust() {
     uint8_t percent = (range > 0)
         ? ((target_mv - min_mv) * 100) / range
         : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
+    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
 
     // Draw min/max labels
     if (_needs_full_redraw) {
@@ -1280,7 +1297,7 @@ void DisplayManager::drawAvsVoltageAdjust() {
     // Only clear content area on full redraw
     if (_needs_full_redraw) {
         hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START - 40, UIColors::BACKGROUND);
-        drawCenteredStringAA(y, "Adjustable Voltage", UIColors::SYNAPTICON_PINK, FONT_SMALL);
+        drawCenteredStringAA(y, "Adjustable Voltage", UIColors::PINK, FONT_SMALL);
         y += 18;
     } else {
         y += 18;
@@ -1311,7 +1328,7 @@ void DisplayManager::drawAvsVoltageAdjust() {
     uint8_t percent = (range > 0)
         ? ((target_mv - min_mv) * 100) / range
         : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::SYNAPTICON_PINK);
+    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
 
     // Draw min/max labels and hints on full redraw only
     if (_needs_full_redraw) {
@@ -1643,7 +1660,7 @@ void DisplayManager::drawEepromFlashScreen() {
 
             // Progress bar
             if (_needs_full_redraw || progress_changed) {
-                drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 25, progress, UIColors::SYNAPTICON_PINK);
+                drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 25, progress, UIColors::PINK);
                 _last_eeprom_progress = progress;
             }
             y += 35;
@@ -1698,21 +1715,20 @@ void DisplayManager::drawEepromFlashScreen() {
 void DisplayManager::drawAboutScreen() {
     const int LINE_H = 17;
 
-    // Logo on left, product name on right
-    int logo_size = 44;
-    int logo_x = MARGIN + 5;
-    int logo_y = CONTENT_Y_START + 5;
-    hw.display.drawBitmapScaled(logo_x, logo_y, logo_size, logo_size,
-                                 SYNAPTICON_WIDTH, SYNAPTICON_HEIGHT, synapticon_data);
+    // Center the logo and preserve its aspect ratio like the boot screen.
+    const int logo_w = SCREEN_WIDTH - (MARGIN * 4);
+    const float aspect_ratio = static_cast<float>(PD240W_WIDTH) / PD240W_HEIGHT;
+    const int logo_h = static_cast<int>(logo_w / aspect_ratio);
+    const int logo_x = (SCREEN_WIDTH - logo_w) / 2;
+    const int logo_y = CONTENT_Y_START + 8;
+    hw.display.drawBitmapScaled(logo_x, logo_y, logo_w, logo_h,
+                                PD240W_WIDTH, PD240W_HEIGHT, pd240w_data);
 
-    // Text to the right of logo
-    int text_x = MARGIN + 73;
-    int text_y = logo_y;  // Vertically center text with logo
-    hw.display.drawStringAA(text_x, text_y, Version::PRODUCT_NAME, UIColors::SYNAPTICON_PINK, UIColors::BACKGROUND, FONT_MEDIUM);
-    hw.display.drawStringAA(text_x, text_y + 22, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+    const int subtitle_y = logo_y + logo_h + 8;
+    drawCenteredStringAA(subtitle_y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, FONT_SMALL);
 
     // Start info section below logo
-    int y = logo_y + logo_size + 10;
+    int y = subtitle_y + FONT_SMALL->lineHeight + 10;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
@@ -1765,7 +1781,7 @@ void DisplayManager::drawAboutScreen() {
     y += 8;
 
     // GitHub link section
-    hw.display.drawStringAA(LABEL_X, y, "Link:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(LABEL_X, y, "GitHub:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     // Display shortened URL
     hw.display.drawStringAA(VALUE_X, y, Version::GITHUB_SHORT, UIColors::LINK_BLUE, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H + 4;
@@ -1773,8 +1789,6 @@ void DisplayManager::drawAboutScreen() {
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
     y += 8;
-
-    drawCenteredStringAA(y, Version::COMPANY, UIColors::SYNAPTICON_PINK, FONT_SMALL);
 
     // Navigation hint
     hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,

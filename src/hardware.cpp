@@ -71,7 +71,7 @@ void Hardware::init() {
     // Initial Output States
     // =========================================================================
     loadSwitch.off();
-    rgbLed.setColor(LedColor::GREEN, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+    rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
 
     // =========================================================================
     // EEPROM Flashing (TPS26750 config update)
