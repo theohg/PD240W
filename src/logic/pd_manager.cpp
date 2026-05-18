@@ -845,20 +845,29 @@ bool PdManager::getMode(char* mode_str) {
 // ============================================================================
 
 void PdManager::detectPdRevision() {
-    bool has_avs = false;
+    bool has_epr = (_pdo_count > 7);
     bool has_pps = false;
+    bool has_epr_avs = false;
+    bool has_spr_avs = false;
 
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs) has_avs = true;
+        if (_pdo_cache[i].is_avs) {
+            if (_pdo_cache[i].min_voltage_mv == 9000) {
+                has_spr_avs = true;
+            } else {
+                has_epr_avs = true;
+                has_epr = true;
+            }
+        }
         if (_pdo_cache[i].is_pps) has_pps = true;
     }
 
-    // Standard SPR (PD 2.0/3.0) allows max 7 PDOs. 
-    // 8+ PDOs or the presence of AVS guarantees EPR (PD 3.1+).
-    if (has_avs || _pdo_count > 7) {
-        // You can safely assume at least PD 3.1. 
-        // (PD 3.2 chargers will fall into this bucket as well).
-        strcpy(_pd_revision, "PD3.1+"); 
+    // SPR AVS is new in PD 3.2, so its presence is enough to identify PD 3.2.
+    if (has_spr_avs) {
+        strcpy(_pd_revision, "PD3.2");
+    } else if (has_epr || has_epr_avs) {
+        // EPR-only sources map to PD 3.1.
+        strcpy(_pd_revision, "PD3.1");
     } else if (has_pps) {
         // PPS was introduced in PD 3.0
         strcpy(_pd_revision, "PD3.0");

@@ -88,6 +88,10 @@ cmake-build-*/
 .project
 .settings/
 
+# Copilot instructions
+.github/instructions
+.github/copilot-instructions.md
+
 # ============================================================================
 # Pico SDK specific
 # ============================================================================
@@ -98,8 +102,7 @@ cmake-build-*/
 # Custom project files
 # ============================================================================
 dev_tools/
-src/utils/pwm_test.cpp
-src/utils/pwm_test.h
 notes/
 tools/
 build/PD240W.uf2
+src/utils/tps26750_configs/

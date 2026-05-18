@@ -12,19 +12,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-// =============================================================================
-// Configuration Flags
-// =============================================================================
-
-/**
- * Master enable flag for EEPROM flashing at startup.
- * Set to 1 to enable flashing, 0 to skip (normal operation).
- *
- * WARNING: Only enable when you need to update the TPS26750 patch.
- * After successful flash, set back to 0 and rebuild.
- */
-#define ENABLE_TPS_EEPROM_FLASHING 0
+#include "pico/stdlib.h"
 
 // =============================================================================
 // EEPROM I2C Configuration (I2C1 on GPIO 14/15)
@@ -69,6 +57,23 @@ enum class EepromCompareResult {
  */
 typedef void (*EepromProgressCallback)(uint8_t phase, uint8_t progress, void* user_data);
 
+enum class EepromFlashStatus : uint8_t {
+    IN_PROGRESS,
+    SUCCESS,
+    ERROR
+};
+
+struct EepromFlashSession {
+    const uint8_t* fw_data;
+    size_t fw_size;
+    size_t write_offset;
+    size_t verify_offset;
+    absolute_time_t next_action_time;
+    bool waiting_for_write_cycle;
+    bool verify_announced;
+    const char* error_message;
+};
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -105,28 +110,19 @@ EepromCompareResult eepromCompare();
 size_t eepromGetFirmwareSize();
 
 /**
- * @brief Flash the TPS26750 configuration to EEPROM with progress callback.
- * @param callback Optional progress callback (can be nullptr)
- * @param user_data User context passed to callback
- * @return true on success (write + verify passed), false on failure
+ * @brief Begin a non-blocking EEPROM flash session.
+ * @param session Session state storage owned by the caller
+ * @return true if the session is ready to step, false on setup failure
  */
-bool eepromFlash(EepromProgressCallback callback = nullptr, void* user_data = nullptr);
+bool eepromFlashBegin(EepromFlashSession* session);
 
 /**
- * @brief Flashes the TPS26750 configuration binary to the EEPROM.
- *
- * This function:
- * 1. Checks if ENABLE_TPS_EEPROM_FLASHING is set (returns true immediately if disabled)
- * 2. Initializes I2C1 on GPIO 14/15 for EEPROM access
- * 3. Writes 'tps25750x_fullFlash_i2c_array' to EEPROM starting at address 0x0000
- * 4. Handles 128-byte page alignment and write cycle delays
- * 5. Verifies by reading back and comparing
- * 6. Deinitializes I2C1 to release resources
- *
- * @return true  Flashing disabled, or flash+verify succeeded
- * @return false I2C communication failed or verification mismatch
- *
- * @note After successful flash, power cycle the TPS26750 to load new config.
- * @note Call this BEFORE hw.init() or ensure I2C1 pins are not in use.
+ * @brief Advance a non-blocking EEPROM flash session by one write or verify chunk.
+ * @param session Session state storage from eepromFlashBegin
+ * @param callback Optional progress callback (can be nullptr)
+ * @param user_data User context passed to callback
+ * @return Current session status
  */
-bool flashTps26750Eeprom();
+EepromFlashStatus eepromFlashStep(EepromFlashSession* session,
+                                  EepromProgressCallback callback = nullptr,
+                                  void* user_data = nullptr);

@@ -8,6 +8,19 @@
 // Global instance
 TpsEepromWorkflow tpsEepromWorkflow;
 
+namespace {
+
+const Note EEPROM_FLASH_SUCCESS_MELODY[] = {
+    {880, 80},
+    {1175, 80},
+    {1397, 150},
+};
+
+constexpr uint8_t EEPROM_FLASH_SUCCESS_MELODY_LENGTH =
+    sizeof(EEPROM_FLASH_SUCCESS_MELODY) / sizeof(Note);
+
+}  // namespace
+
 // ============================================================================
 // Progress Callback (static, forwards to instance)
 // ============================================================================
@@ -29,6 +42,9 @@ TpsEepromWorkflow::TpsEepromWorkflow()
     , _result(false)
     , _confirm_yes(false)
     , _message(nullptr)
+    , _flash_session{}
+    , _completion_pending(false)
+    , _completion_ready_time{}
 {
 }
 
@@ -44,6 +60,8 @@ void TpsEepromWorkflow::start() {
     _result = false;
     _confirm_yes = false;
     _message = "Initializing...";
+    _flash_session = {};
+    _completion_pending = false;
 
     LOG_INFO("EEPROM workflow started");
 
@@ -76,7 +94,7 @@ bool TpsEepromWorkflow::handleInput(bool rotate, bool click) {
             break;
 
         case TpsEepromWorkflowStage::FLASHING:
-            // No user input during flashing (blocking operation)
+            // No user input during flashing
             break;
 
         case TpsEepromWorkflowStage::DONE:
@@ -90,6 +108,46 @@ bool TpsEepromWorkflow::handleInput(bool rotate, bool click) {
     return false;  // Stay in workflow
 }
 
+bool TpsEepromWorkflow::update() {
+    uint8_t previous_stage = static_cast<uint8_t>(_stage);
+    uint8_t previous_phase = _phase;
+    bool previous_result = _result;
+    const char* previous_message = _message;
+
+    if (_stage == TpsEepromWorkflowStage::FLASHING) {
+        if (_completion_pending) {
+            if (absolute_time_diff_us(_completion_ready_time, get_absolute_time()) >= 0) {
+                _completion_pending = false;
+                _stage = TpsEepromWorkflowStage::DONE;
+                _message = "Success! Power cycle";
+                hw.buzzer.playMelody(EEPROM_FLASH_SUCCESS_MELODY,
+                                     EEPROM_FLASH_SUCCESS_MELODY_LENGTH);
+                LOG_INFO("EEPROM flash successful");
+            }
+        } else {
+            EepromFlashStatus status = eepromFlashStep(&_flash_session, progressCallback, this);
+            if (status == EepromFlashStatus::SUCCESS) {
+                _result = true;
+                _phase = 1;
+                _progress = 100;
+                _completion_pending = true;
+                _completion_ready_time = make_timeout_time_ms(220);
+            } else if (status == EepromFlashStatus::ERROR) {
+                _result = false;
+                _stage = TpsEepromWorkflowStage::DONE;
+                _message = _flash_session.error_message ? _flash_session.error_message : "Flash failed!";
+                hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
+                LOG_ERROR("EEPROM flash failed");
+            }
+        }
+    }
+
+    return previous_stage != static_cast<uint8_t>(_stage)
+        || previous_phase != _phase
+        || previous_result != _result
+        || previous_message != _message;
+}
+
 void TpsEepromWorkflow::setProgress(uint8_t phase, uint8_t progress) {
     _phase = phase;
     _progress = progress;
@@ -98,6 +156,8 @@ void TpsEepromWorkflow::setProgress(uint8_t phase, uint8_t progress) {
 
 void TpsEepromWorkflow::cleanup() {
     if (_active) {
+        _flash_session = {};
+        _completion_pending = false;
         eepromDeinit();
         _active = false;
         LOG_INFO("EEPROM workflow cleanup");
@@ -168,24 +228,17 @@ void TpsEepromWorkflow::runCompare() {
 void TpsEepromWorkflow::runFlash() {
     LOG_INFO("Starting EEPROM flash...");
 
-    // Execute flash with progress callback
-    _result = eepromFlash(progressCallback, this);
+    _flash_session = {};
+    _completion_pending = false;
+    _result = false;
 
-    // Move to done stage
-    _stage = TpsEepromWorkflowStage::DONE;
-
-    if (_result) {
-        _message = "Success! Power cycle";
-        // Success melody
-        hw.buzzer.playTone(880, 80);   // A5
-        sleep_ms(80);
-        hw.buzzer.playTone(1175, 80);  // D6
-        sleep_ms(80);
-        hw.buzzer.playTone(1397, 150); // F6
-        LOG_INFO("EEPROM flash successful");
-    } else {
-        _message = "Flash failed!";
+    if (!eepromFlashBegin(&_flash_session)) {
+        _stage = TpsEepromWorkflowStage::DONE;
+        _message = _flash_session.error_message ? _flash_session.error_message : "Flash failed!";
         hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);
         LOG_ERROR("EEPROM flash failed");
+        return;
     }
+
+    setProgress(0, 0);
 }

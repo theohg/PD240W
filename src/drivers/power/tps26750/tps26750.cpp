@@ -255,6 +255,28 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
                 } else {
                     temp.max_current_ma = 0;
                 }
+            } else if (apdo_type == 0x02) {
+                // === SPR AVS ===
+                temp.is_avs = true;
+                
+                // SPR AVS does NOT use the EPR AVS layout.
+                // Bits 19:10 = Max Current for 9V-15V (in 10mA units)
+                // Bits 9:0   = Max Current for 15V-20V (in 10mA units)
+                uint32_t max_curr_9_15_ma  = ((pdo >> 10) & 0x3FF) * 10;
+                uint32_t max_curr_15_20_ma = (pdo & 0x3FF) * 10;
+
+                // USB PD 3.2 dictates that SPR AVS minimum voltage is always 9V
+                temp.min_voltage_mv = 9000;
+                
+                // The max voltage is 20V if the 15V-20V current field is populated (>0).
+                // Otherwise, the max voltage is 15V.
+                if (max_curr_15_20_ma > 0) {
+                    temp.voltage_mv = 20000;
+                    temp.max_current_ma = max_curr_15_20_ma;
+                } else {
+                    temp.voltage_mv = 15000;
+                    temp.max_current_ma = max_curr_9_15_ma;
+                }
             } else if (apdo_type == 0x00) {
                 // === SPR PPS ===
                 temp.is_pps = true;
@@ -395,7 +417,7 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
     // Restore and write final intended state
     writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24);
 
-    printf("[DEBUG] Triggered re-negotiation via PPS toggle trick\n");
+    // printf("Triggered re-negotiation via PPS toggle trick\n");
     return true;
 }
 

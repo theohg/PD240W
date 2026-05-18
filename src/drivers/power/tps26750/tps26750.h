@@ -22,7 +22,7 @@ struct SourceCapability {
     uint32_t voltage_mv;      // Fixed: Voltage. PPS/AVS: Max Voltage.
     uint32_t max_current_ma;  // Max Current (or Power for Battery, but simplified here)
     bool is_pps;              // Programmable Power Supply (SPR)
-    bool is_avs;              // Adjustable Voltage Supply (EPR)
+    bool is_avs;              // Adjustable Voltage Supply (SPR or EPR)
     // For PPS/AVS: voltage_mv is the MAX voltage, current is max current
     uint32_t min_voltage_mv;  // Only valid if is_pps or is_avs = true
 };

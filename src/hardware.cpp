@@ -72,20 +72,6 @@ void Hardware::init() {
     // =========================================================================
     loadSwitch.off();
     rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
-
-    // =========================================================================
-    // EEPROM Flashing (TPS26750 config update)
-    // =========================================================================
-    // Uses I2C1 (GP14/GP15) which is independent of I2C0.
-    if (!flashTps26750Eeprom()) {
-        LOG_ERROR("EEPROM flashing failed! Halting.");
-        while (true) {
-            rgbLed.setColor(LedColor::RED);
-            sleep_ms(500);
-            rgbLed.setColor(LedColor::OFF);
-            sleep_ms(500);
-        }
-    }
 }
 
 void Hardware::update() {

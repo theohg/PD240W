@@ -170,6 +170,9 @@ bool StateMachine::update() {
 
         case AppState::ADJUST:
             handleAdjustState(event);
+            if (_adjust_mode == AdjustMode::EEPROM_FLASH && tpsEepromWorkflow.update()) {
+                needs_refresh = true;
+            }
             if (event != EncoderEvent::NONE) needs_refresh = true;
             break;
 

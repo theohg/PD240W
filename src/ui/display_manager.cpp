@@ -27,6 +27,9 @@ static constexpr int STATUS_BAR_HEIGHT = 20;
 static constexpr int CONTENT_Y_START = HEADER_HEIGHT + 5;
 static constexpr int MENU_ITEM_HEIGHT = 25;
 static constexpr int MARGIN = 10;
+static constexpr uint16_t PROGRESS_TRACK_COLOR = 0x2004;
+static constexpr uint16_t PROGRESS_GRADIENT_START = 0x780F;
+static constexpr uint16_t PROGRESS_GRADIENT_END = 0xFC7D;
 
 // Overtemperature fault screen layout (vertically aligned columns)
 static constexpr int OT_LABEL_X = 45;   // Labels: "Trigger", "Limit", "Now"
@@ -42,6 +45,63 @@ static constexpr int OC_VALUE_X = 130;  // Current values (left-aligned digits)
 static constexpr int OC_UNIT_X  = 180;  // "A" column (vertically aligned)
 static constexpr int OC_ROW_H   = 22;   // Row spacing
 
+namespace {
+
+void drawActionButton(int x, int y, int width, int height, int radius,
+                      const char* label, bool selected) {
+    uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::MUTED;
+    uint16_t fg = UIColors::TEXT_PRIMARY;
+    uint16_t border = selected ? UIColors::TEXT_PRIMARY : UIColors::TEXT_SECONDARY;
+
+    hw.display.fillRoundRect(x, y, width, height, radius, bg);
+    hw.display.drawRoundRect(x, y, width, height, radius, border);
+
+    int text_w = ST7789::getStringWidthAA(label, FONT_MEDIUM);
+    int text_x = x + (width - text_w) / 2;
+    int text_y = y + (height - FONT_MEDIUM->lineHeight) / 2;
+    hw.display.drawStringAA(text_x, text_y, label, fg, bg, FONT_MEDIUM);
+}
+
+int getProgressFillWidth(int total_width, uint8_t percent) {
+    if (percent > 100) {
+        percent = 100;
+    }
+    return (total_width * percent) / 100;
+}
+
+void updateProgressBarFill(int x, int y, int width, int height,
+                           uint8_t previous_percent, uint8_t current_percent,
+                           uint16_t start_color, uint16_t end_color) {
+    if (current_percent == previous_percent || width <= 4 || height <= 4) {
+        return;
+    }
+
+    int inner_x = x + 2;
+    int inner_y = y + 2;
+    int inner_width = width - 4;
+    int inner_height = height - 4;
+    int previous_fill = getProgressFillWidth(inner_width, previous_percent);
+    int current_fill = getProgressFillWidth(inner_width, current_percent);
+
+    if (current_fill == previous_fill) {
+        return;
+    }
+
+    if (current_fill > previous_fill) {
+        hw.display.fillRoundRectGradientColumns(inner_x, inner_y, inner_width, inner_height,
+                                                inner_height / 2,
+                                                previous_fill, current_fill,
+                                                start_color, end_color);
+    } else {
+        hw.display.fillRoundRectGradientColumns(inner_x, inner_y, inner_width, inner_height,
+                                                inner_height / 2,
+                                                current_fill, previous_fill,
+                                                PROGRESS_TRACK_COLOR, PROGRESS_TRACK_COLOR);
+    }
+}
+
+}  // namespace
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -56,14 +116,18 @@ DisplayManager::DisplayManager()
     , _last_pdo_selection(-1)
     , _last_pdo_scroll_idx(-1)
     , _last_adjust_value(0)
+    , _last_current_limit_percent(255)
     , _last_pps_voltage(0)
+    , _last_pps_percent(255)
     , _last_avs_voltage(0)
+    , _last_avs_percent(255)
     , _last_pps_state(-1)
     , _last_pd_revision_drawn(false)
     , _last_pd_revision{0}
     , _last_epr_badge_drawn(false)
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
+    , _last_boot_progress(255)
     , _backlight_on(false)
     , _last_auto_pps(false)
     , _last_auto_avs(false)
@@ -88,6 +152,7 @@ DisplayManager::DisplayManager()
     , _last_energy_high(false)
     , _last_eeprom_stage(255)
     , _last_eeprom_progress(255)
+    , _last_eeprom_phase(255)
     , _last_eeprom_confirm(false)
     , _last_remote_mode(false)
     , _fault_now_temp_y(0)
@@ -109,6 +174,10 @@ void DisplayManager::init() {
     _last_cc_adjust_state = -1;    // Force CC adjust badge redraw
     _last_remote_mode = false;     // Force RMT badge redraw
     _last_energy_mode = -1;        // Force energy unit redraw
+    _last_current_limit_percent = 255;
+    _last_pps_percent = 255;
+    _last_avs_percent = 255;
+    _last_boot_progress = 255;     // Force boot progress redraw
     _last_pdo_scroll_idx = -1;  // Reset scroll position
 
     // Reset main screen tracking state (prevents stale data after warm reset)
@@ -121,6 +190,7 @@ void DisplayManager::init() {
     _last_energy_high = false;
     _last_eeprom_stage = 255;
     _last_eeprom_progress = 255;
+    _last_eeprom_phase = 255;
     _last_eeprom_confirm = false;
     _fault_now_temp_y = 0;
 }
@@ -364,21 +434,37 @@ void DisplayManager::drawHeader(const char* title) {
     hw.display.drawLine(MARGIN, HEADER_HEIGHT - 2, SCREEN_WIDTH - MARGIN, HEADER_HEIGHT - 2, UIColors::HEADER_LINE);
 }
 
-void DisplayManager::drawProgressBar(int x, int y, int width, int height, uint8_t percent, uint16_t color) {
-    // Draw border
-    hw.display.drawRect(x, y, width, height, UIColors::TEXT_SECONDARY);
-
-    // Calculate fill width
-    int fill_width = ((width - 4) * percent) / 100;
-    if (fill_width > 0) {
-        hw.display.fillRect(x + 2, y + 2, fill_width, height - 4, color);
+void DisplayManager::drawProgressBar(int x, int y, int width, int height, uint8_t percent,
+                                     uint16_t start_color, uint16_t end_color) {
+    if (width <= 4 || height <= 4) {
+        return;
     }
 
-    // Clear unfilled area
-    int unfilled_start = x + 2 + fill_width;
-    int unfilled_width = (width - 4) - fill_width;
-    if (unfilled_width > 0) {
-        hw.display.fillRect(unfilled_start, y + 2, unfilled_width, height - 4, UIColors::BACKGROUND);
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    if (end_color == 0) {
+        end_color = start_color;
+    }
+
+    int radius = height / 2;
+    int inner_x = x + 2;
+    int inner_y = y + 2;
+    int inner_width = width - 4;
+    int inner_height = height - 4;
+    int fill_width = getProgressFillWidth(inner_width, percent);
+
+    hw.display.fillRoundRect(x, y, width, height, radius, UIColors::BACKGROUND);
+    hw.display.fillRoundRect(inner_x, inner_y, inner_width, inner_height,
+                             inner_height / 2, PROGRESS_TRACK_COLOR);
+    hw.display.drawRoundRect(x, y, width, height, radius, UIColors::TEXT_SECONDARY);
+
+    if (fill_width > 0) {
+        hw.display.fillRoundRectGradientColumns(inner_x, inner_y, inner_width, inner_height,
+                                                inner_height / 2,
+                                                0, fill_width,
+                                                start_color, end_color);
     }
 }
 
@@ -407,7 +493,16 @@ void DisplayManager::drawBootText() {
 
 void DisplayManager::drawBootProgress() {
     uint8_t progress = stateMachine.getBootProgress();
-    drawProgressBar(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 15, progress, UIColors::PINK);
+    if (_needs_full_redraw || progress < _last_boot_progress) {
+        drawProgressBar(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 16, progress,
+                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+        _last_boot_progress = progress;
+    } else if (progress > _last_boot_progress) {
+        updateProgressBarFill(MARGIN * 3, 282, SCREEN_WIDTH - MARGIN * 6, 16,
+                              _last_boot_progress, progress,
+                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+        _last_boot_progress = progress;
+    }
 }
 
 // ============================================================================
@@ -473,12 +568,14 @@ void DisplayManager::drawActiveContract() {
             _last_epr_badge_drawn = false;
         }
 
-        // EPR badge: show when active contract is AVS or voltage > 20V (EPR territory)
+        // EPR badge: show for EPR AVS or fixed contracts above the SPR/EPR boundary.
         // Evaluated independently of PD revision badge to update when contract changes
         if (_last_pd_revision_drawn) {
             int rev_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
             int rev_x = RIGHTMOST_BADGE_X - rev_w - 4;
-            bool show_epr = contract.is_avs || (contract.valid && contract.voltage_mv > 20000);
+            bool show_epr =
+                (contract.is_avs && contract.pps_min_mv != 9000) ||
+                (contract.valid && contract.voltage_mv > AppConfig::EPR_SPR_MAX_MV);
             if (show_epr && !_last_epr_badge_drawn) {
                 const char* epr_text = "EPR";
                 int epr_w = ST7789::getStringWidthAA(epr_text, FONT_SMALL) + 8;
@@ -953,7 +1050,10 @@ void DisplayManager::drawMenuItem(int y, const char* text, bool selected) {
     uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
 
     // Single fill with correct background (avoids flicker from clear+highlight)
-    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+    if (selected)
+        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+    else
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
     hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
     hw.display.drawStringAA(MARGIN + 20, y + 5, text, fg, bg, FONT_SMALL);
@@ -964,7 +1064,10 @@ void DisplayManager::drawMenuItemMuted(int y, const char* text, bool selected) {
     uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::MUTED;
 
     // Single fill with correct background (avoids flicker from clear+highlight)
-    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+    if (selected)
+        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+    else
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
     hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
     hw.display.drawStringAA(MARGIN + 20, y + 5, text, fg, bg, FONT_SMALL);
@@ -1067,18 +1170,27 @@ void DisplayManager::drawPdoList() {
                 }
 
                 // Single fill with correct background (avoids flicker)
-                hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+                if (selected || is_active)
+                    hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+                else
+                    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
                 char line[40];
-                if (pdos[i].is_pps) {
-                    snprintf(line, sizeof(line), "PPS %u-%uV %umA",
-                             (unsigned)(pdos[i].min_voltage_mv / 1000),
-                             (unsigned)(pdos[i].voltage_mv / 1000),
-                             (unsigned)pdos[i].max_current_ma);
-                } else if (pdos[i].is_avs) {
-                    snprintf(line, sizeof(line), "AVS %u-%uV %umA",
-                             (unsigned)(pdos[i].min_voltage_mv / 1000),
-                             (unsigned)(pdos[i].voltage_mv / 1000),
+                if (pdos[i].is_pps || pdos[i].is_avs) {
+                    char min_v[8], max_v[8];
+                    uint32_t min_mv = pdos[i].min_voltage_mv;
+                    uint32_t max_mv = pdos[i].voltage_mv;
+                    if (min_mv % 1000 == 0)
+                        snprintf(min_v, sizeof(min_v), "%u", (unsigned)(min_mv / 1000));
+                    else
+                        snprintf(min_v, sizeof(min_v), "%.1f", min_mv / 1000.0f);
+                    if (max_mv % 1000 == 0)
+                        snprintf(max_v, sizeof(max_v), "%u", (unsigned)(max_mv / 1000));
+                    else
+                        snprintf(max_v, sizeof(max_v), "%.1f", max_mv / 1000.0f);
+                    snprintf(line, sizeof(line), "%s %s-%sV %umA",
+                             pdos[i].is_pps ? "PPS" : "AVS",
+                             min_v, max_v,
                              (unsigned)pdos[i].max_current_ma);
                 } else {
                     snprintf(line, sizeof(line), "%uV @ %umA",
@@ -1115,13 +1227,18 @@ void DisplayManager::drawPdoList() {
 void DisplayManager::drawCurrentLimitAdjust() {
     uint32_t current_ma = stateMachine.getCurrentLimitMa();
     uint32_t max_ma = stateMachine.getEffectiveMaxCurrentMa();
+    uint32_t range = max_ma - AppConfig::CURRENT_LIMIT_MIN_MA;
+    uint8_t percent = (range > 0)
+        ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
+        : 0;
     bool cc_enabled = CcController::isEnabled();
     int8_t cc_state = cc_enabled ? 1 : 0;
     bool cc_changed = (cc_state != _last_cc_adjust_state);
     bool value_changed = (current_ma != _last_adjust_value);
+    bool percent_changed = (percent != _last_current_limit_percent);
 
     // Skip redraw if nothing changed
-    if (!_needs_full_redraw && !value_changed && !cc_changed) {
+    if (!_needs_full_redraw && !value_changed && !cc_changed && !percent_changed) {
         return;
     }
 
@@ -1174,11 +1291,15 @@ void DisplayManager::drawCurrentLimitAdjust() {
 
     // Draw progress bar (scaled to effective max)
     y += 50;
-    uint32_t range = max_ma - AppConfig::CURRENT_LIMIT_MIN_MA;
-    uint8_t percent = (range > 0)
-        ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
-        : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
+    if (_needs_full_redraw || _last_current_limit_percent == 255) {
+        drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent,
+                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    } else if (percent_changed) {
+        updateProgressBarFill(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20,
+                              _last_current_limit_percent, percent,
+                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    }
+    _last_current_limit_percent = percent;
 
     // Draw min/max labels and hints only on full redraw
     if (_needs_full_redraw) {
@@ -1206,12 +1327,17 @@ void DisplayManager::drawPpsVoltageAdjust() {
     uint32_t min_mv = stateMachine.getPpsMinVoltageMv();
     uint32_t max_mv = stateMachine.getPpsMaxVoltageMv();
     uint32_t max_current = stateMachine.getPpsMaxCurrentMa();
+    uint32_t range = max_mv - min_mv;
+    uint8_t percent = (range > 0)
+        ? ((target_mv - min_mv) * 100) / range
+        : 0;
+    bool value_changed = (target_mv != _last_pps_voltage);
+    bool percent_changed = (percent != _last_pps_percent);
 
     // Skip redraw if value hasn't changed
-    if (!_needs_full_redraw && target_mv == _last_pps_voltage) {
+    if (!_needs_full_redraw && !value_changed && !percent_changed) {
         return;
     }
-    _last_pps_voltage = target_mv;
 
     int y = CONTENT_Y_START + 20;
 
@@ -1236,22 +1362,29 @@ void DisplayManager::drawPpsVoltageAdjust() {
     const int VALUE_AREA_W = UNIT_X - VALUE_X;
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
     
-    hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
-    if (VALUE_X + value_width < UNIT_X) {
-        hw.display.fillRect(VALUE_X + value_width, y,
-                            UNIT_X - VALUE_X - value_width,
-                            FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    if (_needs_full_redraw || value_changed) {
+        hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        if (VALUE_X + value_width < UNIT_X) {
+            hw.display.fillRect(VALUE_X + value_width, y,
+                                UNIT_X - VALUE_X - value_width,
+                                FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        }
+        hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        _last_pps_voltage = target_mv;
     }
-    hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to PPS range)
     y += 50;
-    uint32_t range = max_mv - min_mv;
-    uint8_t percent = (range > 0)
-        ? ((target_mv - min_mv) * 100) / range
-        : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
+    if (_needs_full_redraw || _last_pps_percent == 255) {
+        drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent,
+                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    } else if (percent_changed) {
+        updateProgressBarFill(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20,
+                              _last_pps_percent, percent,
+                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    }
+    _last_pps_percent = percent;
 
     // Draw min/max labels
     if (_needs_full_redraw) {
@@ -1285,12 +1418,17 @@ void DisplayManager::drawAvsVoltageAdjust() {
     uint32_t min_mv = stateMachine.getAvsMinVoltageMv();
     uint32_t max_mv = stateMachine.getAvsMaxVoltageMv();
     uint32_t max_current = stateMachine.getAvsMaxCurrentMa();
+    uint32_t range = max_mv - min_mv;
+    uint8_t percent = (range > 0)
+        ? ((target_mv - min_mv) * 100) / range
+        : 0;
+    bool value_changed = (target_mv != _last_avs_voltage);
+    bool percent_changed = (percent != _last_avs_percent);
 
     // Skip redraw if value hasn't changed
-    if (!_needs_full_redraw && target_mv == _last_avs_voltage) {
+    if (!_needs_full_redraw && !value_changed && !percent_changed) {
         return;
     }
-    _last_avs_voltage = target_mv;
 
     int y = CONTENT_Y_START + 20;
 
@@ -1313,22 +1451,29 @@ void DisplayManager::drawAvsVoltageAdjust() {
     const int VALUE_AREA_W = UNIT_X - VALUE_X;
     int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
 
-    hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
-    if (VALUE_X + value_width < UNIT_X) {
-        hw.display.fillRect(VALUE_X + value_width, y,
-                            UNIT_X - VALUE_X - value_width,
-                            FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+    if (_needs_full_redraw || value_changed) {
+        hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        if (VALUE_X + value_width < UNIT_X) {
+            hw.display.fillRect(VALUE_X + value_width, y,
+                                UNIT_X - VALUE_X - value_width,
+                                FONT_LARGE->lineHeight, UIColors::BACKGROUND);
+        }
+        hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        _last_avs_voltage = target_mv;
     }
-    hw.display.drawStringAA(UNIT_X, y, "V", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
 
     // Draw progress bar (scaled to AVS range)
     y += 50;
-    uint32_t range = max_mv - min_mv;
-    uint8_t percent = (range > 0)
-        ? ((target_mv - min_mv) * 100) / range
-        : 0;
-    drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent, UIColors::PINK);
+    if (_needs_full_redraw || _last_avs_percent == 255) {
+        drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent,
+                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    } else if (percent_changed) {
+        updateProgressBarFill(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20,
+                              _last_avs_percent, percent,
+                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+    }
+    _last_avs_percent = percent;
 
     // Draw min/max labels and hints on full redraw only
     if (_needs_full_redraw) {
@@ -1489,7 +1634,10 @@ void DisplayManager::drawSettingsItem(int y, const char* label, bool is_on, bool
     uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
 
     // Single fill with correct background
-    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+    if (selected)
+        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+    else
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
     // Draw selection cursor
     hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
@@ -1503,7 +1651,7 @@ void DisplayManager::drawSettingsItem(int y, const char* label, bool is_on, bool
         const int BADGE_H = 16;
         const int BADGE_R = 3;
         const int BADGE_X = SCREEN_WIDTH - MARGIN - BADGE_W - 5;
-        const int badge_y = y + (MENU_ITEM_HEIGHT - BADGE_H) / 2 - 1;
+        const int badge_y = y + (MENU_ITEM_HEIGHT - BADGE_H) / 2 + 1;
 
         if (is_on) {
             // Green "ON" badge
@@ -1529,7 +1677,10 @@ void DisplayManager::drawBrightnessItem(int y, bool selected) {
     uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
 
     // Single fill with correct background
-    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+    if (selected)
+        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+    else
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
     // Draw selection cursor (arrows when adjusting)
     if (selected && adjusting) {
@@ -1558,7 +1709,10 @@ void DisplayManager::drawValueAdjustItem(int y, const char* label, const char* v
     uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
     uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
 
-    hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, bg);
+    if (selected)
+        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
+    else
+        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
     if (selected && adjusting) {
         hw.display.drawStringAA(MARGIN + 5, y + 5, "<", fg, bg, FONT_SMALL);
@@ -1604,76 +1758,84 @@ void DisplayManager::drawEepromFlashScreen() {
             break;
 
         case 1:  // Confirm stage - show result and Yes/No
-            if (message) {
-                drawCenteredStringAA(y, message, UIColors::CAUTION, FONT_MEDIUM);
-            }
-            y += 30;
-
-            drawCenteredStringAA(y, "Proceed with flash?", UIColors::TEXT_PRIMARY, FONT_SMALL);
-            y += 35;
-
-            // Draw Yes/No buttons
             {
-                int btn_width = 80;
-                int btn_height = 30;
-                int spacing = 30;
-                int total_width = btn_width * 2 + spacing;
-                int start_x = (SCREEN_WIDTH - total_width) / 2;
+                const int message_y = y;
+                const int prompt_y = message_y + 30;
+                const int buttons_y = prompt_y + 35;
 
-                // "No" button (left)
-                uint16_t no_bg = confirm_yes ? UIColors::BACKGROUND : UIColors::HIGHLIGHT_BG;
-                uint16_t no_fg = confirm_yes ? UIColors::TEXT_SECONDARY : UIColors::HIGHLIGHT_FG;
-                hw.display.fillRect(start_x, y, btn_width, btn_height, no_bg);
-                hw.display.drawRect(start_x, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
-                int no_x = start_x + (btn_width - ST7789::getStringWidthAA("No", FONT_MEDIUM)) / 2;
-                hw.display.drawStringAA(no_x, y + 5, "No", no_fg, no_bg, FONT_MEDIUM);
+                if (_needs_full_redraw || stage_changed) {
+                    if (message) {
+                        drawCenteredStringAA(message_y, message, UIColors::CAUTION, FONT_MEDIUM);
+                    }
 
-                // "Yes" button (right)
-                uint16_t yes_bg = confirm_yes ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
-                uint16_t yes_fg = confirm_yes ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_SECONDARY;
-                hw.display.fillRect(start_x + btn_width + spacing, y, btn_width, btn_height, yes_bg);
-                hw.display.drawRect(start_x + btn_width + spacing, y, btn_width, btn_height, UIColors::TEXT_SECONDARY);
-                int yes_x = start_x + btn_width + spacing + (btn_width - ST7789::getStringWidthAA("Yes", FONT_MEDIUM)) / 2;
-                hw.display.drawStringAA(yes_x, y + 5, "Yes", yes_fg, yes_bg, FONT_MEDIUM);
+                    drawCenteredStringAA(prompt_y, "Proceed with flash?", UIColors::TEXT_PRIMARY, FONT_SMALL);
+                    hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
+                                          "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                    hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                          "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                }
 
-                _last_eeprom_confirm = confirm_yes;
+                if (_needs_full_redraw || stage_changed || confirm_changed) {
+                    const int btn_height = (FONT_MEDIUM->lineHeight + 16 > 38) ? FONT_MEDIUM->lineHeight + 16 : 38;
+                    const int btn_radius = 10;
+                    const int btn_padding_x = 22;
+                    const int btn_spacing = 18;
+                    const int no_width = ST7789::getStringWidthAA("No", FONT_MEDIUM) + btn_padding_x * 2;
+                    const int yes_width = ST7789::getStringWidthAA("Yes", FONT_MEDIUM) + btn_padding_x * 2;
+                    const int btn_width = (no_width > yes_width ? no_width : yes_width);
+                    const int total_width = btn_width * 2 + btn_spacing;
+                    const int start_x = (SCREEN_WIDTH - total_width) / 2;
+
+                    drawActionButton(start_x, buttons_y, btn_width, btn_height, btn_radius, "No", !confirm_yes);
+                    drawActionButton(start_x + btn_width + btn_spacing, buttons_y, btn_width, btn_height, btn_radius, "Yes", confirm_yes);
+
+                    _last_eeprom_confirm = confirm_yes;
+                }
             }
-
-            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
-                                  "Rotate: Select", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                                  "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
             break;
 
         case 2:  // Flashing - show progress
-            if (message) {
-                drawCenteredStringAA(y, message, UIColors::ACCENT, FONT_MEDIUM);
-            }
-            y += 35;
-
-            // Phase label
             {
-                const char* phase_label = (phase == 0) ? "Writing to EEPROM..." : "Verifying...";
-                drawCenteredStringAA(y, phase_label, UIColors::TEXT_SECONDARY, FONT_SMALL);
-            }
-            y += 25;
+                bool phase_changed = (phase != _last_eeprom_phase);
+                const int title_y = y;
+                const int phase_y = title_y + 35;
+                const int bar_y = phase_y + 28;
+                const int percent_y = bar_y + 40;
+                const int hint_y = percent_y + 30;
 
-            // Progress bar
-            if (_needs_full_redraw || progress_changed) {
-                drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 25, progress, UIColors::PINK);
-                _last_eeprom_progress = progress;
-            }
-            y += 35;
+                if (_needs_full_redraw || stage_changed) {
+                    hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, UIColors::BACKGROUND);
+                    drawCenteredStringAA(title_y, "Updating EEPROM", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+                    drawCenteredStringAA(hint_y, "Keep power connected", UIColors::WARNING, FONT_SMALL);
+                }
 
-            // Progress percentage
-            {
-                char buf[16];
-                snprintf(buf, sizeof(buf), "%d%%", progress);
-                drawCenteredStringAA(y, buf, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
-            }
+                if (_needs_full_redraw || stage_changed || phase_changed) {
+                    const char* phase_label = (phase == 0)
+                        ? "Writing new configuration"
+                        : "Verifying written image";
+                    hw.display.fillRect(0, phase_y, SCREEN_WIDTH, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+                    drawCenteredStringAA(phase_y, phase_label, UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    _last_eeprom_phase = phase;
+                }
 
-            y += 30;
-            drawCenteredStringAA(y, "Do not disconnect power!", UIColors::WARNING, FONT_SMALL);
+                if (_needs_full_redraw || stage_changed || progress_changed || phase_changed) {
+                    if (_needs_full_redraw || stage_changed || phase_changed || progress < _last_eeprom_progress) {
+                        drawProgressBar(MARGIN * 2, bar_y, SCREEN_WIDTH - MARGIN * 4, 26, progress,
+                                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+                    } else if (progress > _last_eeprom_progress) {
+                        updateProgressBarFill(MARGIN * 2, bar_y, SCREEN_WIDTH - MARGIN * 4, 26,
+                                              _last_eeprom_progress, progress,
+                                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+                    }
+
+                    hw.display.fillRect(0, percent_y, SCREEN_WIDTH, FONT_MEDIUM->lineHeight, UIColors::BACKGROUND);
+                    char buf[16];
+                    snprintf(buf, sizeof(buf), "%d%%", progress);
+                    drawCenteredStringAA(percent_y, buf, UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+
+                    _last_eeprom_progress = progress;
+                }
+            }
             break;
 
         case 3:  // Done - show result

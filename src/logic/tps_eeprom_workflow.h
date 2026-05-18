@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "utils/tps_eeprom_loader.h"
 
 // ============================================================================
 // TPS26750 EEPROM Flash Workflow Controller
@@ -33,6 +34,10 @@ public:
     // Handle user input (rotate toggles Yes/No, click confirms)
     // Returns true if workflow is complete (should exit)
     bool handleInput(bool rotate, bool click);
+
+    // Advance background work for the active workflow.
+    // Returns true when the display should refresh.
+    bool update();
 
     // Check if workflow is active
     bool isActive() const { return _active; }
@@ -69,6 +74,9 @@ private:
     bool _result;
     bool _confirm_yes;
     const char* _message;
+    EepromFlashSession _flash_session;
+    bool _completion_pending;
+    absolute_time_t _completion_ready_time;
 
     // Internal workflow steps
     void runCompare();

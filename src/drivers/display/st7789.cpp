@@ -6,6 +6,91 @@
 #include <stdio.h>   // For snprintf (number formatting)
 #include <stdlib.h>
 
+namespace {
+
+uint8_t expand5To8(uint8_t value) {
+    return static_cast<uint8_t>((value << 3) | (value >> 2));
+}
+
+uint8_t expand6To8(uint8_t value) {
+    return static_cast<uint8_t>((value << 2) | (value >> 4));
+}
+
+int clampByte(int value) {
+    if (value < 0) {
+        return 0;
+    }
+    if (value > 255) {
+        return 255;
+    }
+    return value;
+}
+
+uint8_t quantize5Nearest(uint8_t value8) {
+    return static_cast<uint8_t>((value8 * 31 + 127) / 255);
+}
+
+uint8_t quantize6Nearest(uint8_t value8) {
+    return static_cast<uint8_t>((value8 * 63 + 127) / 255);
+}
+
+struct GradientEndpoints {
+    int start_r = 0;
+    int start_g = 0;
+    int start_b = 0;
+    int end_r = 0;
+    int end_g = 0;
+    int end_b = 0;
+};
+
+GradientEndpoints makeGradientEndpoints(uint16_t start_color, uint16_t end_color) {
+    GradientEndpoints endpoints;
+    endpoints.start_r = expand5To8((start_color >> 11) & 0x1F);
+    endpoints.start_g = expand6To8((start_color >> 5) & 0x3F);
+    endpoints.start_b = expand5To8(start_color & 0x1F);
+    endpoints.end_r = expand5To8((end_color >> 11) & 0x1F);
+    endpoints.end_g = expand6To8((end_color >> 5) & 0x3F);
+    endpoints.end_b = expand5To8(end_color & 0x1F);
+    return endpoints;
+}
+
+uint16_t computeGradientColor(const GradientEndpoints& endpoints, int step, int max_step) {
+    if (max_step <= 0) {
+        return static_cast<uint16_t>((quantize5Nearest(endpoints.start_r) << 11)
+            | (quantize6Nearest(endpoints.start_g) << 5)
+            | quantize5Nearest(endpoints.start_b));
+    }
+
+    int ideal_r = endpoints.start_r + ((endpoints.end_r - endpoints.start_r) * step) / max_step;
+    int ideal_g = endpoints.start_g + ((endpoints.end_g - endpoints.start_g) * step) / max_step;
+    int ideal_b = endpoints.start_b + ((endpoints.end_b - endpoints.start_b) * step) / max_step;
+
+    uint8_t r5 = quantize5Nearest(static_cast<uint8_t>(clampByte(ideal_r)));
+    uint8_t g6 = quantize6Nearest(static_cast<uint8_t>(clampByte(ideal_g)));
+    uint8_t b5 = quantize5Nearest(static_cast<uint8_t>(clampByte(ideal_b)));
+
+    return static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
+}
+
+int16_t computeRoundRectInset(int16_t dx, int16_t w, int16_t r) {
+    if (r <= 0 || dx >= r && dx < w - r) {
+        return 0;
+    }
+
+    int16_t corner_dx = (dx < r) ? (r - 1 - dx) : (dx - (w - r));
+    int32_t radius = r - 1;
+    int32_t inside = radius * radius - corner_dx * corner_dx;
+    int16_t y_extent = 0;
+
+    while ((y_extent + 1) * (y_extent + 1) <= inside) {
+        ++y_extent;
+    }
+
+    return static_cast<int16_t>(radius - y_extent);
+}
+
+}  // namespace
+
 ST7789::ST7789(spi_inst_t* spi, uint pinCS, uint pinDC, uint pinRST, uint pinBL)
     : _spi(spi), _pinCS(pinCS), _pinDC(pinDC), _pinRST(pinRST), _pinBL(pinBL), _pwm_slice(0) {}
 
@@ -363,6 +448,86 @@ void ST7789::fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r
     // Fill top and bottom strips between corners
     fillRect(x + r, y, w - 2 * r, r, color);
     fillRect(x + r, y + h - r, w - 2 * r, r, color);
+}
+
+void ST7789::fillGradientRect(int16_t x, int16_t y, int16_t w, int16_t h,
+                              uint16_t start_color, uint16_t end_color) {
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    if (start_color == end_color || w == 1) {
+        fillRect(x, y, w, h, start_color);
+        return;
+    }
+
+    GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
+    int max_step = w - 1;
+    for (int16_t dx = 0; dx < w; ++dx) {
+        fillRect(x + dx, y, 1, h, computeGradientColor(endpoints, dx, max_step));
+    }
+}
+
+void ST7789::fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
+                                   uint16_t start_color, uint16_t end_color) {
+    fillRoundRectGradientColumns(x, y, w, h, r, 0, w, start_color, end_color);
+}
+
+void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
+                                         int16_t start_column, int16_t end_column,
+                                         uint16_t start_color, uint16_t end_color) {
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    if (start_column < 0) start_column = 0;
+    if (end_column > w) end_column = w;
+    if (start_column >= end_column) {
+        return;
+    }
+
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r <= 0) {
+        GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
+        int max_step = w - 1;
+        for (int16_t dx = 0; dx < w; ++dx) {
+            uint16_t color = computeGradientColor(endpoints, dx, max_step);
+            if (dx >= start_column && dx < end_column) {
+                fillRect(x + dx, y, 1, h, color);
+            }
+        }
+        return;
+    }
+
+    if (start_color == end_color || w == 1) {
+        for (int16_t dx = start_column; dx < end_column; ++dx) {
+            int16_t inset = computeRoundRectInset(dx, w, r);
+            int16_t column_height = h - inset * 2;
+            if (column_height <= 0) {
+                continue;
+            }
+            fillRect(x + dx, y + inset, 1, column_height, start_color);
+        }
+        return;
+    }
+
+    GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
+    int max_step = w - 1;
+    for (int16_t dx = 0; dx < w; ++dx) {
+        uint16_t color = computeGradientColor(endpoints, dx, max_step);
+        if (dx < start_column || dx >= end_column) {
+            continue;
+        }
+
+        int16_t inset = computeRoundRectInset(dx, w, r);
+        int16_t column_height = h - inset * 2;
+        if (column_height <= 0) {
+            continue;
+        }
+
+        fillRect(x + dx, y + inset, 1, column_height, color);
+    }
 }
 
 // Helper to fill rounded corners using vertical lines

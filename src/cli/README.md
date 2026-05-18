@@ -94,7 +94,7 @@ Receiving any serial command puts the device in **REMOTE** mode:
 |---------|-----------|----------|-------------|
 | `PD:LIST?` | — | `0:5000/3000,1:9000/3000,...` | List available PDOs (index:mV/mA or PPS/AVS format) |
 | `PD:ACTIVE?` | — | `20000,3000,FIXED` | Active contract: voltage, current, type |
-| `PD:REV?` | — | `PD3.1+` | PD revision string |
+| `PD:REV?` | — | `PD3.2` | PD revision string (`PD2.0` / `PD3.0` / `PD3.1` / `PD3.2`) |
 | `PD:SEL` | `<index>` | `OK` | Select PDO by index (from PD:LIST?) |
 | `PD:PPS` | `<voltage_mv>` | `OK` | Set PPS voltage in mV (must be in active PPS range) |
 | `PD:AVS` | `<voltage_mv>` | `OK` | Set AVS voltage in mV (must be in active AVS range) |

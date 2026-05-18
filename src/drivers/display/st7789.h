@@ -44,6 +44,13 @@ public:
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
     void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
     void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
+    void fillGradientRect(int16_t x, int16_t y, int16_t w, int16_t h,
+                          uint16_t start_color, uint16_t end_color);
+    void fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
+                               uint16_t start_color, uint16_t end_color);
+    void fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
+                                      int16_t start_column, int16_t end_column,
+                                      uint16_t start_color, uint16_t end_color);
 
     // Text rendering
     void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);

@@ -252,6 +252,13 @@ static bool eeprom_is_empty() {
     return all_ff || all_00;
 }
 
+static EepromFlashStatus setFlashError(EepromFlashSession* session, const char* error_message) {
+    if (session) {
+        session->error_message = error_message;
+    }
+    return EepromFlashStatus::ERROR;
+}
+
 // =============================================================================
 // Public Runtime API
 // =============================================================================
@@ -272,6 +279,134 @@ bool eepromProbe() {
 
 size_t eepromGetFirmwareSize() {
     return (size_t)gSizeFullFlashArray;
+}
+
+bool eepromFlashBegin(EepromFlashSession* session) {
+    if (!session) {
+        return false;
+    }
+
+    session->fw_data = nullptr;
+    session->fw_size = 0;
+    session->write_offset = 0;
+    session->verify_offset = 0;
+    session->next_action_time = get_absolute_time();
+    session->waiting_for_write_cycle = false;
+    session->verify_announced = false;
+    session->error_message = nullptr;
+
+    if (gSizeFullFlashArray <= 0 || (size_t)gSizeFullFlashArray > EEPROM_TOTAL_SIZE) {
+        session->error_message = "Invalid image";
+        LOG_ERROR("[EEPROM] Invalid firmware size: %d bytes", gSizeFullFlashArray);
+        return false;
+    }
+
+    if (!eeprom_probe_device()) {
+        session->error_message = "EEPROM not found";
+        LOG_ERROR("[EEPROM] Device not found at 0x%02X", EEPROM_I2C_ADDR);
+        return false;
+    }
+
+    session->fw_data = reinterpret_cast<const uint8_t*>(tps25750x_fullFlash_i2c_array);
+    session->fw_size = (size_t)gSizeFullFlashArray;
+
+    LOG_INFO("[EEPROM] Flash session started for %u bytes", session->fw_size);
+    return true;
+}
+
+EepromFlashStatus eepromFlashStep(EepromFlashSession* session,
+                                  EepromProgressCallback callback,
+                                  void* user_data) {
+    if (!session || !session->fw_data || session->fw_size == 0) {
+        return setFlashError(session, "Flash session invalid");
+    }
+
+    if (session->waiting_for_write_cycle) {
+        if (absolute_time_diff_us(session->next_action_time, get_absolute_time()) < 0) {
+            return EepromFlashStatus::IN_PROGRESS;
+        }
+        session->waiting_for_write_cycle = false;
+    }
+
+    if (session->write_offset < session->fw_size) {
+        uint8_t buffer[EEPROM_PAGE_SIZE + 2];
+        uint16_t mem_addr = session->write_offset;
+        uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
+        size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset),
+                                     session->fw_size - session->write_offset);
+
+        buffer[0] = (mem_addr >> 8) & 0xFF;
+        buffer[1] = mem_addr & 0xFF;
+        memcpy(&buffer[2], &session->fw_data[session->write_offset], chunk_size);
+
+        int ret = i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR,
+                                       buffer, chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
+        if (ret == PICO_ERROR_TIMEOUT) {
+            LOG_ERROR("[EEPROM] Write timeout at 0x%04X", mem_addr);
+            return setFlashError(session, "Write timeout");
+        }
+        if (ret < 0) {
+            LOG_ERROR("[EEPROM] Write failed at 0x%04X (ret=%d)", mem_addr, ret);
+            return setFlashError(session, "Write failed");
+        }
+
+        session->write_offset += chunk_size;
+        session->waiting_for_write_cycle = true;
+        session->next_action_time = make_timeout_time_ms(EEPROM_WRITE_DELAY_MS);
+
+        if (callback) {
+            uint8_t progress = (uint8_t)((session->write_offset * 100) / session->fw_size);
+            callback(0, progress, user_data);
+        }
+
+        if ((session->write_offset % 1024) == 0 || session->write_offset == session->fw_size) {
+            LOG_INFO("[EEPROM] Writing... %u / %u bytes", session->write_offset, session->fw_size);
+        }
+
+        return EepromFlashStatus::IN_PROGRESS;
+    }
+
+    if (!session->verify_announced) {
+        session->verify_announced = true;
+        LOG_INFO("[EEPROM] Phase 2: Verifying...");
+        if (callback) {
+            callback(1, 0, user_data);
+        }
+        return EepromFlashStatus::IN_PROGRESS;
+    }
+
+    if (session->verify_offset < session->fw_size) {
+        uint8_t read_buffer[128];
+        size_t chunk = std::min(sizeof(read_buffer), session->fw_size - session->verify_offset);
+
+        if (!eeprom_read_block(session->verify_offset, read_buffer, chunk)) {
+            LOG_ERROR("[EEPROM] Verification read failed at 0x%04X", session->verify_offset);
+            return setFlashError(session, "Verify read failed");
+        }
+
+        if (memcmp(&session->fw_data[session->verify_offset], read_buffer, chunk) != 0) {
+            LOG_ERROR("[EEPROM] Verification mismatch at 0x%04X", session->verify_offset);
+            return setFlashError(session, "Verify mismatch");
+        }
+
+        session->verify_offset += chunk;
+
+        if (callback) {
+            uint8_t progress = (uint8_t)((session->verify_offset * 100) / session->fw_size);
+            callback(1, progress, user_data);
+        }
+
+        if ((session->verify_offset % 4096) == 0 || session->verify_offset == session->fw_size) {
+            LOG_INFO("[EEPROM] Verifying... %u / %u bytes", session->verify_offset, session->fw_size);
+        }
+
+        if (session->verify_offset >= session->fw_size) {
+            LOG_INFO("[EEPROM] Verification complete - SUCCESS!");
+            return EepromFlashStatus::SUCCESS;
+        }
+    }
+
+    return EepromFlashStatus::IN_PROGRESS;
 }
 
 EepromCompareResult eepromCompare() {
@@ -306,225 +441,23 @@ EepromCompareResult eepromCompare() {
 }
 
 bool eepromFlash(EepromProgressCallback callback, void* user_data) {
-    // Validate firmware
-    if (gSizeFullFlashArray <= 0 || (size_t)gSizeFullFlashArray > EEPROM_TOTAL_SIZE) {
-        LOG_ERROR("[EEPROM] Invalid firmware size: %d bytes", gSizeFullFlashArray);
+    EepromFlashSession session{};
+    if (!eepromFlashBegin(&session)) {
         return false;
     }
 
-    // Probe device
-    if (!eeprom_probe_device()) {
-        LOG_ERROR("[EEPROM] Device not found at 0x%02X", EEPROM_I2C_ADDR);
-        return false;
-    }
-
-    const uint8_t* fw_data = reinterpret_cast<const uint8_t*>(tps25750x_fullFlash_i2c_array);
-    size_t fw_size = (size_t)gSizeFullFlashArray;
-
-    // Phase 0: Write
-    LOG_INFO("[EEPROM] Phase 1: Writing %d bytes...", fw_size);
-
-    // Buffer: 2 bytes address + up to EEPROM_PAGE_SIZE data bytes
-    uint8_t buffer[EEPROM_PAGE_SIZE + 2];
-    size_t written = 0;
-
-    while (written < fw_size) {
-        uint16_t mem_addr = written;
-        uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
-        size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset), fw_size - written);
-
-        buffer[0] = (mem_addr >> 8) & 0xFF;
-        buffer[1] = mem_addr & 0xFF;
-        memcpy(&buffer[2], &fw_data[written], chunk_size);
-
-        int ret = i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR, buffer, chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
-        if (ret < 0) {
-            LOG_ERROR("[EEPROM] Write failed at 0x%04X (ret=%d)", mem_addr, ret);
+    while (true) {
+        EepromFlashStatus status = eepromFlashStep(&session, callback, user_data);
+        if (status == EepromFlashStatus::SUCCESS) {
+            return true;
+        }
+        if (status == EepromFlashStatus::ERROR) {
             return false;
         }
 
-        sleep_ms(EEPROM_WRITE_DELAY_MS);
-
-        written += chunk_size;
-
-        // Progress callback
-        if (callback) {
-            uint8_t progress = (uint8_t)((written * 100) / fw_size);
-            callback(0, progress, user_data);
+        if (session.waiting_for_write_cycle &&
+            absolute_time_diff_us(session.next_action_time, get_absolute_time()) < 0) {
+            sleep_ms(1);
         }
     }
-
-    LOG_INFO("[EEPROM] Write complete.");
-
-    // Phase 1: Verify
-    LOG_INFO("[EEPROM] Phase 2: Verifying...");
-
-    uint8_t read_buffer[128];
-    size_t verified = 0;
-
-    while (verified < fw_size) {
-        size_t chunk = std::min(sizeof(read_buffer), fw_size - verified);
-
-        if (!eeprom_read_block(verified, read_buffer, chunk)) {
-            LOG_ERROR("[EEPROM] Verification read failed at 0x%04X", verified);
-            return false;
-        }
-
-        if (memcmp(&fw_data[verified], read_buffer, chunk) != 0) {
-            LOG_ERROR("[EEPROM] Verification mismatch at 0x%04X", verified);
-            return false;
-        }
-
-        verified += chunk;
-
-        // Progress callback
-        if (callback) {
-            uint8_t progress = (uint8_t)((verified * 100) / fw_size);
-            callback(1, progress, user_data);
-        }
-    }
-
-    LOG_INFO("[EEPROM] Verification complete - SUCCESS!");
-    return true;
-}
-
-// =============================================================================
-// Legacy Public Implementation
-// =============================================================================
-
-bool flashTps26750Eeprom() {
-#if !ENABLE_TPS_EEPROM_FLASHING
-    // Flashing disabled - this is the normal path
-    return true;
-#else
-    LOG_SEPARATOR();
-    LOG_INFO("[EEPROM] TPS26750 Patch Flash Enabled");
-    LOG_SEPARATOR();
-
-    // =========================================================================
-    // Pre-flight checks
-    // =========================================================================
-
-    // Check 1: Validate firmware size is sane
-    if (gSizeFullFlashArray <= 0) {
-        LOG_ERROR("[EEPROM] Invalid firmware size: %d bytes", gSizeFullFlashArray);
-        return false;
-    }
-
-    if ((size_t)gSizeFullFlashArray > EEPROM_TOTAL_SIZE) {
-        LOG_ERROR("[EEPROM] Firmware too large: %d bytes (max %d)",
-                  gSizeFullFlashArray, EEPROM_TOTAL_SIZE);
-        return false;
-    }
-
-    LOG_INFO("[EEPROM] Firmware size: %d bytes (%.1f%% of EEPROM)",
-             gSizeFullFlashArray,
-             (float)gSizeFullFlashArray / EEPROM_TOTAL_SIZE * 100.0f);
-
-    // Initialize I2C1 for EEPROM access
-    eeprom_i2c_init();
-    sleep_ms(50);  // Allow bus to stabilize (increased from 10ms)
-
-    // Debug: Scan bus to see what's there
-    eeprom_i2c_scan();
-
-    // Check 2: Probe for EEPROM device presence with retries
-    LOG_INFO("[EEPROM] Probing for device at 0x%02X...", EEPROM_I2C_ADDR);
-    bool device_found = false;
-    for (int retry = 0; retry < 3; retry++) {
-        if (eeprom_probe_device()) {
-            device_found = true;
-            break;
-        }
-        LOG_WARN("[EEPROM] Probe attempt %d failed, retrying...", retry + 1);
-        sleep_ms(100);  // Wait before retry
-    }
-
-    if (!device_found) {
-        LOG_ERROR("[EEPROM] No device found at address 0x%02X after 3 attempts!", EEPROM_I2C_ADDR);
-        LOG_ERROR("[EEPROM] Check I2C wiring: SDA=GPIO%d, SCL=GPIO%d",
-                  EEPROM_I2C_SDA_PIN, EEPROM_I2C_SCL_PIN);
-        eeprom_i2c_deinit();
-        return false;
-    }
-    LOG_INFO("[EEPROM] Device found!");
-
-    // Cast source array to uint8_t pointer
-    const uint8_t* fw_data = reinterpret_cast<const uint8_t*>(tps25750x_fullFlash_i2c_array);
-
-    // Check 3: See if EEPROM is already programmed correctly
-    LOG_INFO("[EEPROM] Checking if already programmed...");
-    if (eeprom_already_programmed(fw_data, gSizeFullFlashArray)) {
-        LOG_INFO("[EEPROM] EEPROM already contains correct data - skipping write!");
-        eeprom_i2c_deinit();
-        return true;
-    }
-    LOG_INFO("[EEPROM] EEPROM needs programming.");
-
-    // =========================================================================
-    // Phase 1: Write firmware to EEPROM
-    // =========================================================================
-    LOG_INFO("[EEPROM] Phase 1: Writing %d bytes to EEPROM...", gSizeFullFlashArray);
-
-    if (!eeprom_write_block(0x0000, fw_data, gSizeFullFlashArray)) {
-        LOG_ERROR("[EEPROM] FAILED during write operation");
-        eeprom_i2c_deinit();
-        return false;
-    }
-
-    LOG_INFO("[EEPROM] Write complete.");
-
-    // =========================================================================
-    // Phase 2: Verify by reading back
-    // =========================================================================
-    LOG_INFO("[EEPROM] Phase 2: Verifying %d bytes...", gSizeFullFlashArray);
-
-    // Read back in chunks to save RAM
-    uint8_t read_buffer[128];
-    size_t verified = 0;
-
-    while (verified < (size_t)gSizeFullFlashArray) {
-        size_t chunk = std::min(sizeof(read_buffer), (size_t)(gSizeFullFlashArray - verified));
-
-        if (!eeprom_read_block(verified, read_buffer, chunk)) {
-            LOG_ERROR("[EEPROM] Verification read failed at 0x%04X", verified);
-            eeprom_i2c_deinit();
-            return false;
-        }
-
-        // Compare with original data
-        if (memcmp(&fw_data[verified], read_buffer, chunk) != 0) {
-            // Find first mismatched byte for debugging
-            for (size_t i = 0; i < chunk; i++) {
-                if (fw_data[verified + i] != read_buffer[i]) {
-                    LOG_ERROR("[EEPROM] Mismatch at 0x%04X: expected 0x%02X, got 0x%02X",
-                              verified + i, fw_data[verified + i], read_buffer[i]);
-                    break;
-                }
-            }
-            eeprom_i2c_deinit();
-            return false;
-        }
-
-        verified += chunk;
-
-        // Progress indicator (every 4KB)
-        if ((verified % 4096) == 0) {
-            LOG_INFO("[EEPROM] Verified %u / %d bytes", verified, gSizeFullFlashArray);
-        }
-    }
-
-    // =========================================================================
-    // Success
-    // =========================================================================
-    eeprom_i2c_deinit();
-
-    LOG_SEPARATOR();
-    LOG_INFO("[EEPROM] SUCCESS! Patch written and verified.");
-    LOG_INFO("[EEPROM] Power cycle the board to load new TPS26750 config.");
-    LOG_INFO("[EEPROM] Then set ENABLE_TPS_EEPROM_FLASHING=0 and rebuild.");
-    LOG_SEPARATOR();
-
-    return true;
-#endif
 }

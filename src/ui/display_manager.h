@@ -69,7 +69,8 @@ private:
 
     // Common UI elements
     void drawHeader(const char* title);
-    void drawProgressBar(int x, int y, int width, int height, uint8_t percent, uint16_t color);
+    void drawProgressBar(int x, int y, int width, int height, uint8_t percent,
+                         uint16_t start_color, uint16_t end_color = 0);
 
     // Boot screen elements
     void drawBootText();
@@ -117,10 +118,14 @@ private:
     int8_t _last_pdo_selection;
     int8_t _last_pdo_scroll_idx;  // Scroll position in PDO list
     uint32_t _last_adjust_value;
+    uint8_t _last_current_limit_percent;
     uint32_t _last_pps_voltage;
+    uint8_t _last_pps_percent;
     uint32_t _last_avs_voltage;
+    uint8_t _last_avs_percent;
     uint8_t _last_brightness_value;
     const char* _last_boot_message;
+    uint8_t _last_boot_progress;
 
     // Settings value tracking (redraw when any setting value changes)
     bool _last_auto_pps;
@@ -156,6 +161,7 @@ private:
     bool _last_energy_high;
     uint8_t _last_eeprom_stage;
     uint8_t _last_eeprom_progress;
+    uint8_t _last_eeprom_phase;
     bool _last_eeprom_confirm;
 
     // Remote mode badge tracking
