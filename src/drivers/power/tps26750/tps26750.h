@@ -245,23 +245,30 @@ public:
 
     /**
      * @brief Requests a PPS (Programmable Power Supply) contract.
-     * @details Enables PPS mode, sets target voltage/current.
-     * Range: 5V - 21V. Resolution: 20mV.
+     * @details Enables PPS mode and constrains the standard fallback window to the
+     * selected APDO's range, preventing the chip from picking an overlapping APDO
+     * or falling back to a higher fixed rail.
      * @param voltage_mv Target voltage in mV (20mV steps).
      * @param current_ma Limit current in mA (50mA steps).
+     * @param pdo_min_mv Minimum voltage of the selected PPS APDO in mV.
+     * @param pdo_max_mv Maximum voltage of the selected PPS APDO in mV.
      * @return true if request sent.
      */
-    bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma);
+    bool requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma,
+                           uint32_t pdo_min_mv, uint32_t pdo_max_mv);
 
     /**
-     * @brief Requests an AVS (Adjustable Voltage Supply) contract (EPR).
-     * @details Enables AVS mode, sets target voltage/current.
-     * Range: 15V - 48V. Resolution: 100mV (DAC is often finer, but AVS APDO uses 100mV).
-     * @param voltage_mv Target voltage in mV.
-     * @param current_ma Limit current in mA.
+     * @brief Requests an AVS (Adjustable Voltage Supply) contract (SPR or EPR).
+     * @details Enables AVS mode and constrains the standard fallback window to the
+     * selected APDO's range.
+     * @param voltage_mv Target voltage in mV (25mV steps).
+     * @param current_ma Limit current in mA (50mA steps).
+     * @param pdo_min_mv Minimum voltage of the selected AVS APDO in mV.
+     * @param pdo_max_mv Maximum voltage of the selected AVS APDO in mV.
      * @return true if request sent.
      */
-    bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma);
+    bool requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma,
+                           uint32_t pdo_min_mv, uint32_t pdo_max_mv);
 
 private:
     i2c_inst_t* _i2c;

@@ -166,12 +166,17 @@ void update() {
         return;
     }
 
-    // Send PD voltage request
+    // Send PD voltage request, passing the stored APDO bounds so the driver
+    // constrains its fallback window to the correct range.
     bool success = false;
     if (pps) {
-        success = hw.pdController.requestPPSProfile((uint32_t)new_voltage_mv, pdManager.getActiveContract().current_ma);
+        success = hw.pdController.requestPPSProfile((uint32_t)new_voltage_mv,
+                      pdManager.getActiveContract().current_ma,
+                      pdManager.getPpsRangeMinMv(), pdManager.getPpsRangeMaxMv());
     } else {
-        success = hw.pdController.requestAVSProfile((uint32_t)new_voltage_mv, pdManager.getActiveContract().current_ma);
+        success = hw.pdController.requestAVSProfile((uint32_t)new_voltage_mv,
+                      pdManager.getActiveContract().current_ma,
+                      pdManager.getAvsRangeMinMv(), pdManager.getAvsRangeMaxMv());
     }
 
     if (success) {

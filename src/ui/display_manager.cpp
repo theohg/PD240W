@@ -1138,12 +1138,24 @@ void DisplayManager::drawPdoList() {
                 bool is_active = false;
                 if (active.valid) {
                     if (pdos[i].is_pps && active.is_pps) {
-                        is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
-                                     active.voltage_mv <= pdos[i].voltage_mv &&
-                                     active.current_ma == pdos[i].max_current_ma);
+                        // Prefer the authoritative PDO index to resolve overlapping APDOs.
+                        // Fall back to range-only check when no explicit index is stored
+                        // (e.g. warm-reset detection has not yet run).
+                        int8_t active_idx = pdManager.getActivePdoIndex();
+                        if (active_idx >= 0) {
+                            is_active = (i == (uint8_t)active_idx);
+                        } else {
+                            is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
+                                         active.voltage_mv <= pdos[i].voltage_mv);
+                        }
                     } else if (pdos[i].is_avs && active.is_avs) {
-                        is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
-                                     active.voltage_mv <= pdos[i].voltage_mv);
+                        int8_t active_idx = pdManager.getActivePdoIndex();
+                        if (active_idx >= 0) {
+                            is_active = (i == (uint8_t)active_idx);
+                        } else {
+                            is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
+                                         active.voltage_mv <= pdos[i].voltage_mv);
+                        }
                     } else if (!pdos[i].is_pps && !pdos[i].is_avs && !active.is_pps && !active.is_avs) {
                         is_active = (pdos[i].voltage_mv == active.voltage_mv);
                     }

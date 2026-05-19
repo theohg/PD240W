@@ -276,9 +276,11 @@ void pdSel(const char* arg) {
 
     bool ok;
     if (caps[index].is_pps) {
-        ok = pdManager.requestPpsVoltage(caps[index].voltage_mv, caps[index].max_current_ma);
+        ok = pdManager.requestPpsVoltage(caps[index].voltage_mv, caps[index].max_current_ma,
+                                         (int8_t)index);
     } else if (caps[index].is_avs) {
-        ok = pdManager.requestAvsVoltage(caps[index].voltage_mv, caps[index].max_current_ma);
+        ok = pdManager.requestAvsVoltage(caps[index].voltage_mv, caps[index].max_current_ma,
+                                         (int8_t)index);
     } else {
         ok = pdManager.requestFixedVoltage(caps[index].voltage_mv, caps[index].max_current_ma);
     }
@@ -311,7 +313,7 @@ void pdPps(const char* arg) {
         return;
     }
 
-    if (pdManager.requestPpsVoltage(voltage_mv, c.current_ma)) {
+    if (pdManager.requestPpsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
         settings.setLastPpsVoltageMv(voltage_mv);
         settings.requestSave();
         Cli::respond("OK");
@@ -338,7 +340,7 @@ void pdAvs(const char* arg) {
         return;
     }
 
-    if (pdManager.requestAvsVoltage(voltage_mv, c.current_ma)) {
+    if (pdManager.requestAvsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
         settings.setLastPpsVoltageMv(voltage_mv);
         settings.requestSave();
         Cli::respond("OK");

@@ -146,11 +146,12 @@ bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
         // Distinguish using APDO type bits (29:28) from the PDO
         uint8_t apdo_type = (pdo >> 28) & 0x03;
         
-        if (apdo_type == 0x01) { 
+        if (apdo_type == 0x01 || apdo_type == 0x02) {
             // === AVS Contract ===
+            // EPR AVS (0x01) and SPR AVS (0x02) share the same RDO layout.
             // TPS26750 maps AVS RDO into PPS-compatible bit positions:
             // Voltage: Bits 19:9 (11 bits), 25mV units
-            voltage_mv = ((rdo >> 9) & 0x7FF) * 25; 
+            voltage_mv = ((rdo >> 9) & 0x7FF) * 25;
             // Current: Bits 6:0 (7 bits), 50mA units
             current_ma = (rdo & 0x7F) * 50;
         } else if (apdo_type == 0x00) {
@@ -401,23 +402,23 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
         return false;
     }
 
-    // 3. Trigger Re-negotiation via PPS Toggle Trick
-    // Instead of relying purely on GSrC (which LG monitors ignore),
-    // we toggle PPSEnableSinkMode to force the TPS26750 to automatically re-evaluate
-    // and send a Request message directly based on currently cached capabilities.
+    // 3. Trigger re-negotiation.
     uint8_t toggle_buf[24];
-    memcpy(toggle_buf, buf, 24);
-    
-    // Flip the PPS Enable bit
-    toggle_buf[8] ^= 0x01;
-    writeRegister(TPS_REG_AUTONEGOTIATE_SINK, toggle_buf, 24);
-    
-    sleep_ms(2); // Give TPS26750 a moment to register the change
-    
-    // Restore and write final intended state
-    writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24);
+    memcpy(toggle_buf, buf, sizeof(toggle_buf));
 
-    // printf("Triggered re-negotiation via PPS toggle trick\n");
+    toggle_buf[8] ^= 0x01;
+    if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, toggle_buf, 24)) {
+        printf("[DEBUG] Failed to write AUTONEGOTIATE_SINK toggle\n");
+        return false;
+    }
+
+    sleep_ms(2);
+
+    if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
+        printf("[DEBUG] Failed to restore AUTONEGOTIATE_SINK\n");
+        return false;
+    }
+
     return true;
 }
 
@@ -443,20 +444,34 @@ bool TPS26750::requestFixedProfile(uint32_t voltage_mv, uint32_t max_current_ma)
                               0, 0, false); // AVS Disabled
 }
 
-bool TPS26750::requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma) {
+bool TPS26750::requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma,
+                                 uint32_t pdo_min_mv, uint32_t pdo_max_mv) {
     // Enable PPS, Disable AVS.
-    // We also set Min/Max voltage wide or 0 to not interfere with standard negotiation fallback
-    // if PPS fails, but strictly we just want to enable the PPS bit.
-    return modifySinkRegister(5000, 21000, 3000, // Fallback defaults
-                              voltage_mv, current_ma, true, 
+    // Narrow the standard fallback window so its upper bound is strictly below the
+    // requested PPS voltage. Any fixed PDO AT or ABOVE the requested voltage would
+    // otherwise outrank a PPS contract of lower power (e.g. a 15 V fixed PDO beats
+    // PPS at 11 V on a 3.3-16 V APDO). Clamping max to voltage_mv - 20 mV (the
+    // minimum PPS step) excludes those higher-voltage fixed PDOs from contention.
+    const uint32_t PPS_STEP_MV = 20;
+    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + PPS_STEP_MV)
+                             ? (voltage_mv - PPS_STEP_MV)
+                             : pdo_min_mv;
+    return modifySinkRegister(pdo_min_mv, std_max_v, current_ma,
+                              voltage_mv, current_ma, true,
                               0, 0, false);
 }
 
-bool TPS26750::requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma) {
+bool TPS26750::requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma,
+                                 uint32_t pdo_min_mv, uint32_t pdo_max_mv) {
     // Enable AVS, Disable PPS.
-    // Provide sufficient headroom for max_v so the internal policy engine accepts the request
-    uint32_t max_v = voltage_mv + 2000;
-    return modifySinkRegister(5000, max_v, 5000, // Fallback defaults with headroom
-                              0, 0, false, 
+    // Same narrowing strategy as PPS: keep the standard window max strictly below
+    // the requested AVS voltage (25 mV minimum AVS step) so that fixed PDOs at or
+    // above the target cannot outrank the AVS contract.
+    const uint32_t AVS_STEP_MV = 25;
+    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + AVS_STEP_MV)
+                             ? (voltage_mv - AVS_STEP_MV)
+                             : pdo_min_mv;
+    return modifySinkRegister(pdo_min_mv, std_max_v, current_ma,
+                              0, 0, false,
                               voltage_mv, current_ma, true);
 }

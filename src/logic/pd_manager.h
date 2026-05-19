@@ -50,8 +50,11 @@ public:
     // Request a specific contract (non-blocking)
     bool requestContract(const SourceCapability& pdo);
     bool requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma);
-    bool requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma);
-    bool requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma);
+    /// @param pdo_index Index into the PDO cache of the selected APDO. Pass -1 when the
+    ///        caller does not have an explicit index (startup restore, EPR exit) to fall back
+    ///        to a first-match search.
+    bool requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index = -1);
+    bool requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index = -1);
 
     // Get negotiation state
     NegotiationState getNegotiationState() const { return _negotiation_state; }
@@ -79,6 +82,18 @@ public:
 
     // Check if AVS contract is active
     bool isAvsActive() const { return _avs_active; }
+
+    /// @brief Index of the active APDO in the PDO cache, or -1 if unknown/fixed contract.
+    int8_t getActivePdoIndex() const { return _active_pdo_index; }
+
+    /// @brief Minimum voltage [mV] of the active PPS APDO range (0 if not PPS).
+    uint32_t getPpsRangeMinMv() const { return _pps_range_min_mv; }
+    /// @brief Maximum voltage [mV] of the active PPS APDO range (0 if not PPS).
+    uint32_t getPpsRangeMaxMv() const { return _pps_range_max_mv; }
+    /// @brief Minimum voltage [mV] of the active AVS APDO range (0 if not AVS).
+    uint32_t getAvsRangeMinMv() const { return _avs_range_min_mv; }
+    /// @brief Maximum voltage [mV] of the active AVS APDO range (0 if not AVS).
+    uint32_t getAvsRangeMaxMv() const { return _avs_range_max_mv; }
 
     // Update keep-alive voltage from CC controller (avoids fighting with CC regulation)
     // Only updates internal tracking, does NOT send a PD request
@@ -122,7 +137,7 @@ public:
     // EPR safe exit: check if transitioning from EPR to SPR requires AVS step-down
     bool needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) const;
 
-    // Check if a safe EPR exit path exists (AVS PDO with min <= 20V)
+    // Check if a safe EPR exit path exists (EPR AVS PDO with min <= 20V)
     bool isSafeEprExitPossible() const;
 
     // Startup request status helpers
@@ -198,6 +213,9 @@ private:
     static constexpr uint32_t PPS_MATCH_TOLERANCE_MV = 20;
     static constexpr uint32_t AVS_MATCH_TOLERANCE_MV = 25;
 
+    // Index of the active PPS or AVS APDO in _pdo_cache (-1 = unknown / fixed contract)
+    int8_t _active_pdo_index;
+
     // EPR safe exit: 3-step sequence to avoid hard reset when exiting EPR to SPR
     // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
     // Step 2 (REQUESTING_5V): Request 5V Fixed — cleanly exits EPR mode (no voltage rise)
@@ -213,7 +231,8 @@ private:
     static constexpr uint32_t EPR_EXIT_SAFE_CURRENT_MA = 3000; // Intermediate 5V request current [mA]
 
     // EPR exit helpers
-    bool findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const;
+    bool findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma,
+                            int8_t& avs_pdo_index) const;
 
     // Detect PD revision from cached PDOs
     void detectPdRevision();

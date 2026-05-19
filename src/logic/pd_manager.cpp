@@ -49,6 +49,7 @@ PdManager::PdManager()
     , _epr_deferred_current_ma(0)
     , _epr_deferred_is_pps(false)
     , _epr_exit_start(nil_time)
+    , _active_pdo_index(-1)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
@@ -273,7 +274,8 @@ void PdManager::update() {
 
             LOG_DEBUG("PPS keep-alive: requesting %umV @ %umA", request_mv, _pps_current_ma);
 
-            if (hw.pdController.requestPPSProfile(request_mv, _pps_current_ma)) {
+            if (hw.pdController.requestPPSProfile(request_mv, _pps_current_ma,
+                                                    _pps_range_min_mv, _pps_range_max_mv)) {
                 _pps_last_refresh = get_absolute_time();
                 _pps_voltage_mv = request_mv;  // Track what we actually requested
             } else {
@@ -350,7 +352,8 @@ void PdManager::update() {
 
             LOG_DEBUG("AVS keep-alive: requesting %umV @ %umA", request_mv, _avs_current_ma);
 
-            if (hw.pdController.requestAVSProfile(request_mv, _avs_current_ma)) {
+            if (hw.pdController.requestAVSProfile(request_mv, _avs_current_ma,
+                                                    _avs_range_min_mv, _avs_range_max_mv)) {
                 _avs_last_refresh = get_absolute_time();
                 _avs_voltage_mv = request_mv;  // Track what we actually requested
             } else {
@@ -425,27 +428,46 @@ bool PdManager::needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) con
 }
 
 bool PdManager::isSafeEprExitPossible() const {
-    // Check if we have an AVS PDO that can reach SPR range
+    // Safe EPR exit requires an EPR AVS APDO that can step VBUS into SPR range
+    // without leaving EPR mode first.
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
+        if (_pdo_cache[i].is_avs &&
+            _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
+            _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
             return true;
         }
     }
     return false;
 }
 
-bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma) const {
-    // Find an AVS PDO and return its minimum voltage (lowest possible = safest exit)
+bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma,
+                                   int8_t& avs_pdo_index) const {
+    // Prefer an EPR AVS APDO whose minimum voltage is already within SPR range.
+    // This preserves the old firmware behavior: step down while still in EPR,
+    // then request 5V to exit EPR cleanly. Using SPR AVS directly here can cause
+    // some chargers to reset during the EPR->SPR transition.
+    uint32_t best_min_mv = UINT32_MAX;
+    int8_t best_index = -1;
+
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs && _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
-            // Use AVS PDO min voltage, rounded up to nearest 25mV boundary
-            uint32_t min_mv = _pdo_cache[i].min_voltage_mv;
-            avs_voltage_mv = ((min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
-            avs_current_ma = _pdo_cache[i].max_current_ma;
-            return true;
+        if (_pdo_cache[i].is_avs &&
+            _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
+            _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV &&
+            _pdo_cache[i].min_voltage_mv < best_min_mv) {
+            best_min_mv = _pdo_cache[i].min_voltage_mv;
+            best_index = (int8_t)i;
         }
     }
-    return false;
+
+    if (best_index < 0) {
+        return false;
+    }
+
+    avs_pdo_index = best_index;
+    avs_voltage_mv = ((best_min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) /
+                      AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+    avs_current_ma = _pdo_cache[best_index].max_current_ma;
+    return true;
 }
 
 // ============================================================================
@@ -468,6 +490,7 @@ void PdManager::clearPpsTracking() {
     _pps_tuning_converged = false;
     _pps_range_min_mv = 0;
     _pps_range_max_mv = 0;
+    _active_pdo_index = -1;
 }
 
 void PdManager::clearAvsTracking() {
@@ -479,6 +502,7 @@ void PdManager::clearAvsTracking() {
     _avs_tuning_converged = false;
     _avs_range_min_mv = 0;
     _avs_range_max_mv = 0;
+    _active_pdo_index = -1;
 }
 
 void PdManager::clearRequestedContract() {
@@ -555,7 +579,8 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     // EPR safe exit: if currently in EPR and target is SPR, initiate 3-step exit
     if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, false)) {
         uint32_t avs_v, avs_i;
-        if (findAvsSafeVoltage(avs_v, avs_i)) {
+        int8_t avs_idx = -1;
+        if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
             LOG_INFO("EPR exit: 3-step sequence for Fixed %umV (AVS %umV -> 5V -> %umV)",
                      voltage_mv, avs_v, voltage_mv);
             _epr_deferred_voltage_mv = voltage_mv;
@@ -563,7 +588,7 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
             _epr_deferred_is_pps = false;
             _epr_exit_state = EprExitState::STEPPING_DOWN;
             _epr_exit_start = get_absolute_time();
-            return requestAvsVoltage(avs_v, avs_i);
+            return requestAvsVoltage(avs_v, avs_i, avs_idx);
         } else {
             LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
         }
@@ -595,13 +620,14 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     return success;
 }
 
-bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
-    LOG_INFO("Requesting PPS: %umV @ %umA", voltage_mv, current_ma);
+bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
+    LOG_INFO("Requesting PPS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
 
     // EPR safe exit: if currently in EPR and target is PPS (SPR), initiate 3-step exit
     if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, true)) {
         uint32_t avs_v, avs_i;
-        if (findAvsSafeVoltage(avs_v, avs_i)) {
+        int8_t avs_idx = -1;
+        if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
             LOG_INFO("EPR exit: 3-step sequence for PPS %umV (AVS %umV -> 5V -> PPS %umV)",
                      voltage_mv, avs_v, voltage_mv);
             _epr_deferred_voltage_mv = voltage_mv;
@@ -609,9 +635,35 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
             _epr_deferred_is_pps = true;
             _epr_exit_state = EprExitState::STEPPING_DOWN;
             _epr_exit_start = get_absolute_time();
-            return requestAvsVoltage(avs_v, avs_i);
+            return requestAvsVoltage(avs_v, avs_i, avs_idx);
         } else {
             LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
+        }
+    }
+
+    // Resolve APDO bounds: if a specific PDO index is provided, use it directly;
+    // otherwise fall back to first-match search (startup restore, EPR exit paths).
+    uint32_t pdo_min_mv = 0;
+    uint32_t pdo_max_mv = 0;
+    int8_t resolved_index = pdo_index;
+    if (pdo_index >= 0 && pdo_index < _pdo_count && _pdo_cache[pdo_index].is_pps) {
+        pdo_min_mv = _pdo_cache[pdo_index].min_voltage_mv;
+        pdo_max_mv = _pdo_cache[pdo_index].voltage_mv;
+    } else {
+        for (uint8_t i = 0; i < _pdo_count; i++) {
+            if (_pdo_cache[i].is_pps &&
+                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                voltage_mv <= _pdo_cache[i].voltage_mv) {
+                pdo_min_mv = _pdo_cache[i].min_voltage_mv;
+                pdo_max_mv = _pdo_cache[i].voltage_mv;
+                resolved_index = (int8_t)i;
+                break;
+            }
+        }
+        if (pdo_max_mv == 0) {
+            // No matching PDO found: use broad defaults so the request still goes through.
+            pdo_min_mv = 3300;
+            pdo_max_mv = 21000;
         }
     }
 
@@ -622,7 +674,7 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     _requested_voltage_mv = voltage_mv;
     _requested_current_ma = current_ma;
 
-    bool success = hw.pdController.requestPPSProfile(voltage_mv, current_ma);
+    bool success = hw.pdController.requestPPSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv);
 
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
@@ -642,16 +694,10 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _pps_correction_mv = 0;
         _pps_tuning_converged = false;
 
-        // Find PPS range from cached PDOs for clamping
-        for (uint8_t i = 0; i < _pdo_count; i++) {
-            if (_pdo_cache[i].is_pps &&
-                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
-                voltage_mv <= _pdo_cache[i].voltage_mv) {
-                _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
-                _pps_range_max_mv = _pdo_cache[i].voltage_mv;
-                break;
-            }
-        }
+        // Store resolved identity and bounds for keep-alive clamping and UI highlighting
+        _active_pdo_index = resolved_index;
+        _pps_range_min_mv = pdo_min_mv;
+        _pps_range_max_mv = pdo_max_mv;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send PPS contract request");
@@ -660,8 +706,34 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     return success;
 }
 
-bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
-    LOG_INFO("Requesting AVS: %umV @ %umA", voltage_mv, current_ma);
+bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
+    LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
+
+    // Resolve APDO bounds: if a specific PDO index is provided, use it directly;
+    // otherwise fall back to first-match search (startup restore, EPR step-down paths).
+    uint32_t pdo_min_mv = 0;
+    uint32_t pdo_max_mv = 0;
+    int8_t resolved_index = pdo_index;
+    if (pdo_index >= 0 && pdo_index < _pdo_count && _pdo_cache[pdo_index].is_avs) {
+        pdo_min_mv = _pdo_cache[pdo_index].min_voltage_mv;
+        pdo_max_mv = _pdo_cache[pdo_index].voltage_mv;
+    } else {
+        for (uint8_t i = 0; i < _pdo_count; i++) {
+            if (_pdo_cache[i].is_avs &&
+                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
+                voltage_mv <= _pdo_cache[i].voltage_mv) {
+                pdo_min_mv = _pdo_cache[i].min_voltage_mv;
+                pdo_max_mv = _pdo_cache[i].voltage_mv;
+                resolved_index = (int8_t)i;
+                break;
+            }
+        }
+        if (pdo_max_mv == 0) {
+            // No matching PDO found: use broad defaults so the request still goes through.
+            pdo_min_mv = 9000;
+            pdo_max_mv = 48000;
+        }
+    }
 
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
@@ -670,7 +742,7 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
     _requested_voltage_mv = voltage_mv;
     _requested_current_ma = current_ma;
 
-    bool success = hw.pdController.requestAVSProfile(voltage_mv, current_ma);
+    bool success = hw.pdController.requestAVSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv);
 
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
@@ -690,16 +762,10 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _avs_correction_mv = 0;
         _avs_tuning_converged = false;
 
-        // Find AVS range from cached PDOs for clamping
-        for (uint8_t i = 0; i < _pdo_count; i++) {
-            if (_pdo_cache[i].is_avs &&
-                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
-                voltage_mv <= _pdo_cache[i].voltage_mv) {
-                _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
-                _avs_range_max_mv = _pdo_cache[i].voltage_mv;
-                break;
-            }
-        }
+        // Store resolved identity and bounds for keep-alive clamping and UI highlighting
+        _active_pdo_index = resolved_index;
+        _avs_range_min_mv = pdo_min_mv;
+        _avs_range_max_mv = pdo_max_mv;
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send AVS contract request");
@@ -735,11 +801,14 @@ bool PdManager::refreshActiveContract() {
 
         // Drop stale tracked programmable state when the source changed or boot priming
         // failed to obtain real PDO-backed PPS/AVS support.
-        if (_pps_active && (!_pdos_valid || _pps_voltage_mv == 0 ||
+        // Note: cache validity (!_pdos_valid) is intentionally NOT tested here -- doing so
+        // would clear user-facing state (Vset, target) every time the menu opens and
+        // invalidates the cache. The voltage tolerance check alone is sufficient.
+        if (_pps_active && (_pps_voltage_mv == 0 ||
             !within_tolerance(voltage_mv, _pps_voltage_mv, PPS_MATCH_TOLERANCE_MV))) {
             clearPpsTracking();
         }
-        if (_avs_active && (!_pdos_valid || _avs_voltage_mv == 0 ||
+        if (_avs_active && (_avs_voltage_mv == 0 ||
             !within_tolerance(voltage_mv, _avs_voltage_mv, AVS_MATCH_TOLERANCE_MV))) {
             clearAvsTracking();
         }
@@ -774,6 +843,7 @@ bool PdManager::refreshActiveContract() {
                         _pps_last_refresh = get_absolute_time();
                         _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
                         _pps_range_max_mv = _pdo_cache[i].voltage_mv;
+                        _active_pdo_index = (int8_t)i;
                         LOG_INFO("Detected active PPS contract on warm reset: %umV", voltage_mv);
                         break;
                     }
@@ -787,6 +857,7 @@ bool PdManager::refreshActiveContract() {
                         _avs_last_refresh = get_absolute_time();
                         _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
                         _avs_range_max_mv = _pdo_cache[i].voltage_mv;
+                        _active_pdo_index = (int8_t)i;
                         LOG_INFO("Detected active AVS contract on warm reset: %umV", voltage_mv);
                         break;
                     }
@@ -1024,6 +1095,14 @@ bool PdManager::isRequestedContractReached() const {
                                     PPS_MATCH_TOLERANCE_MV);
 
         case RequestedContractType::AVS:
+            // During EPR exit step-down, some chargers satisfy the 15V floor using an
+            // overlapping fixed contract instead of reporting the AVS APDO we asked
+            // for. That is still sufficient for the next exit step because VBUS is
+            // already back in the safe SPR range.
+            if (_epr_exit_state == EprExitState::STEPPING_DOWN) {
+                return within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                                        AVS_MATCH_TOLERANCE_MV);
+            }
             return _active_contract.is_avs &&
                    within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
                                     AVS_MATCH_TOLERANCE_MV);
@@ -1276,7 +1355,11 @@ bool PdManager::negotiateStartupContract() {
 void PdManager::probeEpr() {
     bool has_epr = false;
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs || _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
+        // Only count a PDO as EPR if its voltage (or max voltage for APDOs) exceeds
+        // the SPR ceiling. SPR AVS has voltage_mv == EPR_SPR_MAX_MV (20 V exactly),
+        // so the strict > test correctly excludes it while matching EPR fixed PDOs
+        // (28 V / 36 V / 48 V) and EPR AVS (max > 20 V).
+        if (_pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
             has_epr = true;
             break;
         }

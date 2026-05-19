@@ -316,10 +316,12 @@ void StateMachine::handleBootState() {
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
 
-            // Check if EPR/AVS PDOs have arrived
+            // Check if EPR/AVS PDOs have arrived. SPR AVS has voltage_mv == 20000 (==
+            // EPR_SPR_MAX_MV) so the strict > comparison excludes it; EPR fixed PDOs
+            // (28/36/48 V) and EPR AVS (max > 20 V) satisfy it.
             if (!epr_pdos_found) {
                 for (uint8_t i = 0; i < _num_pdos; i++) {
-                    if (s_pdo_list[i].is_avs || s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
+                    if (s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                         epr_pdos_found = true;
                         LOG_INFO("Boot: EPR PDOs found after %ums: %d PDOs", epr_elapsed, _num_pdos);
                         break;
@@ -413,48 +415,73 @@ void StateMachine::handleMainState(EncoderEvent event) {
     else if (event == EncoderEvent::LONG_PRESS) {
         const ActiveContract& contract = pdManager.getActiveContract();
         if (contract.valid && contract.is_pps && pdManager.isPpsActive()) {
-            // Find PPS PDO that covers current voltage and set up adjustment
+            // Use the authoritative active PDO index when available (avoids first-match
+            // ambiguity when overlapping PPS APDOs exist, e.g. 3.3-11V and 3.3-16V).
             SourceCapability caps[AppConfig::MAX_PDO_COUNT];
             uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
-            for (uint8_t i = 0; i < count; i++) {
-                if (caps[i].is_pps &&
-                    contract.voltage_mv >= caps[i].min_voltage_mv &&
-                    contract.voltage_mv <= caps[i].voltage_mv) {
-                    _pps_pdo_index = i;
-                    _pps_min_voltage_mv = caps[i].min_voltage_mv;
-                    _pps_max_voltage_mv = caps[i].voltage_mv;
-                    _pps_max_current_ma = caps[i].max_current_ma;
-                    _pps_target_voltage_mv = pdManager.getPpsUserTargetMv();
-                    if (_pps_target_voltage_mv == 0) _pps_target_voltage_mv = contract.voltage_mv;
-                    _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
-                    _adjust_mode = AdjustMode::PPS_VOLTAGE;
-                    transitionTo(AppState::ADJUST);
-                    LOG_INFO("Quick PPS voltage adjust: %u-%umV (current %umV)",
-                             _pps_min_voltage_mv, _pps_max_voltage_mv, _pps_target_voltage_mv);
-                    break;
+            int8_t active_idx = pdManager.getActivePdoIndex();
+            uint8_t selected = 0;
+            bool found = false;
+            if (active_idx >= 0 && active_idx < count && caps[active_idx].is_pps) {
+                selected = (uint8_t)active_idx;
+                found = true;
+            } else {
+                for (uint8_t i = 0; i < count; i++) {
+                    if (caps[i].is_pps &&
+                        contract.voltage_mv >= caps[i].min_voltage_mv &&
+                        contract.voltage_mv <= caps[i].voltage_mv) {
+                        selected = i;
+                        found = true;
+                        break;
+                    }
                 }
+            }
+            if (found) {
+                _pps_pdo_index = selected;
+                _pps_min_voltage_mv = caps[selected].min_voltage_mv;
+                _pps_max_voltage_mv = caps[selected].voltage_mv;
+                _pps_max_current_ma = caps[selected].max_current_ma;
+                _pps_target_voltage_mv = pdManager.getPpsUserTargetMv();
+                if (_pps_target_voltage_mv == 0) _pps_target_voltage_mv = contract.voltage_mv;
+                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                _adjust_mode = AdjustMode::PPS_VOLTAGE;
+                transitionTo(AppState::ADJUST);
+                LOG_INFO("Quick PPS voltage adjust: %u-%umV (current %umV)",
+                         _pps_min_voltage_mv, _pps_max_voltage_mv, _pps_target_voltage_mv);
             }
         } else if (contract.valid && contract.is_avs && pdManager.isAvsActive()) {
             // Find AVS PDO that covers current voltage and set up adjustment
             SourceCapability caps[AppConfig::MAX_PDO_COUNT];
             uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
-            for (uint8_t i = 0; i < count; i++) {
-                if (caps[i].is_avs &&
-                    contract.voltage_mv >= caps[i].min_voltage_mv &&
-                    contract.voltage_mv <= caps[i].voltage_mv) {
-                    _avs_pdo_index = i;
-                    _avs_min_voltage_mv = caps[i].min_voltage_mv;
-                    _avs_max_voltage_mv = caps[i].voltage_mv;
-                    _avs_max_current_ma = caps[i].max_current_ma;
-                    _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
-                    if (_avs_target_voltage_mv == 0) _avs_target_voltage_mv = contract.voltage_mv;
-                    _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
-                    _adjust_mode = AdjustMode::AVS_VOLTAGE;
-                    transitionTo(AppState::ADJUST);
-                    LOG_INFO("Quick AVS voltage adjust: %u-%umV (current %umV)",
-                             _avs_min_voltage_mv, _avs_max_voltage_mv, _avs_target_voltage_mv);
-                    break;
+            int8_t active_idx = pdManager.getActivePdoIndex();
+            uint8_t selected = 0;
+            bool found = false;
+            if (active_idx >= 0 && active_idx < count && caps[active_idx].is_avs) {
+                selected = (uint8_t)active_idx;
+                found = true;
+            } else {
+                for (uint8_t i = 0; i < count; i++) {
+                    if (caps[i].is_avs &&
+                        contract.voltage_mv >= caps[i].min_voltage_mv &&
+                        contract.voltage_mv <= caps[i].voltage_mv) {
+                        selected = i;
+                        found = true;
+                        break;
+                    }
                 }
+            }
+            if (found) {
+                _avs_pdo_index = selected;
+                _avs_min_voltage_mv = caps[selected].min_voltage_mv;
+                _avs_max_voltage_mv = caps[selected].voltage_mv;
+                _avs_max_current_ma = caps[selected].max_current_ma;
+                _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
+                if (_avs_target_voltage_mv == 0) _avs_target_voltage_mv = contract.voltage_mv;
+                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                _adjust_mode = AdjustMode::AVS_VOLTAGE;
+                transitionTo(AppState::ADJUST);
+                LOG_INFO("Quick AVS voltage adjust: %u-%umV (current %umV)",
+                         _avs_min_voltage_mv, _avs_max_voltage_mv, _avs_target_voltage_mv);
             }
         } else {
             // No PPS/AVS active: toggle energy display mode (mAh ↔ mWh)
@@ -1107,8 +1134,10 @@ const char* StateMachine::getBootStageMessage() const {
 // ============================================================================
 
 void StateMachine::loadPdoList() {
-    pdManager.refreshActiveContract();  // Ensure we have the latest active contract for highlighting
+    // Reload PDOs first so the cache is valid before refreshActiveContract() runs its
+    // warm-reset detection (which needs the cache to identify PPS/AVS contracts).
     _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
+    pdManager.refreshActiveContract();  // Update active contract after PDO cache is valid
     _selected_pdo_index = 0;
 
     LOG_INFO("Loaded %d PDOs from charger", _num_pdos);
@@ -1180,10 +1209,13 @@ void StateMachine::applyCurrentLimit() {
 }
 
 void StateMachine::applyPpsVoltage() {
-    LOG_INFO("Requesting PPS: %umV @ %umA", _pps_target_voltage_mv, _pps_max_current_ma);
+    LOG_INFO("Requesting PPS: %umV @ %umA (PDO index %d)",
+             _pps_target_voltage_mv, _pps_max_current_ma, _pps_pdo_index);
 
-    // Request PPS contract with the selected voltage
-    bool success = pdManager.requestPpsVoltage(_pps_target_voltage_mv, _pps_max_current_ma);
+    // Request PPS contract with the selected voltage and explicit PDO index so the
+    // driver uses the correct APDO's bounds (prevents overlap-APDO mis-selection).
+    bool success = pdManager.requestPpsVoltage(_pps_target_voltage_mv, _pps_max_current_ma,
+                                               (int8_t)_pps_pdo_index);
 
     if (success) {
         LOG_INFO("PPS request sent successfully");
@@ -1204,9 +1236,11 @@ void StateMachine::applyPpsVoltage() {
 }
 
 void StateMachine::applyAvsVoltage() {
-    LOG_INFO("Requesting AVS: %umV @ %umA", _avs_target_voltage_mv, _avs_max_current_ma);
+    LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)",
+             _avs_target_voltage_mv, _avs_max_current_ma, _avs_pdo_index);
 
-    bool success = pdManager.requestAvsVoltage(_avs_target_voltage_mv, _avs_max_current_ma);
+    bool success = pdManager.requestAvsVoltage(_avs_target_voltage_mv, _avs_max_current_ma,
+                                               (int8_t)_avs_pdo_index);
 
     if (success) {
         LOG_INFO("AVS request sent successfully");
