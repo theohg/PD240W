@@ -920,6 +920,7 @@ void PdManager::detectPdRevision() {
     bool has_pps = false;
     bool has_epr_avs = false;
     bool has_spr_avs = false;
+    const char* detected_revision = "";
 
     for (uint8_t i = 0; i < _pdo_count; i++) {
         if (_pdo_cache[i].is_avs) {
@@ -935,22 +936,25 @@ void PdManager::detectPdRevision() {
 
     // SPR AVS is new in PD 3.2, so its presence is enough to identify PD 3.2.
     if (has_spr_avs) {
-        strcpy(_pd_revision, "PD3.2");
+        detected_revision = "PD3.2";
     } else if (has_epr || has_epr_avs) {
         // EPR-only sources map to PD 3.1.
-        strcpy(_pd_revision, "PD3.1");
+        detected_revision = "PD3.1";
     } else if (has_pps) {
         // PPS was introduced in PD 3.0
-        strcpy(_pd_revision, "PD3.0");
+        detected_revision = "PD3.0";
     } else if (_pdo_count > 0) {
         // If neither PPS nor AVS are present and <= 7 PDOs, assume PD 2.0
-        strcpy(_pd_revision, "PD2.0");
-    } else {
-        _pd_revision[0] = '\0';
+        detected_revision = "PD2.0";
     }
 
-    if (_pd_revision[0] != '\0') {
-        LOG_INFO("Detected PD revision (from PDOs): %s", _pd_revision);
+    if (strcmp(_pd_revision, detected_revision) != 0) {
+        if (detected_revision[0] != '\0') {
+            strcpy(_pd_revision, detected_revision);
+            LOG_INFO("Detected PD revision (from PDOs): %s", _pd_revision);
+        } else {
+            _pd_revision[0] = '\0';
+        }
     }
 }
 
