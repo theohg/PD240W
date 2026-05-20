@@ -63,7 +63,7 @@ struct UserSettings {
     bool auto_output;          // If true, enable output after boot completes
 
     // Last PPS voltage for restore on boot
-    uint32_t last_pps_voltage_mv;  // 0 = not set
+    uint32_t last_pps_avs_voltage_mv;  // 0 = not set
 
     // Startup contract negotiation mode
     uint8_t startup_negotiation;  // 0=Lowest voltage, 1=Highest voltage, 2=Last used
@@ -103,7 +103,7 @@ public:
     void setAutoDimMinutes(uint8_t minutes);
     void setStartupMelody(uint8_t melody);
     void setAutoOutput(bool enabled);
-    void setLastPpsVoltageMv(uint32_t voltage_mv);
+    void setLastPpsAvsVoltageMv(uint32_t voltage_mv);
     void setStartupNegotiation(uint8_t mode);
     void setEnergyDisplayMode(uint8_t mode);
     void setCcModeEnabled(bool enabled);
@@ -120,7 +120,7 @@ public:
     uint8_t getAutoDimMinutes() const { return _settings.auto_dim_minutes; }
     uint8_t getStartupMelody() const { return _settings.startup_melody; }
     bool isAutoOutput() const { return _settings.auto_output; }
-    uint32_t getLastPpsVoltageMv() const { return _settings.last_pps_voltage_mv; }
+    uint32_t getLastPpsVoltageMv() const { return _settings.last_pps_avs_voltage_mv; }
     uint8_t getStartupNegotiation() const { return _settings.startup_negotiation; }
     StartupContractMode getStartupNegotiationMode() const {
         return static_cast<StartupContractMode>(_settings.startup_negotiation);

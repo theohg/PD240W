@@ -1182,7 +1182,7 @@ void StateMachine::requestSelectedPdo() {
         // Save selected PDO for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
             settings.setLastPdoIndex(_selected_pdo_index);
-            settings.setLastPpsVoltageMv((pdo.is_pps || pdo.is_avs) ? pdo.voltage_mv : 0);
+            settings.setLastPpsAvsVoltageMv((pdo.is_pps || pdo.is_avs) ? pdo.voltage_mv : 0);
             settings.requestSave();
         }
     } else {
@@ -1241,7 +1241,7 @@ void StateMachine::applyPpsVoltage() {
         // Save PPS state for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
             settings.setLastPdoIndex(_pps_pdo_index);
-            settings.setLastPpsVoltageMv(_pps_target_voltage_mv);
+            settings.setLastPpsAvsVoltageMv(_pps_target_voltage_mv);
             settings.requestSave();
         }
     } else {
@@ -1266,7 +1266,7 @@ void StateMachine::applyAvsVoltage() {
         // Save AVS state for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
             settings.setLastPdoIndex(_avs_pdo_index);
-            settings.setLastPpsVoltageMv(_avs_target_voltage_mv);
+            settings.setLastPpsAvsVoltageMv(_avs_target_voltage_mv);
             settings.requestSave();
         }
     } else {
@@ -1326,11 +1326,11 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
                         settings.setLastPdoIndex(_selected_pdo_index);
                         if (pdManager.isPpsActive()) {
-                            settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
+                            settings.setLastPpsAvsVoltageMv(pdManager.getPpsUserTargetMv());
                         } else if (pdManager.isAvsActive()) {
-                            settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                            settings.setLastPpsAvsVoltageMv(pdManager.getAvsUserTargetMv());
                         } else {
-                            settings.setLastPpsVoltageMv(0);
+                            settings.setLastPpsAvsVoltageMv(0);
                         }
                     }
                     settings.requestSave();
@@ -1388,11 +1388,11 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
                         settings.setLastPdoIndex(_selected_pdo_index);
                         if (pdManager.isPpsActive()) {
-                            settings.setLastPpsVoltageMv(pdManager.getPpsUserTargetMv());
+                            settings.setLastPpsAvsVoltageMv(pdManager.getPpsUserTargetMv());
                         } else if (pdManager.isAvsActive()) {
-                            settings.setLastPpsVoltageMv(pdManager.getAvsUserTargetMv());
+                            settings.setLastPpsAvsVoltageMv(pdManager.getAvsUserTargetMv());
                         } else {
-                            settings.setLastPpsVoltageMv(0);
+                            settings.setLastPpsAvsVoltageMv(0);
                         }
                     }
                     settings.requestSave();

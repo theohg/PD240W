@@ -11,6 +11,7 @@
 #include "config/app_config.h"
 #include <cstdio>
 #include <cstring>
+#include "drivers/display/font.h"
 #include "ui/assets/pd240w_logo.h"
 #include "ui/font_config.h"
 
@@ -236,27 +237,6 @@ void DisplayManager::render() {
             break;
     }
 
-    // Remote mode overlay badge (shown on all screens except BOOT)
-    if (current_state != AppState::BOOT) {
-        bool remote = Cli::isRemoteMode();
-        if ((remote && (_needs_full_redraw || remote != _last_remote_mode)) ||
-            (!remote && remote != _last_remote_mode)) {
-            const int RMT_W = 38;
-            const int RMT_H = 16;
-            const int RMT_X = SCREEN_WIDTH - MARGIN - RMT_W;
-            const int RMT_Y = 2;
-            if (remote) {
-                hw.display.fillRoundRect(RMT_X, RMT_Y, RMT_W, RMT_H, 3, UIColors::ERROR);
-                int tx = RMT_X + (RMT_W - ST7789::getStringWidthAA("RMT", FONT_SMALL)) / 2;
-                int ty = RMT_Y + (RMT_H - FONT_SMALL->lineHeight) / 2;
-                hw.display.drawStringAA(tx, ty, "RMT", UIColors::TEXT_PRIMARY, UIColors::ERROR, FONT_SMALL);
-            } else {
-                hw.display.fillRect(RMT_X, RMT_Y, RMT_W, RMT_H, UIColors::BACKGROUND);
-            }
-            _last_remote_mode = remote;
-        }
-    }
-
     _needs_full_redraw = false;
 
     // Turn on backlight after first frame is fully rendered (prevents ghost image)
@@ -299,8 +279,10 @@ void DisplayManager::renderBootScreen() {
 }
 
 void DisplayManager::renderMainScreen() {
-    if (_needs_full_redraw) {
+    bool remote_mode = Cli::isRemoteMode();
+    if (_needs_full_redraw || remote_mode != _last_remote_mode) {
         drawHeader("PD240W");
+        _last_remote_mode = remote_mode;
     }
 
     // Draw power readings
@@ -425,6 +407,19 @@ void DisplayManager::drawHeader(const char* title) {
         const int logo_y = (HEADER_HEIGHT - 2 - logo_h) / 2;
         hw.display.drawBitmapScaled(logo_x, logo_y, logo_w, logo_h,
                                     PD240W_WIDTH, PD240W_HEIGHT, pd240w_data);
+
+        if (Cli::isRemoteMode()) {
+            const int remote_w = FONT_WIDTH + 1;
+            const int remote_h = FONT_HEIGHT * 3 + 2;
+            int remote_x = logo_x + logo_w + 4;
+            const int max_remote_x = SCREEN_WIDTH - MARGIN - remote_w;
+            if (remote_x > max_remote_x) {
+                remote_x = max_remote_x;
+            }
+            const int remote_y = logo_y + (logo_h - remote_h) / 2;
+            hw.display.drawString(remote_x, remote_y, "R\nM\nT",
+                                  UIColors::ERROR, UIColors::BACKGROUND);
+        }
     } else {
         // Draw title centered using AA font
         drawCenteredStringAA(10, title, UIColors::TEXT_PRIMARY, FONT_MEDIUM);

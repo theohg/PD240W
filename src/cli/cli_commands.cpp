@@ -287,7 +287,7 @@ void pdSel(const char* arg) {
 
     if (ok) {
         settings.setLastPdoIndex(static_cast<int8_t>(index));
-        settings.setLastPpsVoltageMv((caps[index].is_pps || caps[index].is_avs) ? caps[index].voltage_mv : 0);
+        settings.setLastPpsAvsVoltageMv((caps[index].is_pps || caps[index].is_avs) ? caps[index].voltage_mv : 0);
         settings.requestSave();
         Cli::respond("OK");
     } else {
@@ -314,7 +314,7 @@ void pdPps(const char* arg) {
     }
 
     if (pdManager.requestPpsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
-        settings.setLastPpsVoltageMv(voltage_mv);
+        settings.setLastPpsAvsVoltageMv(voltage_mv);
         settings.requestSave();
         Cli::respond("OK");
     } else {
@@ -341,7 +341,7 @@ void pdAvs(const char* arg) {
     }
 
     if (pdManager.requestAvsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
-        settings.setLastPpsVoltageMv(voltage_mv);
+        settings.setLastPpsAvsVoltageMv(voltage_mv);
         settings.requestSave();
         Cli::respond("OK");
     } else {

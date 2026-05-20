@@ -160,9 +160,9 @@ void Settings::setAutoOutput(bool enabled) {
     }
 }
 
-void Settings::setLastPpsVoltageMv(uint32_t voltage_mv) {
-    if (_settings.last_pps_voltage_mv != voltage_mv) {
-        _settings.last_pps_voltage_mv = voltage_mv;
+void Settings::setLastPpsAvsVoltageMv(uint32_t voltage_mv) {
+    if (_settings.last_pps_avs_voltage_mv != voltage_mv) {
+        _settings.last_pps_avs_voltage_mv = voltage_mv;
         _dirty = true;
     }
 }
@@ -269,8 +269,8 @@ bool Settings::loadFromFlash() {
     }
     
     _dirty = false;
-    LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d",
-             _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled);
+    LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d, auto_avs=%d, auto_out_en=%d",
+             _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled, _settings.auto_avs_enabled, _settings.auto_output);
     return true;
 }
 
@@ -279,20 +279,20 @@ void Settings::resetToDefaults() {
     _settings.version = SETTINGS_VERSION;
     _settings.current_limit_ma = AppConfig::CURRENT_LIMIT_DEFAULT_MA;
     _settings.last_pdo_index = 0;
-    _settings.load_switch_enabled = false;  // Output disabled by default
-    _settings.buck_17v_enabled = false;
-    _settings.lcd_brightness = AppConfig::LCD_BRIGHTNESS_DEFAULT;
-    _settings.sounds_enabled = true;        // Sounds ON by default
-    _settings.auto_pps_enabled = false;     // Auto PPS OFF by default
-    _settings.auto_avs_enabled = false;     // Auto AVS OFF by default
-    _settings.auto_dim_minutes = 1;         // 1 minute dim timeout
-    _settings.startup_melody = 1;           // Mario Power-Up by default
-    _settings.auto_output = false;          // Output disabled by default
-    _settings.last_pps_voltage_mv = 0;      // No saved PPS voltage
-    _settings.startup_negotiation = 2;      // Last used (remember last contract)
-    _settings.energy_display_mode = 0;       // mAh by default
-    _settings.cc_mode_enabled = false;       // OCP mode by default
-    _settings.crc32 = 0;  // Will be calculated on save
+    _settings.load_switch_enabled = false;                          // Output disabled by default
+    _settings.buck_17v_enabled = false;                             // Buck 17V disabled by default
+    _settings.lcd_brightness = AppConfig::LCD_BRIGHTNESS_DEFAULT;   // Default brightness
+    _settings.sounds_enabled = true;                                // Sounds ON by default
+    _settings.auto_pps_enabled = true;                              // Auto PPS ON by default
+    _settings.auto_avs_enabled = true;                              // Auto AVS ON by default
+    _settings.auto_dim_minutes = 1;                                 // 1 minute dim timeout
+    _settings.startup_melody = 1;                                   // Mario Power-Up by default
+    _settings.auto_output = false;                                  // Output disabled by default
+    _settings.last_pps_avs_voltage_mv = 0;                          // No saved PPS voltage
+    _settings.startup_negotiation = 2;                              // Last used (remember last contract)
+    _settings.energy_display_mode = 0;                              // mAh by default
+    _settings.cc_mode_enabled = false;                              // OCP mode by default
+    _settings.crc32 = 0;                                            // Will be calculated on save
 
     _dirty = false;
 

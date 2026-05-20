@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>   // For snprintf (number formatting)
 #include <stdlib.h>
+#include <cmath>
 
 namespace {
 
@@ -16,64 +17,8 @@ uint8_t expand6To8(uint8_t value) {
     return static_cast<uint8_t>((value << 2) | (value >> 4));
 }
 
-int clampByte(int value) {
-    if (value < 0) {
-        return 0;
-    }
-    if (value > 255) {
-        return 255;
-    }
-    return value;
-}
-
-uint8_t quantize5Nearest(uint8_t value8) {
-    return static_cast<uint8_t>((value8 * 31 + 127) / 255);
-}
-
-uint8_t quantize6Nearest(uint8_t value8) {
-    return static_cast<uint8_t>((value8 * 63 + 127) / 255);
-}
-
-struct GradientEndpoints {
-    int start_r = 0;
-    int start_g = 0;
-    int start_b = 0;
-    int end_r = 0;
-    int end_g = 0;
-    int end_b = 0;
-};
-
-GradientEndpoints makeGradientEndpoints(uint16_t start_color, uint16_t end_color) {
-    GradientEndpoints endpoints;
-    endpoints.start_r = expand5To8((start_color >> 11) & 0x1F);
-    endpoints.start_g = expand6To8((start_color >> 5) & 0x3F);
-    endpoints.start_b = expand5To8(start_color & 0x1F);
-    endpoints.end_r = expand5To8((end_color >> 11) & 0x1F);
-    endpoints.end_g = expand6To8((end_color >> 5) & 0x3F);
-    endpoints.end_b = expand5To8(end_color & 0x1F);
-    return endpoints;
-}
-
-uint16_t computeGradientColor(const GradientEndpoints& endpoints, int step, int max_step) {
-    if (max_step <= 0) {
-        return static_cast<uint16_t>((quantize5Nearest(endpoints.start_r) << 11)
-            | (quantize6Nearest(endpoints.start_g) << 5)
-            | quantize5Nearest(endpoints.start_b));
-    }
-
-    int ideal_r = endpoints.start_r + ((endpoints.end_r - endpoints.start_r) * step) / max_step;
-    int ideal_g = endpoints.start_g + ((endpoints.end_g - endpoints.start_g) * step) / max_step;
-    int ideal_b = endpoints.start_b + ((endpoints.end_b - endpoints.start_b) * step) / max_step;
-
-    uint8_t r5 = quantize5Nearest(static_cast<uint8_t>(clampByte(ideal_r)));
-    uint8_t g6 = quantize6Nearest(static_cast<uint8_t>(clampByte(ideal_g)));
-    uint8_t b5 = quantize5Nearest(static_cast<uint8_t>(clampByte(ideal_b)));
-
-    return static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
-}
-
 int16_t computeRoundRectInset(int16_t dx, int16_t w, int16_t r) {
-    if (r <= 0 || dx >= r && dx < w - r) {
+    if (r <= 0 || (dx >= r && dx < w - r)) {
         return 0;
     }
 
@@ -452,20 +397,8 @@ void ST7789::fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r
 
 void ST7789::fillGradientRect(int16_t x, int16_t y, int16_t w, int16_t h,
                               uint16_t start_color, uint16_t end_color) {
-    if (w <= 0 || h <= 0) {
-        return;
-    }
-
-    if (start_color == end_color || w == 1) {
-        fillRect(x, y, w, h, start_color);
-        return;
-    }
-
-    GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
-    int max_step = w - 1;
-    for (int16_t dx = 0; dx < w; ++dx) {
-        fillRect(x + dx, y, 1, h, computeGradientColor(endpoints, dx, max_step));
-    }
+    // Route directly to the updated columns function with 0 radius
+    fillRoundRectGradientColumns(x, y, w, h, 0, 0, w, start_color, end_color);
 }
 
 void ST7789::fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
@@ -476,57 +409,98 @@ void ST7789::fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, i
 void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
                                          int16_t start_column, int16_t end_column,
                                          uint16_t start_color, uint16_t end_color) {
-    if (w <= 0 || h <= 0) {
-        return;
-    }
+    if (w <= 0 || h <= 0) return;
 
     if (start_column < 0) start_column = 0;
     if (end_column > w) end_column = w;
-    if (start_column >= end_column) {
-        return;
-    }
+    if (start_column >= end_column) return;
 
     if (r > w / 2) r = w / 2;
     if (r > h / 2) r = h / 2;
-    if (r <= 0) {
-        GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
-        int max_step = w - 1;
-        for (int16_t dx = 0; dx < w; ++dx) {
-            uint16_t color = computeGradientColor(endpoints, dx, max_step);
-            if (dx >= start_column && dx < end_column) {
-                fillRect(x + dx, y, 1, h, color);
-            }
-        }
-        return;
-    }
 
+    // Fast exit for solid colors to save processing
     if (start_color == end_color || w == 1) {
         for (int16_t dx = start_column; dx < end_column; ++dx) {
             int16_t inset = computeRoundRectInset(dx, w, r);
             int16_t column_height = h - inset * 2;
-            if (column_height <= 0) {
-                continue;
+            if (column_height > 0) {
+                fillRect(x + dx, y + inset, 1, column_height, start_color);
             }
-            fillRect(x + dx, y + inset, 1, column_height, start_color);
         }
         return;
     }
 
-    GradientEndpoints endpoints = makeGradientEndpoints(start_color, end_color);
-    int max_step = w - 1;
-    for (int16_t dx = 0; dx < w; ++dx) {
-        uint16_t color = computeGradientColor(endpoints, dx, max_step);
-        if (dx < start_column || dx >= end_column) {
-            continue;
-        }
+    // Extract native 8-bit color channels
+    int sr = expand5To8((start_color >> 11) & 0x1F);
+    int sg = expand6To8((start_color >> 5) & 0x3F);
+    int sb = expand5To8(start_color & 0x1F);
+    
+    int er = expand5To8((end_color >> 11) & 0x1F);
+    int eg = expand6To8((end_color >> 5) & 0x3F);
+    int eb = expand5To8(end_color & 0x1F);
 
+    // Square the start/end values for Gamma-Corrected (sRGB) blending
+    int32_t sr2 = sr * sr;
+    int32_t sg2 = sg * sg;
+    int32_t sb2 = sb * sb;
+    int32_t er2 = er * er;
+    int32_t eg2 = eg * eg;
+    int32_t eb2 = eb * eb;
+
+    // 8x8 Bayer Matrix for ultra-smooth Ordered Dithering (64 levels)
+    static const uint8_t bayer[8][8] = {
+        {  0, 32,  8, 40,  2, 34, 10, 42 },
+        { 48, 16, 56, 24, 50, 18, 58, 26 },
+        { 12, 44,  4, 36, 14, 46,  6, 38 },
+        { 60, 28, 52, 20, 62, 30, 54, 22 },
+        {  3, 35, 11, 43,  1, 33,  9, 41 },
+        { 51, 19, 59, 27, 49, 17, 57, 25 },
+        { 15, 47,  7, 39, 13, 45,  5, 37 },
+        { 63, 31, 55, 23, 61, 29, 53, 21 }
+    };
+
+    int32_t max_step = w - 1;
+
+    for (int16_t dx = start_column; dx < end_column; ++dx) {
         int16_t inset = computeRoundRectInset(dx, w, r);
         int16_t column_height = h - inset * 2;
-        if (column_height <= 0) {
-            continue;
-        }
+        if (column_height <= 0) continue;
 
-        fillRect(x + dx, y + inset, 1, column_height, color);
+        // Gamma-correct interpolation: computed once per column, so std::sqrt is very fast
+        int r8 = std::sqrt(sr2 + ((er2 - sr2) * dx) / max_step);
+        int g8 = std::sqrt(sg2 + ((eg2 - sg2) * dx) / max_step);
+        int b8 = std::sqrt(sb2 + ((eb2 - sb2) * dx) / max_step);
+
+        int16_t cx = x + dx;
+        int16_t cy = y + inset;
+
+        setAddressWindow(cx, cy, cx, cy + column_height - 1);
+        gpio_put(_pinDC, 1);
+        gpio_put(_pinCS, 0);
+
+        uint8_t line_buf[480]; 
+        
+        for (int16_t dy = 0; dy < column_height; ++dy) {
+            // Apply 8x8 noise matrix based on absolute screen coordinates
+            uint8_t d = bayer[(cy + dy) & 7][cx & 7];
+            
+            // Red/Blue need up to +7 noise. Matrix is 0-63, so >> 3 scales it to 0-7.
+            // Green needs up to +3 noise. Matrix is 0-63, so >> 4 scales it to 0-3.
+            int r_val = r8 + (d >> 3);
+            int g_val = g8 + (d >> 4);
+            int b_val = b8 + (d >> 3);
+            
+            uint16_t r5 = (r_val > 255 ? 255 : r_val) >> 3;
+            uint16_t g6 = (g_val > 255 ? 255 : g_val) >> 2;
+            uint16_t b5 = (b_val > 255 ? 255 : b_val) >> 3;
+            
+            uint16_t color = (r5 << 11) | (g6 << 5) | b5;
+            line_buf[dy * 2]     = color >> 8;
+            line_buf[dy * 2 + 1] = color & 0xFF;
+        }
+        
+        spi_write_blocking(_spi, line_buf, column_height * 2);
+        gpio_put(_pinCS, 1);
     }
 }
 
