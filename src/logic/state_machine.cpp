@@ -11,6 +11,22 @@
 #include "ui/display_manager.h"
 #include "cli/cli.h"
 
+namespace {
+
+const char* appStateName(AppState state) {
+    switch (state) {
+        case AppState::BOOT: return "BOOT";
+        case AppState::MAIN: return "MAIN";
+        case AppState::MENU: return "MENU";
+        case AppState::ADJUST: return "ADJUST";
+        case AppState::FAULT: return "FAULT";
+    }
+
+    return "UNKNOWN";
+}
+
+}  // namespace
+
 // Global instance
 StateMachine stateMachine;
 
@@ -839,7 +855,7 @@ void StateMachine::handleFaultState(EncoderEvent event) {
 void StateMachine::transitionTo(AppState new_state) {
     if (_state == new_state) return;
 
-    LOG_INFO("State transition: %d -> %d", static_cast<int>(_state), static_cast<int>(new_state));
+    LOG_INFO("State transition: %s -> %s", appStateName(_state), appStateName(new_state));
 
     _previous_state = _state;
     _state = new_state;
