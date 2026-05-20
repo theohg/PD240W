@@ -48,6 +48,7 @@ PdManager::PdManager()
     , _epr_deferred_voltage_mv(0)
     , _epr_deferred_current_ma(0)
     , _epr_deferred_contract_type(RequestedContractType::NONE)
+    , _epr_deferred_pdo_index(-1)
     , _epr_exit_start(nil_time)
     , _active_pdo_index(-1)
 {
@@ -55,6 +56,7 @@ PdManager::PdManager()
     _active_contract.current_ma = 0;
     _active_contract.is_pps = false;
     _active_contract.is_avs = false;
+    _active_contract.is_epr = false;
     _active_contract.valid = false;
     _active_contract.pps_min_mv = 0;
     _active_contract.pps_max_mv = 0;
@@ -192,9 +194,9 @@ void PdManager::update() {
             _epr_exit_state = EprExitState::REQUESTING_TARGET;
             // Fire the user's actual request (EPR exit state prevents re-interception)
             if (_epr_deferred_contract_type == RequestedContractType::PPS) {
-                requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+                requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
             } else if (_epr_deferred_contract_type == RequestedContractType::AVS) {
-                requestAvsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+                requestAvsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
             } else {
                 requestFixedVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
             }
@@ -643,6 +645,7 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
             _epr_deferred_voltage_mv    = voltage_mv;
             _epr_deferred_current_ma    = current_ma;
             _epr_deferred_contract_type = RequestedContractType::PPS;
+            _epr_deferred_pdo_index     = pdo_index;
             _epr_exit_state             = EprExitState::STEPPING_DOWN;
             _epr_exit_start             = get_absolute_time();
             return requestAvsVoltage(avs_v, avs_i, avs_idx);
@@ -731,6 +734,7 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
             _epr_deferred_voltage_mv    = voltage_mv;
             _epr_deferred_current_ma    = current_ma;
             _epr_deferred_contract_type = RequestedContractType::AVS;
+            _epr_deferred_pdo_index     = pdo_index;
             _epr_exit_state             = EprExitState::STEPPING_DOWN;
             _epr_exit_start             = get_absolute_time();
             return requestAvsVoltage(avs_v, avs_i, avs_idx);  // re-entrant safe: state != NONE
@@ -897,6 +901,8 @@ bool PdManager::refreshActiveContract() {
 
         _active_contract.is_pps = detected_pps;
         _active_contract.is_avs = detected_avs;
+        // EPR AVS APDOs always have min_voltage > 9V (e.g. 15V); SPR AVS is always 9V.
+        _active_contract.is_epr = detected_avs && (_avs_range_min_mv != 9000 && _avs_range_min_mv != 0);
 
         // Prefer the requested programmable current when a PPS/AVS contract overlaps
         // a fixed PDO and the controller reports the fixed-PDO current instead.
@@ -915,14 +921,13 @@ bool PdManager::refreshActiveContract() {
             _active_contract.pps_max_mv = 0;
         }
 
-        // LOG_DEBUG("Active contract: %umV @ %umA (PPS: %s)",
-        //           voltage_mv, current_ma, _pps_active ? "yes" : "no");
         return true;
     }
 
     _active_contract.valid = false;
     _active_contract.is_pps = false;
     _active_contract.is_avs = false;
+    _active_contract.is_epr = false;
     _active_contract.pps_min_mv = 0;
     _active_contract.pps_max_mv = 0;
     if (!_pdos_valid || !_charger_connected) {

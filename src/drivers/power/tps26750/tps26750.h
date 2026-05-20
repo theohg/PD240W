@@ -19,12 +19,15 @@
 
 // Represents one "line item" from the charger (e.g., "15V @ 3A")
 struct SourceCapability {
-    uint32_t voltage_mv;      // Fixed: Voltage. PPS/AVS: Max Voltage.
-    uint32_t max_current_ma;  // Max Current (or Power for Battery, but simplified here)
-    bool is_pps;              // Programmable Power Supply (SPR)
-    bool is_avs;              // Adjustable Voltage Supply (SPR or EPR)
+    uint32_t voltage_mv;           // Fixed: Voltage. PPS/AVS: Max Voltage.
+    uint32_t max_current_ma;       // Max Current (15-20V band for SPR AVS; overall for others)
+    bool is_pps;                   // Programmable Power Supply (SPR)
+    bool is_avs;                   // Adjustable Voltage Supply (SPR or EPR)
     // For PPS/AVS: voltage_mv is the MAX voltage, current is max current
-    uint32_t min_voltage_mv;  // Only valid if is_pps or is_avs = true
+    uint32_t min_voltage_mv;       // Only valid if is_pps or is_avs = true
+    /// @brief SPR AVS only: max current for the 9-15V band (USB PD 3.2 §6.4.2).
+    /// Zero for all other PDO types, including EPR AVS.
+    uint32_t max_current_9_15_ma;
 };
 
 // ============================================================================

@@ -27,6 +27,7 @@ struct ActiveContract {
     uint32_t current_ma;
     bool is_pps;
     bool is_avs;
+    bool is_epr;             ///< True when is_avs and the contract is EPR (APDO min > 9V)
     bool valid;
     // PPS-specific fields
     uint32_t pps_min_mv;    // PPS range min voltage
@@ -225,6 +226,7 @@ private:
     uint32_t _epr_deferred_voltage_mv;          // User's real target voltage
     uint32_t _epr_deferred_current_ma;          // User's real target current
     RequestedContractType _epr_deferred_contract_type;  // Deferred contract type for EPR exit step 3
+    int8_t _epr_deferred_pdo_index;             // PDO cache index of user's target (-1 = fallback search)
     absolute_time_t _epr_exit_start;            // Timeout tracking for full sequence
     static constexpr uint32_t EPR_EXIT_TIMEOUT_MS = 5000;   // Total timeout for 3-step sequence
     static constexpr uint32_t EPR_EXIT_SAFE_MV = 5000;       // Intermediate 5V request voltage [mV]

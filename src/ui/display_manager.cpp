@@ -574,7 +574,7 @@ void DisplayManager::drawActiveContract() {
             int rev_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
             int rev_x = RIGHTMOST_BADGE_X - rev_w - 4;
             bool show_epr =
-                (contract.is_avs && contract.pps_min_mv != 9000) ||
+                (contract.is_avs && contract.is_epr) ||
                 (contract.valid && contract.voltage_mv > AppConfig::EPR_SPR_MAX_MV);
             if (show_epr && !_last_epr_badge_drawn) {
                 const char* epr_text = "EPR";

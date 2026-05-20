@@ -235,6 +235,7 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
         temp.voltage_mv = 0;
         temp.max_current_ma = 0;
         temp.min_voltage_mv = 0;
+        temp.max_current_9_15_ma = 0;  // SPR AVS 9-15V band limit; 0 for all other types
 
         if (type == 0x03) {
             // --- Augmented PDO ---
@@ -278,6 +279,9 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
                     temp.voltage_mv = 15000;
                     temp.max_current_ma = max_curr_9_15_ma;
                 }
+                // Both bands share the same 9V floor; store lower-band limit separately
+                // so requestAvsVoltage() can cap the current for voltages below 15V.
+                temp.max_current_9_15_ma = max_curr_9_15_ma;
             } else if (apdo_type == 0x00) {
                 // === SPR PPS ===
                 temp.is_pps = true;
