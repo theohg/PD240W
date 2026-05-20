@@ -222,10 +222,10 @@ private:
     // Step 3 (REQUESTING_TARGET): Request user's actual SPR target (e.g. 20V) — standard SPR transition
     enum class EprExitState { NONE, STEPPING_DOWN, REQUESTING_5V, REQUESTING_TARGET };
     EprExitState _epr_exit_state;
-    uint32_t _epr_deferred_voltage_mv;  // User's real target voltage
-    uint32_t _epr_deferred_current_ma;  // User's real target current
-    bool _epr_deferred_is_pps;          // True if deferred request is PPS (vs fixed)
-    absolute_time_t _epr_exit_start;    // Timeout tracking for full sequence
+    uint32_t _epr_deferred_voltage_mv;          // User's real target voltage
+    uint32_t _epr_deferred_current_ma;          // User's real target current
+    RequestedContractType _epr_deferred_contract_type;  // Deferred contract type for EPR exit step 3
+    absolute_time_t _epr_exit_start;            // Timeout tracking for full sequence
     static constexpr uint32_t EPR_EXIT_TIMEOUT_MS = 5000;   // Total timeout for 3-step sequence
     static constexpr uint32_t EPR_EXIT_SAFE_MV = 5000;       // Intermediate 5V request voltage [mV]
     static constexpr uint32_t EPR_EXIT_SAFE_CURRENT_MA = 3000; // Intermediate 5V request current [mA]

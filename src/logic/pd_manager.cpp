@@ -47,7 +47,7 @@ PdManager::PdManager()
     , _epr_exit_state(EprExitState::NONE)
     , _epr_deferred_voltage_mv(0)
     , _epr_deferred_current_ma(0)
-    , _epr_deferred_is_pps(false)
+    , _epr_deferred_contract_type(RequestedContractType::NONE)
     , _epr_exit_start(nil_time)
     , _active_pdo_index(-1)
 {
@@ -169,6 +169,11 @@ void PdManager::update() {
                 LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
                 _epr_exit_state = EprExitState::NONE;
             } else {
+                // BUG 1 FIX: update polling-fallback tracking so isRequestedContractReached()
+                // matches the 5V Fixed contract instead of the prior AVS step-down target.
+                _requested_contract_type = RequestedContractType::FIXED;
+                _requested_voltage_mv    = EPR_EXIT_SAFE_MV;
+                _requested_current_ma    = EPR_EXIT_SAFE_CURRENT_MA;
                 _negotiation_state = NegotiationState::REQUESTING;
                 _negotiation_start = get_absolute_time();
             }
@@ -177,14 +182,19 @@ void PdManager::update() {
         else if (_epr_exit_state == EprExitState::REQUESTING_5V &&
                  _negotiation_state == NegotiationState::SUCCESS) {
             refreshActiveContract();
+            const char* type_str = "Fixed";
+            if (_epr_deferred_contract_type == RequestedContractType::PPS) type_str = "PPS";
+            else if (_epr_deferred_contract_type == RequestedContractType::AVS) type_str = "AVS";
             LOG_INFO("EPR step 2/3 complete: at %umV (SPR). Requesting target: %s %umV @ %umA",
                      _active_contract.voltage_mv,
-                     _epr_deferred_is_pps ? "PPS" : "Fixed",
+                     type_str,
                      _epr_deferred_voltage_mv, _epr_deferred_current_ma);
             _epr_exit_state = EprExitState::REQUESTING_TARGET;
             // Fire the user's actual request (EPR exit state prevents re-interception)
-            if (_epr_deferred_is_pps) {
+            if (_epr_deferred_contract_type == RequestedContractType::PPS) {
                 requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+            } else if (_epr_deferred_contract_type == RequestedContractType::AVS) {
+                requestAvsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
             } else {
                 requestFixedVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
             }
@@ -583,11 +593,11 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
             LOG_INFO("EPR exit: 3-step sequence for Fixed %umV (AVS %umV -> 5V -> %umV)",
                      voltage_mv, avs_v, voltage_mv);
-            _epr_deferred_voltage_mv = voltage_mv;
-            _epr_deferred_current_ma = current_ma;
-            _epr_deferred_is_pps = false;
-            _epr_exit_state = EprExitState::STEPPING_DOWN;
-            _epr_exit_start = get_absolute_time();
+            _epr_deferred_voltage_mv    = voltage_mv;
+            _epr_deferred_current_ma    = current_ma;
+            _epr_deferred_contract_type = RequestedContractType::FIXED;
+            _epr_exit_state             = EprExitState::STEPPING_DOWN;
+            _epr_exit_start             = get_absolute_time();
             return requestAvsVoltage(avs_v, avs_i, avs_idx);
         } else {
             LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
@@ -630,11 +640,11 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
         if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
             LOG_INFO("EPR exit: 3-step sequence for PPS %umV (AVS %umV -> 5V -> PPS %umV)",
                      voltage_mv, avs_v, voltage_mv);
-            _epr_deferred_voltage_mv = voltage_mv;
-            _epr_deferred_current_ma = current_ma;
-            _epr_deferred_is_pps = true;
-            _epr_exit_state = EprExitState::STEPPING_DOWN;
-            _epr_exit_start = get_absolute_time();
+            _epr_deferred_voltage_mv    = voltage_mv;
+            _epr_deferred_current_ma    = current_ma;
+            _epr_deferred_contract_type = RequestedContractType::PPS;
+            _epr_exit_state             = EprExitState::STEPPING_DOWN;
+            _epr_exit_start             = get_absolute_time();
             return requestAvsVoltage(avs_v, avs_i, avs_idx);
         } else {
             LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
@@ -708,6 +718,26 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
 
 bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
     LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
+
+    // BUG 2 FIX: EPR safe exit interception — mirror requestFixedVoltage() guard.
+    // A direct EPR->SPR AVS transition causes the charger to hard-reset; use the
+    // 3-step AVS step-down sequence instead.
+    if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, false)) {
+        uint32_t avs_v, avs_i;
+        int8_t avs_idx = -1;
+        if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
+            LOG_INFO("EPR exit: 3-step sequence for AVS %umV (AVS %umV -> 5V -> AVS %umV)",
+                     voltage_mv, avs_v, voltage_mv);
+            _epr_deferred_voltage_mv    = voltage_mv;
+            _epr_deferred_current_ma    = current_ma;
+            _epr_deferred_contract_type = RequestedContractType::AVS;
+            _epr_exit_state             = EprExitState::STEPPING_DOWN;
+            _epr_exit_start             = get_absolute_time();
+            return requestAvsVoltage(avs_v, avs_i, avs_idx);  // re-entrant safe: state != NONE
+        } else {
+            LOG_WARN("EPR exit needed but no suitable AVS PDO found -- direct request (may reboot)");
+        }
+    }
 
     // Resolve APDO bounds: if a specific PDO index is provided, use it directly;
     // otherwise fall back to first-match search (startup restore, EPR step-down paths).
