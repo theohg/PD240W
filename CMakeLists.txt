@@ -49,7 +49,8 @@ add_executable(PD240W
         src/drivers/buzzer/buzzer.cpp
         src/drivers/display/st7789.cpp
         src/drivers/power/tps26750/tps26750.cpp
-        src/drivers/power/ina228/ina228.cpp
+        external/ina228_multiplatform/src/ina228.cpp
+        external/ina228_multiplatform/src/ina228_platform_i2c.cpp
         src/drivers/rgb_led/sk6812.cpp
         src/drivers/input/rotary_enc.cpp
         src/drivers/input/adc_inputs.cpp
@@ -116,6 +117,7 @@ target_link_libraries(PD240W
 # Add the standard include files to the build
 target_include_directories(PD240W PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+    external/ina228_multiplatform/include
         src
         src/config
         src/drivers

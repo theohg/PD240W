@@ -9,7 +9,7 @@
 #include "drivers/rgb_led/sk6812.h"
 #include "drivers/gpio/gpio.h"
 #include "drivers/power/tps26750/tps26750.h"
-#include "drivers/power/ina228/ina228.h"
+#include "ina228.h"
 #include "drivers/display/st7789.h"
 #include "drivers/buzzer/buzzer.h"
 

@@ -85,7 +85,7 @@ USB data lines (D+/D-) are reversed in the current PCB revision, preventing nati
 Requires: [Pico SDK 2.2.0](https://github.com/raspberrypi/pico-sdk), ARM GCC toolchain, CMake, Ninja
 
 ```bash
-git clone https://github.com/theohg/PD240W.git
+git clone --recurse-submodules https://github.com/theohg/PD240W.git
 cd PD240W
 
 mkdir -p build && cd build
@@ -94,6 +94,12 @@ ninja
 ```
 
 The output binary is `build/PD240W.uf2`.
+
+The INA228 driver is tracked as a Git submodule in `external/ina228_multiplatform`. If you already cloned the repository without submodules, run:
+
+```bash
+git submodule update --init --recursive
+```
 
 ### Flash via SWD
 
@@ -192,7 +198,6 @@ src/
 │   │   ├── aa_font.h               Anti-aliased font data structure
 │   │   └── font_inter_*.h          Generated Inter font bitmaps (14/20/28px)
 │   ├── power/
-│   │   ├── ina228/                 Power monitor: voltage, current, power, temperature
 │   │   └── tps26750/               USB-PD controller: PDO discovery, contract negotiation
 │   ├── input/
 │   │   ├── rotary_enc.h/cpp        Quadrature encoder with velocity tracking
@@ -218,6 +223,11 @@ src/
 │   ├── logging.h                   LOG_INFO/WARN/ERROR/DEBUG/CRITICAL macros
 │   ├── tps_eeprom_loader.h/cpp     Low-level TPS26750 EEPROM read/write
 │   └── tps26750_patch.c            TPS26750 binary configuration blob
+│
+├── external/
+│   └── ina228_multiplatform/       Git submodule for the shared INA228 driver
+│       ├── include/                Public INA228 headers used by this firmware
+│       └── src/                    RP2040-compatible driver implementation and I2C wrappers
 │
 └── tools/
     ├── generate_font.py            Font bitmap generator (Python + Pillow)

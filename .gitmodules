@@ -1,0 +1,3 @@
+[submodule "external/ina228_multiplatform"]
+	path = external/ina228_multiplatform
+	url = https://github.com/theohg/ina228_multiplatform.git
