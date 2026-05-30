@@ -25,6 +25,29 @@ const char* appStateName(AppState state) {
     return "UNKNOWN";
 }
 
+uint32_t getInitialProgrammableTargetMv(bool resume_current_target,
+                                        uint32_t user_target_mv,
+                                        uint32_t live_voltage_mv,
+                                        uint32_t min_voltage_mv,
+                                        uint32_t max_voltage_mv,
+                                        uint32_t step_mv) {
+    uint32_t target_mv = (min_voltage_mv + max_voltage_mv) / 2;
+
+    if (resume_current_target) {
+        target_mv = (user_target_mv > 0) ? user_target_mv : live_voltage_mv;
+    }
+
+    target_mv = (target_mv / step_mv) * step_mv;
+    if (target_mv < min_voltage_mv) {
+        target_mv = min_voltage_mv;
+    }
+    if (target_mv > max_voltage_mv) {
+        target_mv = max_voltage_mv;
+    }
+
+    return target_mv;
+}
+
 }  // namespace
 
 // Global instance
@@ -457,9 +480,13 @@ void StateMachine::handleMainState(EncoderEvent event) {
                 _pps_min_voltage_mv = caps[selected].min_voltage_mv;
                 _pps_max_voltage_mv = caps[selected].voltage_mv;
                 _pps_max_current_ma = caps[selected].max_current_ma;
-                _pps_target_voltage_mv = pdManager.getPpsUserTargetMv();
-                if (_pps_target_voltage_mv == 0) _pps_target_voltage_mv = contract.voltage_mv;
-                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                _pps_target_voltage_mv = getInitialProgrammableTargetMv(
+                    true,
+                    pdManager.getPpsUserTargetMv(),
+                    contract.voltage_mv,
+                    _pps_min_voltage_mv,
+                    _pps_max_voltage_mv,
+                    AppConfig::PPS_VOLTAGE_STEP_MV);
                 _adjust_mode = AdjustMode::PPS_VOLTAGE;
                 transitionTo(AppState::ADJUST);
                 LOG_INFO("Quick PPS voltage adjust: %u-%umV (current %umV)",
@@ -491,9 +518,13 @@ void StateMachine::handleMainState(EncoderEvent event) {
                 _avs_min_voltage_mv = caps[selected].min_voltage_mv;
                 _avs_max_voltage_mv = caps[selected].voltage_mv;
                 _avs_max_current_ma = caps[selected].max_current_ma;
-                _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
-                if (_avs_target_voltage_mv == 0) _avs_target_voltage_mv = contract.voltage_mv;
-                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                _avs_target_voltage_mv = getInitialProgrammableTargetMv(
+                    true,
+                    pdManager.getAvsUserTargetMv(),
+                    contract.voltage_mv,
+                    _avs_min_voltage_mv,
+                    _avs_max_voltage_mv,
+                    AppConfig::AVS_VOLTAGE_STEP_MV);
                 _adjust_mode = AdjustMode::AVS_VOLTAGE;
                 transitionTo(AppState::ADJUST);
                 LOG_INFO("Quick AVS voltage adjust: %u-%umV (current %umV)",
@@ -783,16 +814,26 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 // Check if selected PDO is PPS - if so, enter voltage adjustment mode
                 if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos) {
                     SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+                    const ActiveContract& contract = pdManager.getActiveContract();
+                    int8_t active_pdo_index = pdManager.getActivePdoIndex();
                     if (pdo.is_pps) {
                         // Enter PPS voltage adjustment mode
                         _pps_pdo_index = _selected_pdo_index;
                         _pps_min_voltage_mv = pdo.min_voltage_mv;
                         _pps_max_voltage_mv = pdo.voltage_mv;
                         _pps_max_current_ma = pdo.max_current_ma;
-                        // Start at mid-range voltage
-                        _pps_target_voltage_mv = (_pps_min_voltage_mv + _pps_max_voltage_mv) / 2;
-                        // Round to 20mV step (PPS resolution)
-                        _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                        bool resume_active_pps = contract.valid && contract.is_pps && pdManager.isPpsActive() &&
+                            ((active_pdo_index >= 0 && active_pdo_index == _selected_pdo_index) ||
+                             (active_pdo_index < 0 &&
+                              contract.voltage_mv >= _pps_min_voltage_mv &&
+                              contract.voltage_mv <= _pps_max_voltage_mv));
+                        _pps_target_voltage_mv = getInitialProgrammableTargetMv(
+                            resume_active_pps,
+                            pdManager.getPpsUserTargetMv(),
+                            contract.voltage_mv,
+                            _pps_min_voltage_mv,
+                            _pps_max_voltage_mv,
+                            AppConfig::PPS_VOLTAGE_STEP_MV);
                         _adjust_mode = AdjustMode::PPS_VOLTAGE;
                         LOG_INFO("Entering PPS voltage adjustment: %u-%umV", _pps_min_voltage_mv, _pps_max_voltage_mv);
                         // Force display redraw since we changed mode within same state
@@ -803,13 +844,18 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                         _avs_min_voltage_mv = pdo.min_voltage_mv;
                         _avs_max_voltage_mv = pdo.voltage_mv;
                         _avs_max_current_ma = pdo.max_current_ma;
-                        // Start at current AVS voltage if already active, otherwise mid-range
-                        _avs_target_voltage_mv = pdManager.getAvsUserTargetMv();
-                        if (_avs_target_voltage_mv == 0) {
-                            _avs_target_voltage_mv = (_avs_min_voltage_mv + _avs_max_voltage_mv) / 2;
-                        }
-                        // Round to step boundary
-                        _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                        bool resume_active_avs = contract.valid && contract.is_avs && pdManager.isAvsActive() &&
+                            ((active_pdo_index >= 0 && active_pdo_index == _selected_pdo_index) ||
+                             (active_pdo_index < 0 &&
+                              contract.voltage_mv >= _avs_min_voltage_mv &&
+                              contract.voltage_mv <= _avs_max_voltage_mv));
+                        _avs_target_voltage_mv = getInitialProgrammableTargetMv(
+                            resume_active_avs,
+                            pdManager.getAvsUserTargetMv(),
+                            contract.voltage_mv,
+                            _avs_min_voltage_mv,
+                            _avs_max_voltage_mv,
+                            AppConfig::AVS_VOLTAGE_STEP_MV);
                         _adjust_mode = AdjustMode::AVS_VOLTAGE;
                         LOG_INFO("Entering AVS voltage adjustment: %u-%umV", _avs_min_voltage_mv, _avs_max_voltage_mv);
                         displayManager.invalidate();
