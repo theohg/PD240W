@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "pico/stdlib.h"
+#include "drivers/power/tps26750/tps26750.h"
 
 // ============================================================================
 // Application State Machine
@@ -204,6 +205,10 @@ private:
     void applyPpsVoltage();
     void applyAvsVoltage();
     void handleSettingsMenuState(EncoderEvent event);
+    void saveStartupContractSnapshot(const SourceCapability& pdo,
+                                     int8_t pdo_index,
+                                     uint32_t requested_voltage_mv);
+    bool saveCurrentContractSnapshot();
 
     // Brightness adjustment state
     uint8_t _brightness_value;      // Current brightness during adjustment

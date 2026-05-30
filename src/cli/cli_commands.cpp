@@ -287,7 +287,12 @@ void pdSel(const char* arg) {
 
     if (ok) {
         settings.setLastPdoIndex(static_cast<int8_t>(index));
-        settings.setLastPpsAvsVoltageMv((caps[index].is_pps || caps[index].is_avs) ? caps[index].voltage_mv : 0);
+        settings.setLastContractType(caps[index].is_avs ? SavedStartupContractType::AVS :
+                                     caps[index].is_pps ? SavedStartupContractType::PPS :
+                                     SavedStartupContractType::FIXED);
+        settings.setLastRequestedVoltageMv(caps[index].voltage_mv);
+        settings.setLastContractRange((caps[index].is_pps || caps[index].is_avs) ? caps[index].min_voltage_mv : caps[index].voltage_mv,
+                                      caps[index].voltage_mv);
         settings.requestSave();
         Cli::respond("OK");
     } else {
@@ -314,7 +319,10 @@ void pdPps(const char* arg) {
     }
 
     if (pdManager.requestPpsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
-        settings.setLastPpsAvsVoltageMv(voltage_mv);
+        settings.setLastPdoIndex(pdManager.getActivePdoIndex());
+        settings.setLastContractType(SavedStartupContractType::PPS);
+        settings.setLastRequestedVoltageMv(static_cast<uint32_t>(voltage_mv));
+        settings.setLastContractRange(pdManager.getPpsRangeMinMv(), pdManager.getPpsRangeMaxMv());
         settings.requestSave();
         Cli::respond("OK");
     } else {
@@ -341,7 +349,10 @@ void pdAvs(const char* arg) {
     }
 
     if (pdManager.requestAvsVoltage(voltage_mv, c.current_ma, pdManager.getActivePdoIndex())) {
-        settings.setLastPpsAvsVoltageMv(voltage_mv);
+        settings.setLastPdoIndex(pdManager.getActivePdoIndex());
+        settings.setLastContractType(SavedStartupContractType::AVS);
+        settings.setLastRequestedVoltageMv(static_cast<uint32_t>(voltage_mv));
+        settings.setLastContractRange(pdManager.getAvsRangeMinMv(), pdManager.getAvsRangeMaxMv());
         settings.requestSave();
         Cli::respond("OK");
     } else {

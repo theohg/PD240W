@@ -295,11 +295,12 @@ void StateMachine::handleBootState() {
             } else {
                 _boot_retry_after_epr =
                     (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED &&
-                     settings.getLastPdoIndex() >= _num_pdos);
+                     pdManager.shouldRetryStartupContractAfterEpr());
                 if (_boot_retry_after_epr) {
                     LOG_INFO("Boot: Deferring startup contract until EPR PDOs arrive");
+                } else {
+                    LOG_INFO("Boot: No startup contract needed (keeping default)");
                 }
-                LOG_INFO("Boot: No startup contract needed (keeping default)");
                 _boot_contract_complete = true;
             }
         } else {
@@ -320,6 +321,13 @@ void StateMachine::handleBootState() {
             _boot_contract_complete = true;
             pdManager.refreshActiveContract();
             LOG_INFO("Boot: Contract negotiation complete (state=%d)", static_cast<int>(neg_state));
+            const ActiveContract& contract = pdManager.getActiveContract();
+            if (contract.valid) {
+                LOG_INFO("Boot: Active contract after negotiation = %umV @ %umA (%s)",
+                         contract.voltage_mv,
+                         contract.current_ma,
+                         contract.is_avs ? "AVS" : (contract.is_pps ? "PPS" : "FIXED"));
+            }
         }
 
         // Timeout fallback for negotiation
@@ -331,6 +339,13 @@ void StateMachine::handleBootState() {
             _boot_contract_complete = true;
             pdManager.refreshActiveContract();
             LOG_WARN("Boot: Contract negotiation timeout");
+            const ActiveContract& contract = pdManager.getActiveContract();
+            if (contract.valid) {
+                LOG_WARN("Boot: Active contract at timeout = %umV @ %umA (%s)",
+                         contract.voltage_mv,
+                         contract.current_ma,
+                         contract.is_avs ? "AVS" : (contract.is_pps ? "PPS" : "FIXED"));
+            }
         }
     }
 
@@ -405,6 +420,18 @@ void StateMachine::handleBootState() {
         // Timeouts: non-EPR chargers get shorter timeout, EPR needs more time for contract settlement
         uint32_t timeout_ms = epr_pdos_found ? AppConfig::BOOT_EPR_CONTRACT_TIMEOUT_MS : AppConfig::BOOT_EPR_TIMEOUT_MS;
         if (_boot_stage == 2 && epr_elapsed >= timeout_ms) {
+            if (_boot_retry_after_epr) {
+                LOG_INFO("Boot: EPR probe finished without a direct match, retrying startup restore with fallback search");
+                _boot_retry_after_epr = false;
+                if (pdManager.negotiateStartupContract(false)) {
+                    _boot_contract_complete = false;
+                    _boot_neg_start = nil_time;
+                    last_epr_poll_ms = 0;
+                    epr_pdos_found = false;
+                    return;
+                }
+            }
+
             pdManager.invalidatePdoCache();
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
@@ -1242,14 +1269,68 @@ void StateMachine::requestSelectedPdo() {
         }
         // Save selected PDO for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
-            settings.setLastPdoIndex(_selected_pdo_index);
-            settings.setLastPpsAvsVoltageMv((pdo.is_pps || pdo.is_avs) ? pdo.voltage_mv : 0);
+            saveStartupContractSnapshot(pdo, _selected_pdo_index, pdo.voltage_mv);
             settings.requestSave();
         }
     } else {
         LOG_ERROR("Failed to request PDO");
         hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION);  // Error beep
     }
+}
+
+void StateMachine::saveStartupContractSnapshot(const SourceCapability& pdo,
+                                               int8_t pdo_index,
+                                               uint32_t requested_voltage_mv) {
+    SavedStartupContractType contract_type = SavedStartupContractType::FIXED;
+    uint32_t range_min_mv = pdo.voltage_mv;
+    uint32_t range_max_mv = pdo.voltage_mv;
+
+    if (pdo.is_avs) {
+        contract_type = SavedStartupContractType::AVS;
+        range_min_mv = pdo.min_voltage_mv;
+    } else if (pdo.is_pps) {
+        contract_type = SavedStartupContractType::PPS;
+        range_min_mv = pdo.min_voltage_mv;
+    }
+
+    settings.setLastPdoIndex(pdo_index);
+    settings.setLastContractType(contract_type);
+    settings.setLastRequestedVoltageMv(requested_voltage_mv > 0 ? requested_voltage_mv : pdo.voltage_mv);
+    settings.setLastContractRange(range_min_mv, range_max_mv);
+}
+
+bool StateMachine::saveCurrentContractSnapshot() {
+    const ActiveContract& contract = pdManager.getActiveContract();
+    if (!contract.valid) {
+        LOG_WARN("Cannot snapshot startup contract: no active PD contract");
+        return false;
+    }
+
+    if (contract.is_pps) {
+        settings.setLastPdoIndex(pdManager.getActivePdoIndex());
+        settings.setLastContractType(SavedStartupContractType::PPS);
+        settings.setLastRequestedVoltageMv(pdManager.getPpsUserTargetMv() > 0 ?
+                                           pdManager.getPpsUserTargetMv() :
+                                           contract.voltage_mv);
+        settings.setLastContractRange(pdManager.getPpsRangeMinMv(), pdManager.getPpsRangeMaxMv());
+        return true;
+    }
+
+    if (contract.is_avs) {
+        settings.setLastPdoIndex(pdManager.getActivePdoIndex());
+        settings.setLastContractType(SavedStartupContractType::AVS);
+        settings.setLastRequestedVoltageMv(pdManager.getAvsUserTargetMv() > 0 ?
+                                           pdManager.getAvsUserTargetMv() :
+                                           contract.voltage_mv);
+        settings.setLastContractRange(pdManager.getAvsRangeMinMv(), pdManager.getAvsRangeMaxMv());
+        return true;
+    }
+
+    settings.setLastPdoIndex(-1);
+    settings.setLastContractType(SavedStartupContractType::FIXED);
+    settings.setLastRequestedVoltageMv(contract.voltage_mv);
+    settings.setLastContractRange(contract.voltage_mv, contract.voltage_mv);
+    return true;
 }
 
 // ============================================================================
@@ -1301,8 +1382,7 @@ void StateMachine::applyPpsVoltage() {
         }
         // Save PPS state for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
-            settings.setLastPdoIndex(_pps_pdo_index);
-            settings.setLastPpsAvsVoltageMv(_pps_target_voltage_mv);
+            saveStartupContractSnapshot(s_pdo_list[_pps_pdo_index], _pps_pdo_index, _pps_target_voltage_mv);
             settings.requestSave();
         }
     } else {
@@ -1326,8 +1406,7 @@ void StateMachine::applyAvsVoltage() {
         }
         // Save AVS state for boot restore (only in Last Used mode to reduce flash wear)
         if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
-            settings.setLastPdoIndex(_avs_pdo_index);
-            settings.setLastPpsAvsVoltageMv(_avs_target_voltage_mv);
+            saveStartupContractSnapshot(s_pdo_list[_avs_pdo_index], _avs_pdo_index, _avs_target_voltage_mv);
             settings.requestSave();
         }
     } else {
@@ -1385,14 +1464,7 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     settings.setStartupNegotiation(_contract_mode_value);
                     // When switching to Last Used, immediately snapshot current contract
                     if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
-                        settings.setLastPdoIndex(_selected_pdo_index);
-                        if (pdManager.isPpsActive()) {
-                            settings.setLastPpsAvsVoltageMv(pdManager.getPpsUserTargetMv());
-                        } else if (pdManager.isAvsActive()) {
-                            settings.setLastPpsAvsVoltageMv(pdManager.getAvsUserTargetMv());
-                        } else {
-                            settings.setLastPpsAvsVoltageMv(0);
-                        }
+                        saveCurrentContractSnapshot();
                     }
                     settings.requestSave();
                 }
@@ -1447,14 +1519,7 @@ void StateMachine::handleSettingsMenuState(EncoderEvent event) {
                     settings.setStartupNegotiation(_contract_mode_value);
                     // When switching to Last Used, immediately snapshot current contract
                     if (static_cast<StartupContractMode>(_contract_mode_value) == StartupContractMode::LAST_USED) {
-                        settings.setLastPdoIndex(_selected_pdo_index);
-                        if (pdManager.isPpsActive()) {
-                            settings.setLastPpsAvsVoltageMv(pdManager.getPpsUserTargetMv());
-                        } else if (pdManager.isAvsActive()) {
-                            settings.setLastPpsAvsVoltageMv(pdManager.getAvsUserTargetMv());
-                        } else {
-                            settings.setLastPpsAvsVoltageMv(0);
-                        }
+                        saveCurrentContractSnapshot();
                     }
                     settings.requestSave();
                 }

@@ -15,6 +15,58 @@ Settings settings;
 static constexpr uint32_t FLASH_TARGET_OFFSET = (2 * 1024 * 1024) - FLASH_SECTOR_SIZE;  // Last sector
 #define FLASH_TARGET_ADDR ((const uint8_t*)(XIP_BASE + FLASH_TARGET_OFFSET))
 
+namespace {
+
+struct UserSettingsV4 {
+    uint32_t magic;
+    uint8_t version;
+    uint32_t current_limit_ma;
+    int8_t last_pdo_index;
+    bool load_switch_enabled;
+    bool buck_17v_enabled;
+    uint8_t lcd_brightness;
+    bool sounds_enabled;
+    bool auto_pps_enabled;
+    uint8_t auto_dim_minutes;
+    uint8_t startup_melody;
+    bool auto_output;
+    uint32_t last_pps_avs_voltage_mv;
+    uint8_t startup_negotiation;
+    bool auto_avs_enabled;
+    uint8_t energy_display_mode;
+    bool cc_mode_enabled;
+    uint32_t crc32;
+};
+
+template <typename SettingsStruct>
+uint32_t calculateSettingsCrc(const SettingsStruct& settings) {
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(&settings);
+    size_t len = offsetof(SettingsStruct, crc32);
+
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    return ~crc;
+}
+
+const char* savedStartupContractTypeName(SavedStartupContractType type) {
+    switch (type) {
+        case SavedStartupContractType::NONE: return "none";
+        case SavedStartupContractType::UNKNOWN: return "legacy";
+        case SavedStartupContractType::FIXED: return "fixed";
+        case SavedStartupContractType::PPS: return "pps";
+        case SavedStartupContractType::AVS: return "avs";
+    }
+
+    return "unknown";
+}
+
+}  // namespace
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -33,18 +85,7 @@ Settings::Settings()
 // ============================================================================
 
 uint32_t Settings::calculateCrc32() const {
-    // Calculate CRC32 over settings data (excluding the crc32 field itself)
-    const uint8_t* data = reinterpret_cast<const uint8_t*>(&_settings);
-    size_t len = offsetof(UserSettings, crc32);  // Don't include CRC in calculation
-    
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-        }
-    }
-    return ~crc;
+    return calculateSettingsCrc(_settings);
 }
 
 // ============================================================================
@@ -58,8 +99,28 @@ void Settings::init() {
         resetToDefaults();
     }
 
-    LOG_INFO("Settings initialized: current_limit=%umA, last_pdo=%d",
-             _settings.current_limit_ma, _settings.last_pdo_index);
+    SavedStartupContractType saved_type = getLastContractType();
+    if (saved_type == SavedStartupContractType::NONE) {
+        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=none",
+                 _settings.current_limit_ma);
+        return;
+    }
+
+    if (getLastContractMinVoltageMv() > 0 || getLastContractMaxVoltageMv() > 0) {
+        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=%s target=%umV range=%u-%umV hint_pdo=%d",
+                 _settings.current_limit_ma,
+                 savedStartupContractTypeName(saved_type),
+                 getLastRequestedVoltageMv(),
+                 getLastContractMinVoltageMv(),
+                 getLastContractMaxVoltageMv(),
+                 _settings.last_pdo_index);
+    } else {
+        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=%s target=%umV hint_pdo=%d",
+                 _settings.current_limit_ma,
+                 savedStartupContractTypeName(saved_type),
+                 getLastRequestedVoltageMv(),
+                 _settings.last_pdo_index);
+    }
 }
 
 // ============================================================================
@@ -160,9 +221,26 @@ void Settings::setAutoOutput(bool enabled) {
     }
 }
 
-void Settings::setLastPpsAvsVoltageMv(uint32_t voltage_mv) {
-    if (_settings.last_pps_avs_voltage_mv != voltage_mv) {
-        _settings.last_pps_avs_voltage_mv = voltage_mv;
+void Settings::setLastContractType(SavedStartupContractType type) {
+    uint8_t raw_type = static_cast<uint8_t>(type);
+    if (_settings.last_contract_type != raw_type) {
+        _settings.last_contract_type = raw_type;
+        _dirty = true;
+    }
+}
+
+void Settings::setLastRequestedVoltageMv(uint32_t voltage_mv) {
+    if (_settings.last_requested_voltage_mv != voltage_mv) {
+        _settings.last_requested_voltage_mv = voltage_mv;
+        _dirty = true;
+    }
+}
+
+void Settings::setLastContractRange(uint32_t min_voltage_mv, uint32_t max_voltage_mv) {
+    if (_settings.last_contract_min_voltage_mv != min_voltage_mv ||
+        _settings.last_contract_max_voltage_mv != max_voltage_mv) {
+        _settings.last_contract_min_voltage_mv = min_voltage_mv;
+        _settings.last_contract_max_voltage_mv = max_voltage_mv;
         _dirty = true;
     }
 }
@@ -242,7 +320,6 @@ bool Settings::saveToFlash() {
 }
 
 bool Settings::loadFromFlash() {
-    // Read settings from flash
     const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
     
     // Validate magic number
@@ -251,34 +328,76 @@ bool Settings::loadFromFlash() {
         return false;
     }
     
-    // Validate version
-    if (flash_settings->version != SETTINGS_VERSION) {
-        LOG_DEBUG("Settings: Version mismatch (%d vs %d), using defaults", 
-                  flash_settings->version, SETTINGS_VERSION);
-        return false;
+    if (flash_settings->version == SETTINGS_VERSION) {
+        memcpy(&_settings, flash_settings, sizeof(_settings));
+
+        uint32_t expected_crc = _settings.crc32;
+        if (calculateCrc32() != expected_crc) {
+            LOG_WARN("Settings: CRC mismatch, using defaults");
+            return false;
+        }
+
+        _dirty = false;
+        LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d, auto_avs=%d, auto_out_en=%d",
+                 _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled, _settings.auto_avs_enabled, _settings.auto_output);
+        return true;
     }
-    
-    // Copy to RAM
-    memcpy(&_settings, flash_settings, sizeof(_settings));
-    
-    // Validate CRC
-    uint32_t expected_crc = _settings.crc32;
-    if (calculateCrc32() != expected_crc) {
-        LOG_WARN("Settings: CRC mismatch, using defaults");
-        return false;
+
+    if (flash_settings->version == 4) {
+        const UserSettingsV4* legacy_settings = reinterpret_cast<const UserSettingsV4*>(FLASH_TARGET_ADDR);
+        uint32_t expected_crc = legacy_settings->crc32;
+        if (calculateSettingsCrc(*legacy_settings) != expected_crc) {
+            LOG_WARN("Settings: Legacy CRC mismatch, using defaults");
+            return false;
+        }
+
+        memset(&_settings, 0, sizeof(_settings));
+        _settings.magic = SETTINGS_MAGIC;
+        _settings.version = SETTINGS_VERSION;
+        _settings.current_limit_ma = legacy_settings->current_limit_ma;
+        _settings.last_pdo_index = legacy_settings->last_pdo_index;
+        _settings.load_switch_enabled = legacy_settings->load_switch_enabled;
+        _settings.buck_17v_enabled = legacy_settings->buck_17v_enabled;
+        _settings.lcd_brightness = legacy_settings->lcd_brightness;
+        _settings.sounds_enabled = legacy_settings->sounds_enabled;
+        _settings.auto_pps_enabled = legacy_settings->auto_pps_enabled;
+        _settings.auto_dim_minutes = legacy_settings->auto_dim_minutes;
+        _settings.startup_melody = legacy_settings->startup_melody;
+        _settings.auto_output = legacy_settings->auto_output;
+        _settings.startup_negotiation = legacy_settings->startup_negotiation;
+        _settings.auto_avs_enabled = legacy_settings->auto_avs_enabled;
+        _settings.energy_display_mode = legacy_settings->energy_display_mode;
+        _settings.cc_mode_enabled = legacy_settings->cc_mode_enabled;
+
+        bool has_legacy_snapshot = (legacy_settings->last_pdo_index >= 0) ||
+                                   (legacy_settings->last_pps_avs_voltage_mv > 0);
+        if (has_legacy_snapshot) {
+            _settings.last_contract_type = static_cast<uint8_t>(SavedStartupContractType::UNKNOWN);
+            _settings.last_requested_voltage_mv = legacy_settings->last_pps_avs_voltage_mv;
+        } else {
+            _settings.last_pdo_index = -1;
+            _settings.last_contract_type = static_cast<uint8_t>(SavedStartupContractType::NONE);
+            _settings.last_requested_voltage_mv = 0;
+        }
+        _settings.last_contract_min_voltage_mv = 0;
+        _settings.last_contract_max_voltage_mv = 0;
+        _settings.crc32 = 0;
+
+        _dirty = false;
+        LOG_INFO("Settings migrated from v4: startup contract snapshot marked as legacy hint");
+        return true;
     }
-    
-    _dirty = false;
-    LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d, auto_avs=%d, auto_out_en=%d",
-             _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled, _settings.auto_avs_enabled, _settings.auto_output);
-    return true;
+
+    LOG_DEBUG("Settings: Version mismatch (%d vs %d), using defaults",
+              flash_settings->version, SETTINGS_VERSION);
+    return false;
 }
 
 void Settings::resetToDefaults() {
     _settings.magic = SETTINGS_MAGIC;
     _settings.version = SETTINGS_VERSION;
     _settings.current_limit_ma = AppConfig::CURRENT_LIMIT_DEFAULT_MA;
-    _settings.last_pdo_index = 0;
+    _settings.last_pdo_index = -1;
     _settings.load_switch_enabled = false;                          // Output disabled by default
     _settings.buck_17v_enabled = false;                             // Buck 17V disabled by default
     _settings.lcd_brightness = AppConfig::LCD_BRIGHTNESS_DEFAULT;   // Default brightness
@@ -288,7 +407,10 @@ void Settings::resetToDefaults() {
     _settings.auto_dim_minutes = 1;                                 // 1 minute dim timeout
     _settings.startup_melody = 1;                                   // Mario Power-Up by default
     _settings.auto_output = false;                                  // Output disabled by default
-    _settings.last_pps_avs_voltage_mv = 0;                          // No saved PPS voltage
+    _settings.last_contract_type = static_cast<uint8_t>(SavedStartupContractType::NONE);
+    _settings.last_requested_voltage_mv = 0;                        // No saved startup contract target
+    _settings.last_contract_min_voltage_mv = 0;
+    _settings.last_contract_max_voltage_mv = 0;
     _settings.startup_negotiation = 2;                              // Last used (remember last contract)
     _settings.energy_display_mode = 0;                              // mAh by default
     _settings.cc_mode_enabled = false;                              // OCP mode by default

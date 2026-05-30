@@ -15,7 +15,15 @@
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 4;
+constexpr uint8_t SETTINGS_VERSION = 5;
+
+enum class SavedStartupContractType : uint8_t {
+    NONE = 0,
+    UNKNOWN = 1,
+    FIXED = 2,
+    PPS = 3,
+    AVS = 4,
+};
 
 // Startup contract negotiation modes
 enum class StartupContractMode : uint8_t {
@@ -37,7 +45,7 @@ struct UserSettings {
     // Current limit (mA)
     uint32_t current_limit_ma;
 
-    // Last selected PDO index
+    // Saved startup-contract hint (PDO indices are charger-specific, so this is only a hint)
     int8_t last_pdo_index;
 
     // Output states (for restoration after power cycle - future use)
@@ -62,8 +70,11 @@ struct UserSettings {
     // Auto output on boot
     bool auto_output;          // If true, enable output after boot completes
 
-    // Last PPS voltage for restore on boot
-    uint32_t last_pps_avs_voltage_mv;  // 0 = not set
+    // Saved startup contract snapshot for LAST_USED restore
+    uint8_t last_contract_type;             // SavedStartupContractType
+    uint32_t last_requested_voltage_mv;     // Requested fixed/PPS/AVS target [mV]
+    uint32_t last_contract_min_voltage_mv;  // Advertised range min, or fixed voltage [mV]
+    uint32_t last_contract_max_voltage_mv;  // Advertised range max, or fixed voltage [mV]
 
     // Startup contract negotiation mode
     uint8_t startup_negotiation;  // 0=Lowest voltage, 1=Highest voltage, 2=Last used
@@ -103,7 +114,9 @@ public:
     void setAutoDimMinutes(uint8_t minutes);
     void setStartupMelody(uint8_t melody);
     void setAutoOutput(bool enabled);
-    void setLastPpsAvsVoltageMv(uint32_t voltage_mv);
+    void setLastContractType(SavedStartupContractType type);
+    void setLastRequestedVoltageMv(uint32_t voltage_mv);
+    void setLastContractRange(uint32_t min_voltage_mv, uint32_t max_voltage_mv);
     void setStartupNegotiation(uint8_t mode);
     void setEnergyDisplayMode(uint8_t mode);
     void setCcModeEnabled(bool enabled);
@@ -120,7 +133,12 @@ public:
     uint8_t getAutoDimMinutes() const { return _settings.auto_dim_minutes; }
     uint8_t getStartupMelody() const { return _settings.startup_melody; }
     bool isAutoOutput() const { return _settings.auto_output; }
-    uint32_t getLastPpsVoltageMv() const { return _settings.last_pps_avs_voltage_mv; }
+    SavedStartupContractType getLastContractType() const {
+        return static_cast<SavedStartupContractType>(_settings.last_contract_type);
+    }
+    uint32_t getLastRequestedVoltageMv() const { return _settings.last_requested_voltage_mv; }
+    uint32_t getLastContractMinVoltageMv() const { return _settings.last_contract_min_voltage_mv; }
+    uint32_t getLastContractMaxVoltageMv() const { return _settings.last_contract_max_voltage_mv; }
     uint8_t getStartupNegotiation() const { return _settings.startup_negotiation; }
     StartupContractMode getStartupNegotiationMode() const {
         return static_cast<StartupContractMode>(_settings.startup_negotiation);

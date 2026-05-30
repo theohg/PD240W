@@ -149,7 +149,7 @@ public:
     // - Highest: select highest voltage fixed/AVS PDO
     // - Last: restore saved PDO, or find closest if unavailable
     // Returns true if a contract request was initiated
-    bool negotiateStartupContract();
+    bool negotiateStartupContract(bool allow_epr_wait = true);
 
     // Apply a best-effort early startup request before the boot UI delays the
     // normal restore path. This keeps the autonomous TPS26750 boot contract at
@@ -178,6 +178,7 @@ public:
     // Startup request status helpers
     bool hasPendingRequestedContract() const;
     bool isRequestedContractSatisfied() const;
+    bool shouldRetryStartupContractAfterEpr() const { return _startup_restore_waiting_for_epr; }
 
 private:
     enum class RequestedContractType { NONE, FIXED, PPS, AVS };
@@ -256,6 +257,9 @@ private:
 
     // Index of the active PPS or AVS APDO in _pdo_cache (-1 = unknown / fixed contract)
     int8_t _active_pdo_index;
+
+    // Startup restore coordination
+    bool _startup_restore_waiting_for_epr;
 
     // EPR safe exit: 3-step sequence to avoid hard reset when exiting EPR to SPR
     // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
