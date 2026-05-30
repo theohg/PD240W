@@ -248,12 +248,15 @@ private:
     uint32_t _requested_current_ma;
     static constexpr uint32_t POLLING_FALLBACK_MS = 500;
     static constexpr uint32_t PDO_RETRY_INTERVAL_MS = 500;           // Deferred PDO discovery retry
-    static constexpr uint32_t TUNE_CONVERGENCE_CHECK_MS = 500;      // Fast convergence check interval
+    static constexpr uint32_t TUNE_REQUEST_INTERVAL_MS = 1500;       // Faster retries while tuning is still converging
+    static constexpr uint32_t TUNE_CONVERGENCE_CHECK_MS = 500;       // Fast convergence check interval
     static constexpr uint32_t CONTRACT_REFRESH_INTERVAL_MS = 1000;   // Periodic contract refresh
-    static constexpr uint32_t MIN_TUNING_VOLTAGE_MV = 1000;         // Min voltage for tuning to engage
+    static constexpr uint32_t MIN_TUNING_VOLTAGE_MV = 1000;          // Min voltage for tuning to engage
     static constexpr uint32_t FIXED_MATCH_TOLERANCE_MV = 50;
     static constexpr uint32_t PPS_MATCH_TOLERANCE_MV = 20;
     static constexpr uint32_t AVS_MATCH_TOLERANCE_MV = 25;
+    static constexpr uint32_t PPS_TRACKING_TOLERANCE_MV = 150;      // Allow normal PPS droop without dropping Vset/tuning state
+    static constexpr uint32_t AVS_TRACKING_TOLERANCE_MV = 250;      // Allow normal AVS regulation error without dropping state
 
     // Index of the active PPS or AVS APDO in _pdo_cache (-1 = unknown / fixed contract)
     int8_t _active_pdo_index;

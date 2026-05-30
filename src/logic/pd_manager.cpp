@@ -118,6 +118,27 @@ bool hasVisibleEprPdos(const SourceCapability* pdos, uint8_t count) {
     return false;
 }
 
+bool matchesFixedPdo(const SourceCapability* pdos,
+                     uint8_t count,
+                     uint32_t voltage_mv,
+                     uint32_t tolerance_mv) {
+    for (uint8_t i = 0; i < count; i++) {
+        const SourceCapability& pdo = pdos[i];
+        if (pdo.is_pps || pdo.is_avs) {
+            continue;
+        }
+
+        uint32_t diff_mv = (pdo.voltage_mv > voltage_mv)
+            ? (pdo.voltage_mv - voltage_mv)
+            : (voltage_mv - pdo.voltage_mv);
+        if (diff_mv <= tolerance_mv) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void describeSavedStartupContract(const SavedStartupContractSnapshot& snapshot,
                                   char* buffer,
                                   size_t buffer_size) {
@@ -585,8 +606,13 @@ void PdManager::update() {
     // PPS keep-alive: must refresh contract every <10 seconds or source reverts to 5V
     if (_pps_active && _pps_voltage_mv > 0) {
         uint32_t elapsed_ms = absolute_time_diff_us(_pps_last_refresh, get_absolute_time()) / 1000;
+        uint32_t refresh_interval_ms = PPS_REFRESH_INTERVAL_MS;
+        if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 &&
+            !_pps_tuning_converged && !CcController::isRegulating()) {
+            refresh_interval_ms = TUNE_REQUEST_INTERVAL_MS;
+        }
 
-        if (elapsed_ms >= PPS_REFRESH_INTERVAL_MS) {
+        if (elapsed_ms >= refresh_interval_ms) {
             uint32_t request_mv = _pps_voltage_mv;
 
             // Auto PPS tuning: measure actual voltage and adjust request
@@ -663,8 +689,13 @@ void PdManager::update() {
     // AVS keep-alive: EPR contracts also need periodic re-request to maintain the contract
     if (_avs_active && _avs_voltage_mv > 0) {
         uint32_t elapsed_ms = absolute_time_diff_us(_avs_last_refresh, get_absolute_time()) / 1000;
+        uint32_t refresh_interval_ms = AVS_REFRESH_INTERVAL_MS;
+        if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 &&
+            !_avs_tuning_converged && !CcController::isRegulating()) {
+            refresh_interval_ms = TUNE_REQUEST_INTERVAL_MS;
+        }
 
-        if (elapsed_ms >= AVS_REFRESH_INTERVAL_MS) {
+        if (elapsed_ms >= refresh_interval_ms) {
             uint32_t request_mv = _avs_voltage_mv;
 
             // Auto AVS tuning: measure actual voltage and adjust request
@@ -937,13 +968,6 @@ bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_curre
 // ============================================================================
 // Contract Negotiation
 // ============================================================================
-
-static bool is_standard_fixed_rail(uint32_t voltage_mv) {
-    return voltage_mv == 5000 ||
-           voltage_mv == 9000 ||
-           voltage_mv == 15000 ||
-           voltage_mv == 20000;
-}
 
 void PdManager::clearPpsTracking() {
     _pps_active = false;
@@ -1299,17 +1323,31 @@ bool PdManager::refreshActiveContract() {
         _active_contract.current_ma = current_ma;
         _active_contract.valid = true;
 
+        bool matches_fixed_pdo = _pdos_valid &&
+            matchesFixedPdo(_pdo_cache, _pdo_count, voltage_mv, FIXED_MATCH_TOLERANCE_MV);
+        bool waiting_for_programmable_request =
+            (_negotiation_state == NegotiationState::REQUESTING) &&
+            (_requested_contract_type == RequestedContractType::PPS ||
+             _requested_contract_type == RequestedContractType::AVS);
+
         // Drop stale tracked programmable state when the source changed or boot priming
         // failed to obtain real PDO-backed PPS/AVS support.
         // Note: cache validity (!_pdos_valid) is intentionally NOT tested here -- doing so
         // would clear user-facing state (Vset, target) every time the menu opens and
-        // invalidates the cache. The voltage tolerance check alone is sufficient.
+        // invalidates the cache. Preserve programmable state through normal load-induced
+        // droop. Also preserve it while a PPS/AVS request is still in flight, otherwise a
+        // poll of the pre-existing fixed contract can hide Vset before negotiation completes.
+        // Only drop it once the live contract has actually snapped back to a fixed rail.
         if (_pps_active && (_pps_voltage_mv == 0 ||
-            !within_tolerance(voltage_mv, _pps_voltage_mv, PPS_MATCH_TOLERANCE_MV))) {
+            (!waiting_for_programmable_request &&
+             !within_tolerance(voltage_mv, _pps_voltage_mv, PPS_TRACKING_TOLERANCE_MV) &&
+             matches_fixed_pdo))) {
             clearPpsTracking();
         }
         if (_avs_active && (_avs_voltage_mv == 0 ||
-            !within_tolerance(voltage_mv, _avs_voltage_mv, AVS_MATCH_TOLERANCE_MV))) {
+            (!waiting_for_programmable_request &&
+             !within_tolerance(voltage_mv, _avs_voltage_mv, AVS_TRACKING_TOLERANCE_MV) &&
+             matches_fixed_pdo))) {
             clearAvsTracking();
         }
 

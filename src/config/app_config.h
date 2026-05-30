@@ -51,7 +51,7 @@ namespace AppConfig {
     // PPS Voltage Settings
     // -------------------------------------------------------------------------
     constexpr uint32_t PPS_VOLTAGE_STEP_MV = 20;        // PPS voltage step size [mV] (PD spec minimum)
-    constexpr uint32_t PPS_VELOCITY_MULT = 2;           // Velocity multiplier (faster scaling for large range)
+    constexpr uint32_t PPS_VELOCITY_MULT = 1;           // Keep single-detent PPS moves at the 20mV spec minimum
 
     // -------------------------------------------------------------------------
     // AVS Voltage Settings
