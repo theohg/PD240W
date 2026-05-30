@@ -26,6 +26,16 @@ jobs:
           git clone --branch 2.2.0 --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk
           cd /tmp/pico-sdk && git submodule update --init --depth 1
 
+      - name: Verify INA submodule release pin
+        run: |
+          git -C external/ina228_multiplatform fetch --force --tags origin
+          INA_TAG=$(git -C external/ina228_multiplatform describe --tags --exact-match 2>/dev/null || true)
+          if [ -z "$INA_TAG" ]; then
+            echo "INA submodule commit is not pinned to a tagged release"
+            exit 1
+          fi
+          echo "INA submodule pinned to $INA_TAG"
+
       - name: Configure
         env:
           PICO_SDK_PATH: /tmp/pico-sdk

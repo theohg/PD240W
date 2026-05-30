@@ -1961,7 +1961,7 @@ void DisplayManager::drawAboutScreen() {
 
     // Info lines — compact two-column layout to fit 240px width
     const int LABEL_X = MARGIN * 3;
-    const int VALUE_X = LABEL_X + 55;
+    const int VALUE_X = LABEL_X + 57;
     char buf[48];
 
     // HW / FW on one line
@@ -1971,6 +1971,10 @@ void DisplayManager::drawAboutScreen() {
 
     hw.display.drawStringAA(LABEL_X, y, "FW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     hw.display.drawStringAA(VALUE_X, y, Version::FIRMWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+    y += LINE_H;
+
+    hw.display.drawStringAA(LABEL_X, y, "INA FW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::INA_FIRMWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
     hw.display.drawStringAA(LABEL_X, y, "Author:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
@@ -1983,10 +1987,6 @@ void DisplayManager::drawAboutScreen() {
 
     hw.display.drawStringAA(LABEL_X, y, "Target:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     hw.display.drawStringAA(VALUE_X, y, Version::TARGET, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
-    y += LINE_H;
-
-    hw.display.drawStringAA(LABEL_X, y, "Max:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    hw.display.drawStringAA(VALUE_X, y, "48V 5A (240W)", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
     // Flash usage using linker symbols (RP2040 has 2MB flash)

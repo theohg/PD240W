@@ -7,6 +7,10 @@
 namespace Version {
     constexpr const char* FIRMWARE_VERSION = "v1.1.0";
     constexpr const char* HARDWARE_VERSION = "A.1";
+    #ifndef INA228_FW_VERSION
+        #define INA228_FW_VERSION "unknown"
+    #endif
+    constexpr const char* INA_FIRMWARE_VERSION = INA228_FW_VERSION;
     constexpr const char* PRODUCT_NAME = "PD240W";
     constexpr const char* PRODUCT_SUBTITLE = "Power Supply";
     constexpr const char* AUTHOR = "Theo Heng";

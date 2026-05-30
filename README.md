@@ -101,6 +101,15 @@ The INA228 driver is tracked as a Git submodule in `external/ina228_multiplatfor
 git submodule update --init --recursive
 ```
 
+PD240W does not automatically follow the newest INA228 library release. The version is pinned by the parent repository's recorded submodule commit for `external/ina228_multiplatform`, and that exact checked-out commit is what gets compiled into the firmware. Prebuilt `PD240W.uf2` releases already include that pinned INA version.
+
+To inspect the resolved INA version in a local checkout, run:
+
+```bash
+git submodule status
+git -C external/ina228_multiplatform describe --tags --always
+```
+
 ### Flash via SWD
 
 ```bash

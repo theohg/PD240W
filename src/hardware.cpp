@@ -62,7 +62,12 @@ void Hardware::init() {
 
     // I2C devices
     LOG_HW_INIT("TPS26750 PD Controller", pdController.init());
-    LOG_HW_INIT("INA228 Power Monitor", powerMonitor.init());
+    if (powerMonitor.init()) {
+        LOG_INFO("INA228 Power monitor initialized successfully with FW %s",
+                 Version::INA_FIRMWARE_VERSION);
+    } else {
+        LOG_ERROR("INA228 Power monitor initialization FAILED");
+    }
 
     // RGB LED (PIO)
     LOG_HW_INIT("SK6812 RGB LED", rgbLed.init());

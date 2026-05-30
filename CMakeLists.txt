@@ -30,6 +30,21 @@ include(pico_sdk_import.cmake)
 
 project(PD240W C CXX ASM)
 
+set(INA228_SUBMODULE_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ina228_multiplatform")
+set(INA228_FIRMWARE_VERSION "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${INA228_SUBMODULE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C "${INA228_SUBMODULE_DIR}" describe --tags --always --dirty
+        OUTPUT_VARIABLE INA228_FIRMWARE_VERSION
+        RESULT_VARIABLE INA228_GIT_DESCRIBE_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT INA228_GIT_DESCRIBE_RESULT EQUAL 0 OR INA228_FIRMWARE_VERSION STREQUAL "")
+        set(INA228_FIRMWARE_VERSION "unknown")
+    endif()
+endif()
+
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
@@ -101,6 +116,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   PICO_DEFAULT_UART_BAUD_RATE=115200
   # Build date from CMake (always updates on rebuild)
   BUILD_DATE="${BUILD_TIMESTAMP}"
+    INA228_FW_VERSION="${INA228_FIRMWARE_VERSION}"
 )
 
 # Add the standard library to the build

@@ -672,6 +672,9 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
 
     // About screens: click returns to menu
     if (_adjust_mode == AdjustMode::ABOUT || _adjust_mode == AdjustMode::ABOUT_CHARGER) {
+        if (event != EncoderEvent::NONE) {
+            _last_activity_time = get_absolute_time();
+        }
         if (event == EncoderEvent::CLICK) {
             transitionTo(AppState::MENU);
         }
@@ -911,6 +914,9 @@ void StateMachine::transitionTo(AppState new_state) {
     if (_state == new_state) return;
 
     LOG_INFO("State transition: %s -> %s", appStateName(_state), appStateName(new_state));
+    if (_state == AppState::BOOT && new_state == AppState::MAIN) {
+        LOG_SEPARATOR();
+    }
 
     _previous_state = _state;
     _state = new_state;
