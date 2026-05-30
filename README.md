@@ -153,13 +153,17 @@ graph TD
       Menu --> Voltage[Select Voltage]
       Menu --> Current[Current Limit]
       Menu --> Settings[Settings]
-      Menu --> About[About]
+      Menu --> AboutFirmware[About PD240W]
+      Menu --> AboutCharger[About This Charger]
+      Menu --> Back[Back]
 
       Voltage <-->|Select PDO| AdjV[Adjust Voltage]
       Current <-->|Set Limit| AdjC[Adjust Current]
       
       Settings --> EEPROM[Flash EEPROM]
       Settings --> Configs[Params: Brightness / Sounds / Tuning...]
+      AboutFirmware --> Main
+      AboutCharger --> Main
       
       %% Styling
       classDef default fill:#f9f9f9,stroke:#333,stroke-width:1px;
@@ -170,14 +174,11 @@ graph TD
 | Menu Item | Description |
 |-----------|-------------|
 | Select Voltage | Fixed / PPS / AVS PDO selection |
-| Current Limit | 50mA - 5A, 50mA steps with encoder acceleration |
-| Flash EEPROM | TPS26750 configuration flash workflow |
-| Auto PPS Tuning | Closed-loop voltage correction (ON/OFF) |
-| Auto Output | Enable load switch on boot (ON/OFF) |
-| Brightness | LCD backlight 5-100% |
-| Dim Timeout | Auto-dim after 1-10 min inactivity |
-| Startup Melody | Silent / Mario / Chime / TwoTone |
-| Sounds | Navigation beeps (ON/OFF) |
+| Current Limit | 10mA - 5A output current limit adjustment with encoder acceleration |
+| Settings | EEPROM flash workflow plus tuning, startup, brightness, and sound options |
+| About PD240W | Device identity, firmware build info, flash usage, and project link |
+| About This Charger | Live PD revision, CC orientation, QC inference, and cable diagnostics |
+| Back | Return to the main live display |
 
 ## Firmware Structure
 

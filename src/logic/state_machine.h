@@ -29,6 +29,7 @@ enum class MenuItem {
     CURRENT_LIMIT,
     SETTINGS,
     ABOUT,
+    ABOUT_CHARGER,
     BACK,           // Back to main screen
     MENU_COUNT      // Number of menu items
 };
@@ -57,6 +58,7 @@ enum class AdjustMode {
     AVS_VOLTAGE,        // Adjusting AVS voltage within range
     EEPROM_FLASH,       // EEPROM flash workflow
     ABOUT,              // Displaying about screen (read-only)
+    ABOUT_CHARGER,      // Displaying charger diagnostics (read-only)
     SETTINGS_MENU       // Settings submenu navigation
 };
 

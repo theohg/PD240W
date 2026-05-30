@@ -48,6 +48,53 @@ static constexpr int OC_ROW_H   = 22;   // Row spacing
 
 namespace {
 
+const char* getQcStatusText(const ChargerDiagInfo& diag) {
+    if (diag.supports_qc5) {
+        return "QC 5.0";
+    }
+    if (diag.supports_qc4) {
+        return "QC 4/4+";
+    }
+    return "PD only";
+}
+
+const char* getCcOrientationText(uint8_t cc_orientation) {
+    switch (cc_orientation) {
+        case 1: return "CC1";
+        case 2: return "CC2";
+        default: return "N/A";
+    }
+}
+
+const char* getDetectedCableText(DetectedCableRating rating) {
+    switch (rating) {
+        case DetectedCableRating::EPR_CAPABLE:
+            return "240W+ 5A/50V EPR";
+        case DetectedCableRating::CAPABLE_5A:
+            return "100W+ 5A";
+        case DetectedCableRating::STANDARD_3A:
+            return "Likely 3A / 60W";
+        case DetectedCableRating::UNKNOWN_CHARGER_LIMIT:
+            return "Unknown (<60W)";
+        default:
+            return "Unknown";
+    }
+}
+
+uint16_t getDetectedCableColor(DetectedCableRating rating) {
+    switch (rating) {
+        case DetectedCableRating::EPR_CAPABLE:
+        case DetectedCableRating::CAPABLE_5A:
+            return UIColors::ACCENT;
+        case DetectedCableRating::STANDARD_3A:
+            return UIColors::CAUTION;
+        case DetectedCableRating::UNKNOWN_CHARGER_LIMIT:
+            return UIColors::TEXT_SECONDARY;
+        default:
+            return UIColors::TEXT_PRIMARY;
+    }
+}
+
 void drawActionButton(int x, int y, int width, int height, int radius,
                       const char* label, bool selected) {
     uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::MUTED;
@@ -321,10 +368,14 @@ void DisplayManager::renderMenuScreen() {
     y += MENU_ITEM_HEIGHT;
 
     if (_needs_full_redraw || sel_affects(3))
-        drawMenuItem(y, "About", selected == MenuItem::ABOUT);
+        drawMenuItem(y, "About PD240W", selected == MenuItem::ABOUT);
     y += MENU_ITEM_HEIGHT;
 
     if (_needs_full_redraw || sel_affects(4))
+        drawMenuItem(y, "About This Charger", selected == MenuItem::ABOUT_CHARGER);
+    y += MENU_ITEM_HEIGHT;
+
+    if (_needs_full_redraw || sel_affects(5))
         drawMenuItemMuted(y, "Back", selected == MenuItem::BACK);
 
     _last_menu_selection = sel_idx;
@@ -366,8 +417,13 @@ void DisplayManager::renderAdjustScreen() {
         drawEepromFlashScreen();
     } else if (mode == AdjustMode::ABOUT) {
         if (_needs_full_redraw) {
-            drawHeader("About");
+            drawHeader("About PD240W");
             drawAboutScreen();
+        }
+    } else if (mode == AdjustMode::ABOUT_CHARGER) {
+        if (_needs_full_redraw) {
+            drawHeader("About This Charger");
+            drawAboutChargerScreen();
         }
     } else if (mode == AdjustMode::SETTINGS_MENU) {
         if (_needs_full_redraw) {
@@ -1962,6 +2018,55 @@ void DisplayManager::drawAboutScreen() {
     // Navigation hint
     hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
                           "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+}
+
+void DisplayManager::drawAboutChargerScreen() {
+    constexpr int LINE_H = 16;
+    const int LABEL_X = MARGIN + 4;
+    const int VALUE_X = 97;
+    int y = CONTENT_Y_START + 8;
+
+    auto drawInfoRow = [&](const char* label, const char* value, uint16_t value_color = UIColors::TEXT_PRIMARY) {
+        hw.display.drawStringAA(LABEL_X, y, label, UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(VALUE_X, y, value, value_color, UIColors::BACKGROUND, FONT_SMALL);
+        y += LINE_H;
+    };
+
+    ChargerDiagInfo diag;
+    if (!pdManager.getChargerDiagInfo(diag)) {
+        drawCenteredStringAA(CONTENT_Y_START + 34, "No Charger Connected", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+        drawCenteredStringAA(CONTENT_Y_START + 66, "Connect a USB-C source", UIColors::TEXT_SECONDARY, FONT_SMALL);
+        drawCenteredStringAA(CONTENT_Y_START + 84, "to view charger diagnostics", UIColors::TEXT_SECONDARY, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        return;
+    }
+
+    drawInfoRow("PD Rev:", diag.pd_revision);
+    drawInfoRow("CC Path:", getCcOrientationText(diag.cc_orientation));
+    drawInfoRow("QC:", getQcStatusText(diag),
+                (diag.supports_qc4 || diag.supports_qc5) ? UIColors::ACCENT : UIColors::TEXT_PRIMARY);
+
+    char buf[64];
+    if (diag.charger_identity_valid) {
+        snprintf(buf, sizeof(buf), "%s", diag.charger_name);
+        drawInfoRow("Brand:", buf, UIColors::ACCENT);
+        snprintf(buf, sizeof(buf), "0x%04X", diag.charger_product_id);
+        drawInfoRow("PID:", buf);
+    } else if (strcmp(diag.pd_revision, "PD2.0") == 0) {
+        drawInfoRow("Brand:", "N/A on PD2.0", UIColors::TEXT_SECONDARY);
+    } else {
+        drawInfoRow("Brand:", "Not reported", UIColors::TEXT_SECONDARY);
+    }
+
+    snprintf(buf, sizeof(buf), "%luW", static_cast<unsigned long>(diag.charger_max_power_w));
+    drawInfoRow("Max Power:", buf);
+    drawInfoRow("Cable:",
+                getDetectedCableText(diag.detected_cable_rating),
+                getDetectedCableColor(diag.detected_cable_rating));
+
+    hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                            "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 }
 
 // ============================================================================

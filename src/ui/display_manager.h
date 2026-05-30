@@ -101,6 +101,7 @@ private:
 
     // About screen elements
     void drawAboutScreen();
+    void drawAboutChargerScreen();
 
     // Fault screen elements
     void drawFaultIcon();

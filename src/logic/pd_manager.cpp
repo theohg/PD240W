@@ -8,6 +8,154 @@
 #include <cstring>
 #include <cstdlib>  // abs()
 
+namespace {
+
+constexpr uint8_t GPPI_RESPONSE_READ_BYTES = 32;
+
+uint32_t powerWatts(uint32_t voltage_mv, uint32_t current_ma) {
+    return (voltage_mv * current_ma) / 1000000UL;
+}
+
+const char* getVendorBrandName(uint16_t vid) {
+    switch (vid) {
+        case 0x32AC: return "Framework";
+        case 0x291A: return "Anker";
+        case 0x05AC: return "Apple";
+        case 0x04E8: return "Samsung";
+        case 0x17EF: return "Lenovo";
+        default: return "Unknown";
+    }
+}
+
+bool decodeManufacturerInfoResponse(const uint8_t* response_buf,
+                                    uint8_t response_len,
+                                    uint16_t& vendor_id,
+                                    uint16_t& product_id,
+                                    char* manufacturer_name,
+                                    size_t manufacturer_name_len) {
+    vendor_id = 0;
+    product_id = 0;
+
+    if (manufacturer_name && manufacturer_name_len > 0) {
+        manufacturer_name[0] = '\0';
+    }
+
+    if (!response_buf || response_len < 4) {
+        return false;
+    }
+
+    vendor_id = static_cast<uint16_t>(response_buf[0]) |
+                (static_cast<uint16_t>(response_buf[1]) << 8);
+    product_id = static_cast<uint16_t>(response_buf[2]) |
+                 (static_cast<uint16_t>(response_buf[3]) << 8);
+
+    if (!manufacturer_name || manufacturer_name_len == 0) {
+        return vendor_id != 0;
+    }
+
+    size_t name_bytes = response_len - 4;
+    if (name_bytes >= manufacturer_name_len) {
+        name_bytes = manufacturer_name_len - 1;
+    }
+
+    memcpy(manufacturer_name, &response_buf[4], name_bytes);
+    manufacturer_name[name_bytes] = '\0';
+
+    while (name_bytes > 0 &&
+           (manufacturer_name[name_bytes - 1] == ' ' || manufacturer_name[name_bytes - 1] == '\0')) {
+        name_bytes--;
+        manufacturer_name[name_bytes] = '\0';
+    }
+
+    size_t first_non_space = 0;
+    while (first_non_space < name_bytes && manufacturer_name[first_non_space] == ' ') {
+        first_non_space++;
+    }
+    if (first_non_space > 0 && first_non_space < name_bytes) {
+        memmove(manufacturer_name,
+                &manufacturer_name[first_non_space],
+                name_bytes - first_non_space + 1);
+        name_bytes -= first_non_space;
+    } else if (first_non_space >= name_bytes) {
+        name_bytes = 0;
+        manufacturer_name[0] = '\0';
+    }
+
+    for (size_t i = 0; i < name_bytes; i++) {
+        char& ch = manufacturer_name[i];
+        if (ch < 32 || ch > 126) {
+            ch = '.';
+        }
+    }
+
+    if (name_bytes == 0) {
+        const char* fallback_name = getVendorBrandName(vendor_id);
+        strncpy(manufacturer_name, fallback_name, manufacturer_name_len - 1);
+        manufacturer_name[manufacturer_name_len - 1] = '\0';
+    }
+
+    return vendor_id != 0;
+}
+
+uint32_t getSourceCapabilityMaxPowerW(const SourceCapability& pdo) {
+    if (pdo.is_avs && pdo.max_current_9_15_ma > 0) {
+        uint32_t low_band_power_w = powerWatts(15000, pdo.max_current_9_15_ma);
+        uint32_t high_band_power_w = powerWatts(pdo.voltage_mv, pdo.max_current_ma);
+        return (high_band_power_w > low_band_power_w) ? high_band_power_w : low_band_power_w;
+    }
+
+    return powerWatts(pdo.voltage_mv, pdo.max_current_ma);
+}
+
+// Infer cable capability from advertised source PDOs. Below EPR, fixed rails are the
+// strongest signal: a charger must cap them to 3 A when the cable is not 5 A capable.
+// Programmable PDOs above 3 A are only trusted when the source also proves it can
+// exceed 60 W on its non-programmable rails.
+DetectedCableRating inferDetectedCableRating(const SourceCapability* pdos, uint8_t count) {
+    bool has_fixed_over_3a = false;
+    bool has_programmable_over_3a = false;
+    uint32_t max_fixed_power_w = 0;
+
+    for (uint8_t i = 0; i < count; i++) {
+        const SourceCapability& pdo = pdos[i];
+        if (pdo.voltage_mv > 21000) {
+            return DetectedCableRating::EPR_CAPABLE;
+        }
+
+        if (!pdo.is_pps && !pdo.is_avs) {
+            uint32_t power_w = powerWatts(pdo.voltage_mv, pdo.max_current_ma);
+            if (power_w > max_fixed_power_w) {
+                max_fixed_power_w = power_w;
+            }
+
+            if (pdo.max_current_ma > 3000) {
+                has_fixed_over_3a = true;
+            }
+            continue;
+        }
+
+        if (pdo.max_current_ma > 3000 || pdo.max_current_9_15_ma > 3000) {
+            has_programmable_over_3a = true;
+        }
+    }
+
+    if (has_fixed_over_3a) {
+        return DetectedCableRating::CAPABLE_5A;
+    }
+
+    if (has_programmable_over_3a && max_fixed_power_w > 60) {
+        return DetectedCableRating::CAPABLE_5A;
+    }
+
+    if (max_fixed_power_w < 60) {
+        return DetectedCableRating::UNKNOWN_CHARGER_LIMIT;
+    }
+
+    return DetectedCableRating::STANDARD_3A;
+}
+
+}  // namespace
+
 // Global instance
 PdManager pdManager;
 
@@ -61,6 +209,7 @@ PdManager::PdManager()
     _active_contract.pps_min_mv = 0;
     _active_contract.pps_max_mv = 0;
     _pd_revision[0] = '\0';
+    clearChargerIdentity();
 }
 
 // ============================================================================
@@ -420,6 +569,104 @@ uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_cap
     }
 
     return count;
+}
+
+bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
+    info.pd_revision = "N/A";
+    info.cc_orientation = 0;
+    info.supports_qc4 = false;
+    info.supports_qc5 = false;
+    info.charger_identity_valid = _charger_identity_valid;
+    info.charger_vendor_id = _charger_vendor_id;
+    info.charger_product_id = _charger_product_id;
+    strncpy(info.charger_name, _charger_name, sizeof(info.charger_name) - 1);
+    info.charger_name[sizeof(info.charger_name) - 1] = '\0';
+    info.detected_cable_rating = DetectedCableRating::UNKNOWN_CHARGER_LIMIT;
+    info.charger_max_power_w = 0;
+
+    if (!_charger_connected) {
+        return false;
+    }
+
+    if (!_pdos_valid) {
+        _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
+        _pdos_valid = (_pdo_count > 0);
+        if (_pdos_valid) {
+            detectPdRevision();
+        }
+    }
+
+    if (_pd_revision[0] != '\0') {
+        info.pd_revision = _pd_revision;
+    }
+
+    uint8_t status_buf[5] = {0};
+    if (hw.pdController.getStatus(status_buf)) {
+        info.cc_orientation = (status_buf[0] & TPS_STATUS_ORIENTATION) ? 2 : 1;
+    }
+
+    bool has_pps = false;
+
+    for (uint8_t i = 0; i < _pdo_count; i++) {
+        const SourceCapability& pdo = _pdo_cache[i];
+        uint32_t pdo_power_w = getSourceCapabilityMaxPowerW(pdo);
+        if (pdo_power_w > info.charger_max_power_w) {
+            info.charger_max_power_w = pdo_power_w;
+        }
+
+        if (pdo.is_pps) {
+            has_pps = true;
+        }
+    }
+
+    info.detected_cable_rating = inferDetectedCableRating(_pdo_cache, _pdo_count);
+    info.supports_qc4 = has_pps;
+    info.supports_qc5 = has_pps && (info.charger_max_power_w >= 100);
+    return true;
+}
+
+void PdManager::clearChargerIdentity() {
+    _charger_identity_valid = false;
+    _charger_vendor_id = 0;
+    _charger_product_id = 0;
+    _charger_name[0] = '\0';
+}
+
+bool PdManager::refreshChargerIdentity() {
+    clearChargerIdentity();
+
+    if (!_charger_connected) {
+        return false;
+    }
+
+    uint8_t charger_response[GPPI_RESPONSE_READ_BYTES] = {0};
+    uint16_t charger_response_len = 0;
+    bool charger_ok = hw.pdController.getManufacturerInfo(GppiFrameType::SOP,
+                                                          charger_response,
+                                                          GPPI_RESPONSE_READ_BYTES,
+                                                          &charger_response_len);
+    if (!charger_ok) {
+        return false;
+    }
+
+    uint16_t charger_vendor_id = 0;
+    uint16_t charger_product_id = 0;
+    char charger_name[32] = {0};
+    if (!decodeManufacturerInfoResponse(charger_response,
+                                        static_cast<uint8_t>(charger_response_len),
+                                        charger_vendor_id,
+                                        charger_product_id,
+                                        charger_name,
+                                        sizeof(charger_name))) {
+        return false;
+    }
+
+    _charger_identity_valid = true;
+    _charger_vendor_id = charger_vendor_id;
+    _charger_product_id = charger_product_id;
+    strncpy(_charger_name, charger_name, sizeof(_charger_name) - 1);
+    _charger_name[sizeof(_charger_name) - 1] = '\0';
+    return true;
 }
 
 // ============================================================================
@@ -1067,6 +1314,7 @@ void PdManager::handlePdInterrupt() {
         clearAvsTracking();
         clearRequestedContract();
         _pd_revision[0] = '\0';
+        clearChargerIdentity();
         _active_contract.valid = false;
         _active_contract.is_pps = false;
         _active_contract.is_avs = false;
@@ -1104,6 +1352,7 @@ void PdManager::handlePdInterrupt() {
         clearAvsTracking();
         clearRequestedContract();
         _pd_revision[0] = '\0';
+        clearChargerIdentity();
         _epr_exit_state = EprExitState::NONE;
 
         // Clear the interrupt

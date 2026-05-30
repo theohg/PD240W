@@ -9,7 +9,6 @@
 #define TPS26750_H
 
 #include <cstdint>
-#include <cstring>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
@@ -57,7 +56,6 @@ enum TPS_Reg : uint8_t {
     TPS_REG_PD_STATUS                   = 0x40, // 4 bytes
     TPS_REG_PD3_STATUS                  = 0x41, // 4 bytes - Contains PortPartnerNegSpecRev
     TPS_REG_PD3_CONFIG                  = 0x42, // 4 bytes
-    TPS_REG_RX_SOP_IDENTITY             = 0x48, // 26 bytes
     TPS_REG_IO_CONFIG                   = 0x5C, // 49 bytes
     TPS_REG_TYPEC_STATE                 = 0x69, // 4 bytes
     TPS_REG_ADC_RESULTS                 = 0x6A, // 13 bytes
@@ -122,7 +120,15 @@ enum TPS_Reg : uint8_t {
 #define TPS_CMD_GSrC "GSrC" // Get Source Caps (Used to re-negotiate Sink Contract)
 #define TPS_CMD_GSkC "GSkC" // Get Sink Caps
 #define TPS_CMD_ESrC "ESrC" // EPR Get Source Caps (Request EPR profiles 28V/36V/48V)
+#define TPS_CMD_GPPI "GPPI" // Get Port Partner Information
+#define TPS_CMD_MBRD "MBRd" // Message Buffer Read
 #define TPS_CMD_PBMe "PBMe" // Patch Bundle Mode Exit
+
+enum class GppiFrameType : uint8_t {
+    SOP = 0,
+    SOP_PRIME = 1,
+    SOP_DBL_PRIME = 2,
+};
 
 // ============================================================================
 // Class Definition
@@ -221,6 +227,45 @@ public:
      * @return true if read successful.
      */
     bool getPdStatus(uint8_t* status_buf);
+
+    /**
+     * @brief Read the STATUS register.
+     * @details Exposes connection/orientation state needed by higher-level diagnostics.
+     * @param status_buf Buffer of at least 5 bytes to store status.
+     * @return true if read successful.
+     */
+    bool getStatus(uint8_t* status_buf);
+
+    /**
+     * @brief Send a GPPI message and read the resulting message buffer.
+     * @details Executes the TI 'GPPI' and 'MBRd' 4CC tasks synchronously.
+     * @param gppi_header Encoded GPPI header written to DATA1 byte 0..1.
+     * @param payload Optional payload bytes written after the GPPI header.
+     * @param payload_len Number of payload bytes.
+     * @param out_buf Buffer receiving the raw message-buffer payload bytes.
+     * @param max_read_len Maximum number of payload bytes to fetch from MBRd.
+     * @param actual_read_len Optional output for the message size returned by MBRd.
+     * @return true when GPPI succeeds and MBRd returns a non-zero payload length.
+     */
+    bool sendGppiAndRead(uint16_t gppi_header,
+                         const uint8_t* payload,
+                         uint8_t payload_len,
+                         uint8_t* out_buf,
+                         uint8_t max_read_len,
+                         uint16_t* actual_read_len = nullptr);
+
+    /**
+     * @brief Request USB PD Manufacturer Info from a PD partner.
+     * @param frame_type SOP for the source partner; other frame types are controller-dependent.
+     * @param out_buf Buffer receiving the raw Manufacturer Info response payload.
+     * @param max_read_len Maximum number of payload bytes to fetch from MBRd.
+     * @param actual_read_len Optional output for the message size returned by MBRd.
+     * @return true when the Manufacturer Info exchange succeeds and returns payload bytes.
+     */
+    bool getManufacturerInfo(GppiFrameType frame_type,
+                             uint8_t* out_buf,
+                             uint8_t max_read_len,
+                             uint16_t* actual_read_len = nullptr);
     
     /**
      * @brief Reads the list of available power contracts offered by the source.
@@ -276,115 +321,15 @@ public:
 private:
     i2c_inst_t* _i2c;
     uint8_t _addr;
+    static constexpr uint32_t TASK_WAIT_TIMEOUT_MS = 1500;
 
-    // Helper to convert 4CC string to uint32 for register write
-    uint32_t stringTo4CC(const char* cmd);
+    // Helper to block until CMD1 is cleared by the internal task engine.
+    bool waitForCommandClear(uint32_t timeout_ms = TASK_WAIT_TIMEOUT_MS);
 
     // Helper to read/modify/write the large AUTONEGOTIATE_SINK register (24 bytes)
     bool modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i, 
                             uint32_t pps_v, uint32_t pps_i, bool pps_en,
                             uint32_t avs_v, uint32_t avs_i, bool avs_en);
 };
-
-// // ============================================================================
-// // Implementation
-// // ============================================================================
-
-// TPS26750::TPS26750(i2c_inst_t* i2c, uint8_t addr) : _i2c(i2c), _addr(addr) {}
-
-// bool TPS26750::init() {
-//     // Simple check: Try to read MODE register to verify presence
-//     char mode[5];
-//     return getMode(mode);
-// }
-
-// bool TPS26750::readRegister(uint8_t reg, uint8_t* dest, uint8_t len) {
-//     // 1. Write Register Address (No Stop)
-//     int ret = i2c_write_blocking(_i2c, _addr, &reg, 1, true);
-//     if (ret == PICO_ERROR_GENERIC || ret == PICO_ERROR_TIMEOUT) return false;
-
-//     // 2. Read Byte Count + Data
-//     // We need a temp buffer because we must read N+1 bytes (ByteCount + Data)
-//     // [cite: 208] shows Byte Count is the first byte returned.
-//     uint8_t tempBuffer[len + 1];
-//     ret = i2c_read_blocking(_i2c, _addr, tempBuffer, len + 1, false);
-    
-//     if (ret > 0) {
-//         // Copy only the data, skipping the Byte Count at index 0
-//         memcpy(dest, &tempBuffer[1], len);
-//         return true;
-//     }
-//     return false;
-// }
-
-// bool TPS26750::writeRegister(uint8_t reg, const uint8_t* src, uint8_t len) {
-//     // Protocol: [Reg] [ByteCount] [Data...] [cite: 172]
-//     // We need to construct a single buffer for the transaction
-//     uint8_t buffer[len + 2];
-//     buffer[0] = reg;
-//     buffer[1] = len; // Byte Count
-//     memcpy(&buffer[2], src, len);
-
-//     int ret = i2c_write_blocking(_i2c, _addr, buffer, len + 2, false);
-//     return (ret == len + 2);
-// }
-
-// bool TPS26750::getMode(char* modeStr) {
-//     uint8_t buffer[4];
-//     if (readRegister(TPS_REG_MODE, buffer, 4)) {
-//         // TPS register data is often little-endian or raw ASCII. 
-//         // For "APP ", it comes as 0x41 0x50 0x50 0x20.
-//         memcpy(modeStr, buffer, 4);
-//         modeStr[4] = '\0';
-//         return true;
-//     }
-//     return false;
-// }
-
-// bool TPS26750::sendCommand(const char* cmd) {
-//     // CMD1 register is 4 bytes. If cmd is "Gaid", we send 'G','a','i','d'.
-//     // [cite: 318]
-//     if (strlen(cmd) != 4) return false;
-//     return writeRegister(TPS_REG_CMD1, (const uint8_t*)cmd, 4);
-// }
-
-// bool TPS26750::readInterrupts(uint8_t* events) {
-//     return readRegister(TPS_REG_INT_EVENT1, events, 11);
-// }
-
-// bool TPS26750::clearInterrupts(const uint8_t* mask) {
-//     return writeRegister(TPS_REG_INT_CLEAR1, mask, 11);
-// }
-
-// bool TPS26750::isInterruptSet(const uint8_t* buffer, uint8_t bitIndex) {
-//     if (bitIndex > 87) return false;
-//     uint8_t byteIndex = bitIndex / 8;
-//     uint8_t bitOffset = bitIndex % 8;
-//     return (buffer[byteIndex] & (1 << bitOffset));
-// }
-
-// bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
-//     // Read Active RDO (Register 0x35) [cite: 624]
-//     // Note: This register returns the RDO (Request Data Object).
-//     // Parsing RDO depends on Fixed vs PPS. This is a basic Fixed PDO parser example.
-//     uint8_t rdo[4];
-//     if (!readRegister(TPS_REG_ACTIVE_CONTRACT_RDO, rdo, 4)) return false;
-
-//     // RDO is 32-bit, usually little-endian in buffer: [LSB ... MSB]
-//     uint32_t rdoVal = rdo[0] | (rdo[1] << 8) | (rdo[2] << 16) | (rdo[3] << 24);
-    
-//     // Bits 19-10: Operating Current (10mA units)
-//     // Bits 9-0: Max/Min Current (10mA units)
-//     // Voltage is NOT in the RDO for Fixed supplies (it's in the PDO). 
-//     // However, for PPS (Augmented PDO), voltage IS in bits 19-9 (20mV units).
-//     // This requires checking the object position in the Active PDO register to know type.
-    
-//     // For simplicity, returning raw RDO Operating Current here:
-//     current_ma = ((rdoVal >> 10) & 0x3FF) * 10;
-    
-//     // To get voltage correctly, one must read TPS_REG_ACTIVE_CONTRACT_PDO (0x34)
-//     // which contains the negotiated PDO data.
-//     return true;
-// }
 
 #endif // TPS26750_H

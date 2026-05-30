@@ -591,6 +591,15 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     transitionTo(AppState::ADJUST);
                     break;
 
+                case MenuItem::ABOUT_CHARGER:
+                    pdManager.probeEpr();
+                    sleep_ms(AppConfig::EPR_PROBE_DELAY_MS);
+                    pdManager.invalidatePdoCache();
+                    pdManager.refreshChargerIdentity();
+                    _adjust_mode = AdjustMode::ABOUT_CHARGER;
+                    transitionTo(AppState::ADJUST);
+                    break;
+
                 case MenuItem::BACK:
                     transitionTo(AppState::MAIN);
                     break;
@@ -630,8 +639,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         }
     };
 
-    // About screen: click returns to menu
-    if (_adjust_mode == AdjustMode::ABOUT) {
+    // About screens: click returns to menu
+    if (_adjust_mode == AdjustMode::ABOUT || _adjust_mode == AdjustMode::ABOUT_CHARGER) {
         if (event == EncoderEvent::CLICK) {
             transitionTo(AppState::MENU);
         }

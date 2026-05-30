@@ -5,7 +5,7 @@
  */
 
 #include "tps26750.h"
-#include <cstdio> // For NULL
+#include <cstring>
 
 // ============================================================================
 // Constructor & Init
@@ -185,6 +185,134 @@ bool TPS26750::getPdStatus(uint8_t* status_buf) {
     return readRegister(TPS_REG_PD3_STATUS, status_buf, 4);
 }
 
+bool TPS26750::getStatus(uint8_t* status_buf) {
+    return readRegister(TPS_REG_STATUS, status_buf, 5);
+}
+
+bool TPS26750::waitForCommandClear(uint32_t timeout_ms) {
+    absolute_time_t start = get_absolute_time();
+    uint8_t cmd_buf[4] = {0};
+
+    while (true) {
+        if (!readRegister(TPS_REG_CMD1, cmd_buf, 4)) {
+            return false;
+        }
+
+        if (cmd_buf[0] == 0 && cmd_buf[1] == 0 && cmd_buf[2] == 0 && cmd_buf[3] == 0) {
+            return true;
+        }
+
+        uint32_t elapsed_ms = absolute_time_diff_us(start, get_absolute_time()) / 1000;
+        if (elapsed_ms >= timeout_ms) {
+            return false;
+        }
+
+        sleep_ms(10);
+    }
+}
+
+bool TPS26750::sendGppiAndRead(uint16_t gppi_header,
+                               const uint8_t* payload,
+                               uint8_t payload_len,
+                               uint8_t* out_buf,
+                               uint8_t max_read_len,
+                               uint16_t* actual_read_len) {
+    if (!out_buf || max_read_len == 0) {
+        return false;
+    }
+
+    if (payload_len > 62) {
+        return false;
+    }
+
+    uint8_t safe_read_len = (max_read_len > 62) ? 62 : max_read_len;
+
+    memset(out_buf, 0, safe_read_len);
+    if (actual_read_len) {
+        *actual_read_len = 0;
+    }
+
+    uint8_t data1_write[64] = {0};
+    data1_write[0] = static_cast<uint8_t>(gppi_header & 0xFF);
+    data1_write[1] = static_cast<uint8_t>((gppi_header >> 8) & 0xFF);
+    if (payload && payload_len > 0) {
+        memcpy(&data1_write[2], payload, payload_len);
+    }
+
+    if (!writeRegister(TPS_REG_DATA1, data1_write, static_cast<uint8_t>(2 + payload_len))) {
+        return false;
+    }
+
+    if (!sendCommand(TPS_CMD_GPPI) || !waitForCommandClear()) {
+        return false;
+    }
+
+    uint8_t gppi_status = 0xFF;
+    if (!readRegister(TPS_REG_DATA1, &gppi_status, 1)) {
+        return false;
+    }
+
+    if (gppi_status != 0x00) {
+        return false;
+    }
+
+    uint32_t mbrd_cfg = (1UL << 22) | ((static_cast<uint32_t>(safe_read_len) & 0x3FUL) << 16);
+    uint8_t mbrd_buf[4] = {
+        static_cast<uint8_t>(mbrd_cfg & 0xFF),
+        static_cast<uint8_t>((mbrd_cfg >> 8) & 0xFF),
+        static_cast<uint8_t>((mbrd_cfg >> 16) & 0xFF),
+        static_cast<uint8_t>((mbrd_cfg >> 24) & 0xFF),
+    };
+
+    if (!writeRegister(TPS_REG_DATA1, mbrd_buf, sizeof(mbrd_buf))) {
+        return false;
+    }
+
+    if (!sendCommand(TPS_CMD_MBRD) || !waitForCommandClear()) {
+        return false;
+    }
+
+    uint8_t data1_read[64] = {0};
+    if (!readRegister(TPS_REG_DATA1, data1_read, static_cast<uint8_t>(safe_read_len + 2))) {
+        return false;
+    }
+
+    uint16_t msg_size = static_cast<uint16_t>(data1_read[0]) |
+                        (static_cast<uint16_t>(data1_read[1]) << 8);
+
+    if (actual_read_len) {
+        *actual_read_len = msg_size;
+    }
+
+    if (msg_size == 0 || msg_size > safe_read_len) {
+        return false;
+    }
+
+    memcpy(out_buf, &data1_read[2], msg_size);
+    return true;
+}
+
+bool TPS26750::getManufacturerInfo(GppiFrameType frame_type,
+                                   uint8_t* out_buf,
+                                   uint8_t max_read_len,
+                                   uint16_t* actual_read_len) {
+    constexpr uint8_t manufacturer_info_payload[2] = {0x00, 0x00};
+    constexpr uint16_t GPPI_NUM_BYTES_2 = (2u << 8);
+    constexpr uint16_t GPPI_EXTENDED_MESSAGE = (2u << 5);
+    constexpr uint16_t GPPI_GET_MANUFACTURER_INFO = 0x06u;
+    uint16_t header = (static_cast<uint16_t>(frame_type) << 13) |
+                      GPPI_NUM_BYTES_2 |
+                      GPPI_EXTENDED_MESSAGE |
+                      GPPI_GET_MANUFACTURER_INFO;
+
+    return sendGppiAndRead(header,
+                           manufacturer_info_payload,
+                           sizeof(manufacturer_info_payload),
+                           out_buf,
+                           max_read_len,
+                           actual_read_len);
+}
+
 uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps) {
     // Register 0x30 
     // Structure:
@@ -346,7 +474,6 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
     // 1. Read existing register (0x37, 24 bytes) to preserve reserved bits
     uint8_t buf[24] = {0};
     if (!readRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
-        printf("[DEBUG] Failed to read AUTONEGOTIATE_SINK\n");
         return false;
     }
 
@@ -402,7 +529,6 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
 
     // 2. Write back
     if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
-        printf("[DEBUG] Failed to write AUTONEGOTIATE_SINK\n");
         return false;
     }
 
@@ -412,14 +538,12 @@ bool TPS26750::modifySinkRegister(uint32_t min_v, uint32_t max_v, uint32_t op_i,
 
     toggle_buf[8] ^= 0x01;
     if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, toggle_buf, 24)) {
-        printf("[DEBUG] Failed to write AUTONEGOTIATE_SINK toggle\n");
         return false;
     }
 
     sleep_ms(2);
 
     if (!writeRegister(TPS_REG_AUTONEGOTIATE_SINK, buf, 24)) {
-        printf("[DEBUG] Failed to restore AUTONEGOTIATE_SINK\n");
         return false;
     }
 

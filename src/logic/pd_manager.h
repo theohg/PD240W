@@ -34,6 +34,26 @@ struct ActiveContract {
     uint32_t pps_max_mv;    // PPS range max voltage
 };
 
+enum class DetectedCableRating : uint8_t {
+    EPR_CAPABLE,           ///< Source exposes an EPR rail (>21 V), implying an EPR-capable cable.
+    CAPABLE_5A,            ///< A trustworthy >3 A contract confirms a 5 A cable.
+    STANDARD_3A,           ///< Source is capped at 60 W with no trustworthy >3 A path, so a 3 A cable is likely.
+    UNKNOWN_CHARGER_LIMIT, ///< Source tops out below 60 W, so the cable rating is not observable.
+};
+
+struct ChargerDiagInfo {
+    const char* pd_revision;        // Example: "PD3.2", or "N/A" when unknown
+    uint8_t cc_orientation;         // 0 = unknown, 1 = CC1, 2 = CC2
+    bool supports_qc4;              // Inferred from PPS support
+    bool supports_qc5;              // PPS + 100W-or-greater source capability
+    bool charger_identity_valid;
+    uint16_t charger_vendor_id;
+    uint16_t charger_product_id;
+    char charger_name[32];
+    DetectedCableRating detected_cable_rating;
+    uint32_t charger_max_power_w;   // Maximum power offered by the source
+};
+
 class PdManager {
 public:
     PdManager();
@@ -109,6 +129,20 @@ public:
     // Get PD revision string based on source capabilities
     // Returns "PD3.1" for AVS/EPR, "PD3.0" for PPS, "PD2.0" for fixed-only, "" for no PDOs
     const char* getPdRevision() const { return _pd_revision; }
+
+    /**
+     * @brief Build a UI-friendly diagnostic snapshot for the connected charger.
+     * @param info Output structure populated with PD, charger identity, and inferred cable rating data.
+     * @return true when a charger is connected and the snapshot reflects live hardware data.
+     */
+    bool getChargerDiagInfo(ChargerDiagInfo& info);
+
+    /**
+     * @brief Refresh the cached charger identity used by the About This Charger screen.
+     * @details Sends a single Get_Manufacturer_Info request to the charger and stores the
+     * resulting VID, PID, and brand name when available.
+     */
+    bool refreshChargerIdentity();
 
     // Startup contract negotiation based on settings
     // - Lowest: select lowest voltage fixed PDO
@@ -199,6 +233,12 @@ private:
     // PD revision string (cached)
     char _pd_revision[8];
 
+    // Charger identity cached from Get_Manufacturer_Info.
+    bool _charger_identity_valid;
+    uint16_t _charger_vendor_id;
+    uint16_t _charger_product_id;
+    char _charger_name[32];
+
     // Polling fallback state (for chargers that don't fire interrupt)
     uint32_t _pre_request_voltage_mv;
     uint32_t _pre_request_current_ma;
@@ -235,6 +275,9 @@ private:
     // EPR exit helpers
     bool findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma,
                             int8_t& avs_pdo_index) const;
+
+    // Clear cached charger identity shown on the diagnostics screen.
+    void clearChargerIdentity();
 
     // Detect PD revision from cached PDOs
     void detectPdRevision();
