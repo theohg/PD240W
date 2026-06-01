@@ -7,7 +7,7 @@
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/Platform-RP2040-green)
 
-An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. This device is designed to be compatible with USB-PD 3.1 and above. Firmware runs on a Raspberry Pi Pico ([RP2040](https://www.raspberrypi.com/products/rp2040/)).
+An adjustable power supply for motor drives using USB-C Power Delivery negotiation, supporting up to **240W at 48V 5A**. This device is designed to be compatible with USB-PD up to 3.2. Firmware runs on a Raspberry Pi Pico ([RP2040](https://www.raspberrypi.com/products/rp2040/)).
 
 Follow the latest project logs and updates on <a href="https://hackaday.io/project/205084-pd240w" target="_blank" title="PD240W on Hackaday.io">
 Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday.io" style="height: 2em; vertical-align: text-bottom;">
@@ -18,7 +18,7 @@ Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday
 </p>
 
 > [!WARNING]
-> **Disclaimer**: Firmware v2.0.0 includes guarded AVS/EPR negotiation, startup restore, and EPR-exit handling, but high-voltage charger interoperability still depends on the source and cable combination you test with. Validate 28V/36V/48V operation on your hardware before relying on it in the field.
+> **Disclaimer**: Firmware v2.0.0 includes guarded AVS/EPR negotiation, startup restore, and EPR-exit handling, but high-voltage charger interoperability still depends on the source and cable combination you test with. Validate 28V/36V/48V operation on your hardware.
 
 ## Table of Contents
 
@@ -33,12 +33,12 @@ Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday
 
 ## Features
 
-- **USB-C Power Delivery**: Negotiates Fixed, PPS (5-21V programmable), and AVS (15-48V EPR) profiles
+- **USB-C Power Delivery**: Negotiates Fixed, PPS (3.3-21V programmable), and AVS (15-48V EPR) profiles
 - **Current Limiting**: Adjustable 10mA-5A via INA228 power monitor with hardware overcurrent protection
 - **LCD Interface**: 240x320 ST7789 display with anti-aliased fonts and Prusa-style encoder navigation
 - **Safety**: Overcurrent ISR, overtemperature monitoring (NTC + INA228)
 - **Settings Persistence**: User settings stored in RP2040 flash with CRC32 validation
-- **Auto PPS Tuning**: Closed-loop voltage correction for PPS charger output accuracy
+- **Auto PPS/AVS Tuning**: Closed-loop voltage correction for PPS/AVS charger output accuracy
 - **Charger Diagnostics**: On-device PD revision, charger identity, cable inference, and max-power reporting
 - **Remote CLI**: USB serial command interface for measurements, PD selection, and settings updates
 - **Energy Monitoring**: Tracks mAh delivered since boot via INA228 charge accumulator
@@ -62,9 +62,9 @@ Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday
 |------|------|----------|
 | PCB (STEP) | `3D_models/PD240W_PCB.stp` | Full PCB 3D model |
 | Enclosure (STL) | `3D_models/enclosure/` | Casing top/bottom, knob, button, LCD support, SWD cover |
-| Gerbers | `PCB_files/gerbers/` | PCB manufacturing files |
-| BOM | `PCB_files/BOM.csv` | Bill of materials |
-| Pick & Place | `PCB_files/pick_and_place.csv` | Pick and place file |
+| Gerbers | `PCB_files/Manufacturing/Fabrication/` | PCB manufacturing files |
+| BOM | `PCB_files/Manufacturing/Assembly/` | Bill of materials |
+| Pick & Place | `PCB_files/Manufacturing/Assembly/` | Pick and place file |
 
 ### Hardware Erata
 
@@ -104,13 +104,6 @@ git submodule update --init --recursive
 ```
 
 PD240W does not automatically follow the newest INA228 library release. The version is pinned by the parent repository's recorded submodule commit for `external/ina228_multiplatform`, and that exact checked-out commit is what gets compiled into the firmware. Prebuilt `PD240W.uf2` releases already include that pinned INA version.
-
-To inspect the resolved INA version in a local checkout, run:
-
-```bash
-git submodule status
-git -C external/ina228_multiplatform describe --tags --always
-```
 
 ### Flash via SWD
 
@@ -266,17 +259,19 @@ You are free to use, modify, and distribute the software component of this proje
 
 Please see the [LICENSE-FIRMWARE.txt](./LICENSE-FIRMWARE.txt) file for full terms.
 
-## Planned Features for V1.1.0+
+## Planned Features for V2.1.0+
 
-- **Full USB-PD 3.1/3.2 Support**: Stable support for the entire norm, including AVS and EPR profiles.
-- **Auto AVS Tuning**: Closed-loop voltage correction for AVS profiles (similar to current PPS tuning).
-- **Extended PPS Range**: Support for PPS voltages as low as 3.5V.
+- **PPS battery charging in Constant Current (CC) mode**: PPS allows a fixed current mode that can be used for battery charging. This is to be tested by charging lithium-ion battery packs.
+- **Improved CLI interface**: Needs more testing and polish.
+- **Extended PPS and AVS Range**: Support for PPS voltages as low as 3.5V, AND SPR AVS profiles down to 9V.
 
 ## Acknowledgements
 
 This project was made possible by [Synapticon GmbH](https://www.synapticon.com), who funded and supported its development. Thank you for providing the resources, hardware, and opportunity to bring PD240W to life.
 
 Inspiration for this project was taken from the great work on portable USB-C PD power supplies by CentyLab on the [PocketPD](https://hackaday.io/project/194295-pocketpd-usb-c-portable-bench-power-supply) project and Alex Xia with his [ProtoV MINI](https://hackaday.io/project/204461-protov-mini-tiny-usb-c-breadboard-power-supply).
+
+All work done on this project, from Hardware design to Firmware development, was done by me, as the sole contributor. I am grateful for the support and feedback from the community, and I hope this project can be a useful resource for anyone interested in USB-C PD power supplies!
 
 ***
 
