@@ -38,6 +38,7 @@ struct SafetyState {
 
     // Current
     float current_a;
+    bool current_overflow;
     bool overcurrent_latched;
 
     // Power

@@ -55,9 +55,9 @@ namespace Board {
     // -------------------------------------------------------------------------
     // I2C Parameters
     // -------------------------------------------------------------------------
-    constexpr uint8_t I2C_ADDR_INA228   = 0x40;  // 7-bit address for INA228
-    constexpr uint8_t I2C_ADDR_TPS26750 = 0x21;  // 7-bit address for TPS26750
-    constexpr uint32_t I2C_SPEED_HZ    = 400000; // 400kHz Fast Mode
+    constexpr uint8_t  I2C_ADDR_INA228   = 0x40;   // 7-bit address for INA228
+    constexpr uint8_t  I2C_ADDR_TPS26750 = 0x21;   // 7-bit address for TPS26750
+    constexpr uint32_t I2C_SPEED_HZ      = 400000; // 400kHz Fast Mode
 
     // -------------------------------------------------------------------------
     // SPI Parameters
@@ -68,14 +68,14 @@ namespace Board {
     // ADC Settings
     // -------------------------------------------------------------------------
     constexpr float ADC_REF_VOLTAGE = 3.3f;
-    constexpr int ADC_RESOLUTION    = 4096;
+    constexpr int   ADC_RESOLUTION  = 4096;
     constexpr float ADC_CONVERT     = ADC_REF_VOLTAGE / ADC_RESOLUTION;
 
     // -------------------------------------------------------------------------
     // RGB LED Settings (SK6812)
     // -------------------------------------------------------------------------
     constexpr bool LED_IS_RGBW = false;
-    constexpr int LED_FREQ     = 800000;
+    constexpr int  LED_FREQ    = 800000;
 
     // -------------------------------------------------------------------------
     // NTC Thermistor Settings
@@ -94,7 +94,8 @@ namespace Board {
     // -------------------------------------------------------------------------
     // INA228 Power Monitor Settings
     // -------------------------------------------------------------------------
-    constexpr float INA228_SHUNT_RESISTOR = 0.008f;  // 8mΩ shunt resistor
-    constexpr float INA228_MAX_CURRENT    = 5.0f;    // 5A max current
-    constexpr uint16_t INA228_SHUNT_TEMPCO_PPM = 50; // Shunt resistor temperature coefficient [ppm/°C]
+    constexpr float    INA228_SHUNT_RESISTOR          = 0.008f; // 8mΩ shunt resistor
+    constexpr bool     INA228_USE_LOW_ADC_RANGE       = true;   // 41mV shunt range (~5.12A with 8mΩ)
+    constexpr float    INA228_MEASUREMENT_MAX_CURRENT = 5.12f;  // INA full-scale used for calibration
+    constexpr uint16_t INA228_SHUNT_TEMPCO_PPM        = 50;     // Shunt resistor temperature coefficient [ppm/°C]
 }

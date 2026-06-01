@@ -34,6 +34,7 @@ Safety::Safety()
     _state.vbus_voltage_v = 0.0f;
     _state.pd_connected = false;
     _state.current_a = 0.0f;
+    _state.current_overflow = false;
     _state.overcurrent_latched = false;
     _state.power_w = 0.0f;
 }
@@ -266,6 +267,7 @@ void Safety::updateCurrent() {
     // Only read current/power when switch is enabled (INA228 is post-switch)
     if (hw.loadSwitch.read()) {
         _state.current_a = hw.powerMonitor.getCurrent();
+        _state.current_overflow = hw.powerMonitor.hasMathOverflow();
         _state.power_w = hw.powerMonitor.getPower();
 
         // Check if INA228 ALERT is latched (overcurrent already triggered by ISR)
@@ -277,6 +279,7 @@ void Safety::updateCurrent() {
     } else {
         // Switch is off - current and power are effectively 0
         _state.current_a = 0.0f;
+        _state.current_overflow = false;
         _state.power_w = 0.0f;
         // Don't update overcurrent_latched when switch is off
     }

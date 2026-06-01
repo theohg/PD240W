@@ -18,7 +18,7 @@ Hardware::Hardware() :
     buzzer(Board::PIN_BUZZER),
     rgbLed(Board::PIN_RGB_LED, pio0, Board::LED_IS_RGBW),
     pdController(i2c0, Board::I2C_ADDR_TPS26750),
-    powerMonitor(i2c0, Board::I2C_ADDR_INA228, Board::INA228_SHUNT_RESISTOR, Board::INA228_MAX_CURRENT, Board::INA228_SHUNT_TEMPCO_PPM),
+    powerMonitor(i2c0, Board::I2C_ADDR_INA228, Board::INA228_SHUNT_RESISTOR, Board::INA228_MEASUREMENT_MAX_CURRENT, Board::INA228_SHUNT_TEMPCO_PPM),
     display(spi0, Board::PIN_LCD_CS, Board::PIN_LCD_DC, Board::PIN_LCD_RST, Board::PIN_LCD_BL)
 {}
 
@@ -62,6 +62,9 @@ void Hardware::init() {
     // I2C devices
     LOG_HW_INIT("TPS26750 PD Controller", pdController.init());
     if (powerMonitor.init()) {
+        if (!powerMonitor.setADCRange(Board::INA228_USE_LOW_ADC_RANGE)) {
+            LOG_WARN("INA228 ADC range configuration failed");
+        }
         LOG_INFO("INA228 Power monitor initialized successfully with FW %s",
                  Version::INA_FIRMWARE_VERSION);
     } else {

@@ -796,7 +796,11 @@ void DisplayManager::drawPowerReadings() {
 
     // Primary: Output Current (number and unit rendered separately)
     hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%.3f", display_current);
+    if (state.current_overflow) {
+        snprintf(buf, sizeof(buf), "+%.2f", Board::INA228_MEASUREMENT_MAX_CURRENT);
+    } else {
+        snprintf(buf, sizeof(buf), "%.3f", display_current);
+    }
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
     if (VALUE_X + num_w < UNIT_X)
