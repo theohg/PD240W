@@ -3,6 +3,7 @@
 #include "interrupts.h"
 #include "config/app_config.h"
 #include "utils/logging.h"
+#include "utils/pd_voltage.h"
 #include "drivers/buzzer/buzzer.h"
 #include "pd_manager.h"
 #include "settings.h"
@@ -37,7 +38,7 @@ uint32_t getInitialProgrammableTargetMv(bool resume_current_target,
         target_mv = (user_target_mv > 0) ? user_target_mv : live_voltage_mv;
     }
 
-    target_mv = (target_mv / step_mv) * step_mv;
+    target_mv = PdVoltage::alignDown(target_mv, step_mv);
     if (target_mv < min_voltage_mv) {
         target_mv = min_voltage_mv;
     }
@@ -46,6 +47,26 @@ uint32_t getInitialProgrammableTargetMv(bool resume_current_target,
     }
 
     return target_mv;
+}
+
+CurrentLimitMode nextCurrentLimitMode(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OCP: return CurrentLimitMode::CC;
+        case CurrentLimitMode::CC: return CurrentLimitMode::OFF;
+        case CurrentLimitMode::OFF: return CurrentLimitMode::OCP;
+    }
+
+    return CurrentLimitMode::OCP;
+}
+
+const char* currentLimitModeName(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OFF: return "OFF";
+        case CurrentLimitMode::OCP: return "OCP";
+        case CurrentLimitMode::CC: return "CC";
+    }
+
+    return "OCP";
 }
 
 }  // namespace
@@ -134,12 +155,7 @@ void StateMachine::init() {
     // Restore saved current limit from settings
     uint32_t saved_limit = settings.getCurrentLimit();
     if (saved_limit >= AppConfig::CURRENT_LIMIT_MIN_MA && saved_limit <= AppConfig::CURRENT_LIMIT_MAX_MA) {
-        _current_limit_ma = saved_limit;
-    }
-    // Configure INA228 hardware overcurrent alert with the current limit
-    float limit_a = _current_limit_ma / 1000.0f;
-    if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
-        LOG_INFO("INA228 overcurrent alert initialized to %.3fA", limit_a);
+        setCurrentLimitMa(saved_limit);
     }
 
     // Restore energy display mode from settings
@@ -744,16 +760,18 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index = 0;  // Wrap to first
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                // Velocity-based acceleration for current limit (smaller range: 0-5A)
-                uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1) 
-                                         / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
-                if (velocity_mult < 1) velocity_mult = 1;
-                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
-                uint32_t max_ma = getEffectiveMaxCurrentMa();
-                if (_current_limit_ma + step <= max_ma) {
-                    _current_limit_ma += step;
-                } else {
-                    _current_limit_ma = max_ma;
+                if (!CcController::isDisabled()) {
+                    // Velocity-based acceleration for current limit (smaller range: 0-5A)
+                    uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1)
+                                             / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
+                    if (velocity_mult < 1) velocity_mult = 1;
+                    uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
+                    uint32_t max_ma = getEffectiveMaxCurrentMa();
+                    if (_current_limit_ma + step <= max_ma) {
+                        _current_limit_ma += step;
+                    } else {
+                        _current_limit_ma = max_ma;
+                    }
                 }
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
                 // PPS voltage: Use velocity-based acceleration (larger range: up to 21V)
@@ -764,8 +782,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _pps_target_voltage_mv = _pps_max_voltage_mv;
                 }
-                // Round to 20mV boundary (PD spec requirement)
-                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                _pps_target_voltage_mv = PdVoltage::alignDown(_pps_target_voltage_mv,
+                                                              AppConfig::PPS_VOLTAGE_STEP_MV);
             } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
                 // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
                 uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
@@ -775,8 +793,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _avs_target_voltage_mv = _avs_max_voltage_mv;
                 }
-                // Round to 25mV boundary (AVS PD spec requirement)
-                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                _avs_target_voltage_mv = PdVoltage::alignDown(_avs_target_voltage_mv,
+                                                              AppConfig::AVS_VOLTAGE_STEP_MV);
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -793,15 +811,17 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     _selected_pdo_index = _num_pdos;  // Wrap to Back item
                 }
             } else if (_adjust_mode == AdjustMode::CURRENT_LIMIT) {
-                // Velocity-based acceleration for current limit (smaller range: 0-5A)
-                uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1) 
-                                         / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
-                if (velocity_mult < 1) velocity_mult = 1;
-                uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
-                if (_current_limit_ma > AppConfig::CURRENT_LIMIT_MIN_MA + step) {
-                    _current_limit_ma -= step;
-                } else {
-                    _current_limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
+                if (!CcController::isDisabled()) {
+                    // Velocity-based acceleration for current limit (smaller range: 0-5A)
+                    uint32_t velocity_mult = (hw.encoder.getVelocityMultiplier() + AppConfig::CURRENT_LIMIT_VELOCITY_DIV - 1)
+                                             / AppConfig::CURRENT_LIMIT_VELOCITY_DIV;
+                    if (velocity_mult < 1) velocity_mult = 1;
+                    uint32_t step = AppConfig::CURRENT_LIMIT_STEP_MA * velocity_mult;
+                    if (_current_limit_ma > AppConfig::CURRENT_LIMIT_MIN_MA + step) {
+                        _current_limit_ma -= step;
+                    } else {
+                        _current_limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
+                    }
                 }
             } else if (_adjust_mode == AdjustMode::PPS_VOLTAGE) {
                 // PPS voltage: Use velocity-based acceleration (larger range: up to 21V)
@@ -812,8 +832,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _pps_target_voltage_mv = _pps_min_voltage_mv;
                 }
-                // Round to 20mV boundary (PD spec requirement)
-                _pps_target_voltage_mv = (_pps_target_voltage_mv / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                _pps_target_voltage_mv = PdVoltage::alignDown(_pps_target_voltage_mv,
+                                                              AppConfig::PPS_VOLTAGE_STEP_MV);
             } else if (_adjust_mode == AdjustMode::AVS_VOLTAGE) {
                 // AVS voltage: Use velocity-based acceleration (wider range: 15-48V)
                 uint32_t velocity_mult = hw.encoder.getVelocityMultiplier() * AppConfig::AVS_VELOCITY_MULT;
@@ -823,8 +843,8 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 } else {
                     _avs_target_voltage_mv = _avs_min_voltage_mv;
                 }
-                // Round to 25mV boundary (AVS PD spec requirement)
-                _avs_target_voltage_mv = (_avs_target_voltage_mv / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                _avs_target_voltage_mv = PdVoltage::alignDown(_avs_target_voltage_mv,
+                                                              AppConfig::AVS_VOLTAGE_STEP_MV);
             }
             _last_activity_time = get_absolute_time();
             break;
@@ -1136,13 +1156,12 @@ void StateMachine::handleOutputButtons() {
     // BTN2: Context-dependent action
     if (btn2_clicked) {
         if (_state == AppState::ADJUST && _adjust_mode == AdjustMode::CURRENT_LIMIT) {
-            // Toggle CC/OCP mode on current limit screen
-            bool cc_now = !settings.isCcModeEnabled();
-            CcController::setEnabled(cc_now);
+            CurrentLimitMode next_mode = nextCurrentLimitMode(CcController::getMode());
+            CcController::setMode(next_mode);
             if (settings.isSoundsEnabled()) {
                 hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
             }
-            LOG_INFO("CC mode toggled to %s (BTN2)", cc_now ? "CC" : "OCP");
+            LOG_INFO("Current limit mode toggled to %s (BTN2)", currentLimitModeName(next_mode));
         } else if (_state == AppState::MAIN) {
             // Toggle 17V buck (only if VBUS > 18V, only from MAIN screen)
             float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
@@ -1337,25 +1356,24 @@ bool StateMachine::saveCurrentContractSnapshot() {
 // Current Limit Helpers
 // ============================================================================
 
-void StateMachine::applyCurrentLimit() {
-    LOG_INFO("Current limit set to %u mA", _current_limit_ma);
-
-    // Update CC controller target (handles OCP margin internally)
-    CcController::setTargetCurrentMa(_current_limit_ma);
-
-    // Configure INA228 hardware overcurrent alert threshold
-    if (CcController::isEnabled()) {
-        // CC mode: OCP set with safety margin by CcController::setTargetCurrentMa
-        LOG_INFO("CC mode: OCP set with +%umA margin", AppConfig::CC_SAFETY_MARGIN_MA);
-    } else {
-        // OCP mode: set exact limit
-        float limit_a = _current_limit_ma / 1000.0f;
-        if (hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
-            LOG_INFO("INA228 overcurrent alert set to %.3fA", limit_a);
-        } else {
-            LOG_ERROR("Failed to set INA228 overcurrent alert");
-        }
+void StateMachine::setCurrentLimitMa(uint32_t limit_ma) {
+    if (limit_ma < AppConfig::CURRENT_LIMIT_MIN_MA) {
+        limit_ma = AppConfig::CURRENT_LIMIT_MIN_MA;
     }
+    if (limit_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
+        limit_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
+    }
+
+    _current_limit_ma = limit_ma;
+}
+
+void StateMachine::applyCurrentLimit() {
+    LOG_INFO("Current limit set to %u mA (%s)",
+             _current_limit_ma,
+             currentLimitModeName(CcController::getMode()));
+
+    // Update current limit target and let the controller keep hardware alert state in sync.
+    CcController::setTargetCurrentMa(_current_limit_ma);
 
     // Persist to settings
     settings.setCurrentLimit(_current_limit_ma);

@@ -15,7 +15,7 @@
 
 // Magic number to validate stored settings
 constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 5;
+constexpr uint8_t SETTINGS_VERSION = 6;
 
 enum class SavedStartupContractType : uint8_t {
     NONE = 0,
@@ -30,6 +30,13 @@ enum class StartupContractMode : uint8_t {
     LOWEST_VOLTAGE = 0,   // Negotiate lowest voltage available
     HIGHEST_VOLTAGE = 1,  // Negotiate highest voltage available
     LAST_USED = 2         // Restore last used contract (closest if unavailable)
+};
+
+// Current limit operating modes
+enum class CurrentLimitMode : uint8_t {
+    OFF = 0,
+    OCP = 1,
+    CC = 2,
 };
 
 // Debounce delay for flash writes (reduces wear)
@@ -85,8 +92,8 @@ struct UserSettings {
     // Energy display mode: 0 = mAh, 1 = mWh
     uint8_t energy_display_mode;
 
-    // Constant Current mode (vs OCP mode)
-    bool cc_mode_enabled;
+    // Current limit operating mode (OFF / OCP / CC)
+    uint8_t current_limit_mode;
 
     // CRC32 for data integrity
     uint32_t crc32;
@@ -119,6 +126,7 @@ public:
     void setLastContractRange(uint32_t min_voltage_mv, uint32_t max_voltage_mv);
     void setStartupNegotiation(uint8_t mode);
     void setEnergyDisplayMode(uint8_t mode);
+    void setCurrentLimitMode(CurrentLimitMode mode);
     void setCcModeEnabled(bool enabled);
 
     // Accessors
@@ -144,7 +152,10 @@ public:
         return static_cast<StartupContractMode>(_settings.startup_negotiation);
     }
     uint8_t getEnergyDisplayMode() const { return _settings.energy_display_mode; }
-    bool isCcModeEnabled() const { return _settings.cc_mode_enabled; }
+    CurrentLimitMode getCurrentLimitMode() const {
+        return static_cast<CurrentLimitMode>(_settings.current_limit_mode);
+    }
+    bool isCcModeEnabled() const { return getCurrentLimitMode() == CurrentLimitMode::CC; }
 
     // Persistence
     void requestSave();      // Request a debounced save (will save after 2s delay)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "settings.h"
 #include "pico/stdlib.h"
 
 // ============================================================================
@@ -23,7 +24,12 @@ namespace CcController {
     // Runs P-controller at CC_POLL_INTERVAL_MS (10ms / 100Hz)
     void update();
 
-    // Enable/disable CC mode
+    // Set current limit operating mode (OFF, OCP, CC)
+    void setMode(CurrentLimitMode mode);
+    CurrentLimitMode getMode();
+    bool isDisabled();
+
+    // Enable/disable CC mode (compatibility wrapper for CC/OCP)
     void setEnabled(bool enabled);
     bool isEnabled();
 

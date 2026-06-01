@@ -112,6 +112,9 @@ public:
     // Get current limit value in mA
     uint32_t getCurrentLimitMa() const { return _current_limit_ma; }
 
+    // Synchronize the cached current limit value from CLI or restored settings
+    void setCurrentLimitMa(uint32_t limit_ma);
+
     // Get adjust mode
     AdjustMode getAdjustMode() const { return _adjust_mode; }
 

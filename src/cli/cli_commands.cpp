@@ -389,8 +389,9 @@ void currLim(const char* arg) {
     if (limit < AppConfig::CURRENT_LIMIT_MIN_MA)
         limit = AppConfig::CURRENT_LIMIT_MIN_MA;
 
+    stateMachine.setCurrentLimitMa(limit);
     settings.setCurrentLimit(limit);
-    hw.powerMonitor.setOvercurrentLimit(limit / 1000.0f);
+    CcController::setTargetCurrentMa(limit);
     settings.requestSave();
     Cli::respond("OK");
 }

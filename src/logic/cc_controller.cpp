@@ -5,13 +5,14 @@
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
 #include "utils/logging.h"
+#include "utils/pd_voltage.h"
 
 #include <cmath>
 
 namespace CcController {
 
 // Internal state
-static bool _enabled = false;
+static CurrentLimitMode _mode = CurrentLimitMode::OCP;
 static uint32_t _target_current_ma = AppConfig::CURRENT_LIMIT_DEFAULT_MA;
 static absolute_time_t _next_poll = {0};
 static absolute_time_t _next_pd_request = {0};
@@ -22,48 +23,88 @@ static float _r_estimate = 0.0f;
 // Last voltage we requested via PD (tracks CC's own requests)
 static int32_t _last_requested_mv = 0;
 
-void init() {
-    _enabled = settings.isCcModeEnabled();
-    _target_current_ma = settings.getCurrentLimit();
-    _next_poll = get_absolute_time();
-    _next_pd_request = get_absolute_time();
+namespace {
+
+const char* currentLimitModeName(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OFF: return "OFF";
+        case CurrentLimitMode::OCP: return "OCP";
+        case CurrentLimitMode::CC: return "CC";
+    }
+
+    return "OCP";
+}
+
+CurrentLimitMode normalizeCurrentLimitMode(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OFF:
+        case CurrentLimitMode::OCP:
+        case CurrentLimitMode::CC:
+            return mode;
+    }
+
+    return CurrentLimitMode::OCP;
+}
+
+void resetRegulationState() {
     _regulating = false;
     _r_estimate = 0.0f;
     _last_requested_mv = 0;
+}
 
-    // If CC was enabled from settings, configure OCP threshold with safety margin
-    if (_enabled) {
+uint32_t getAlertLimitMa() {
+    if (_mode == CurrentLimitMode::CC) {
         uint32_t ocp_ma = _target_current_ma + AppConfig::CC_SAFETY_MARGIN_MA;
         if (ocp_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
             ocp_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
         }
-        hw.powerMonitor.setOvercurrentLimit(ocp_ma / 1000.0f, true);
-        LOG_INFO("CC mode restored from settings, OCP=%.2fA", ocp_ma / 1000.0f);
+        return ocp_ma;
+    }
+
+    return _target_current_ma;
+}
+
+void applyHardwareAlertLimit() {
+    if (_mode == CurrentLimitMode::OFF) {
+        hw.powerMonitor.disableOvercurrentLimit();
+        return;
+    }
+
+    float limit_a = getAlertLimitMa() / 1000.0f;
+    if (!hw.powerMonitor.setOvercurrentLimit(limit_a, true)) {
+        LOG_ERROR("Failed to set INA228 overcurrent alert");
     }
 }
 
+}  // namespace
+
+void init() {
+    _mode = settings.getCurrentLimitMode();
+    _target_current_ma = settings.getCurrentLimit();
+    _next_poll = get_absolute_time();
+    _next_pd_request = get_absolute_time();
+    resetRegulationState();
+    applyHardwareAlertLimit();
+
+    LOG_INFO("Current limit mode restored: %s", currentLimitModeName(_mode));
+}
+
 void update() {
-    if (!_enabled) {
-        _regulating = false;
-        _r_estimate = 0.0f;
-        _last_requested_mv = 0;
+    if (_mode != CurrentLimitMode::CC) {
+        resetRegulationState();
         return;
     }
 
     // Only regulate when output is on and PPS or AVS contract is active
     if (!gpio_get(Board::PIN_SWITCH_EN)) {
-        _regulating = false;
-        _r_estimate = 0.0f;
-        _last_requested_mv = 0;
+        resetRegulationState();
         return;
     }
 
     bool pps = pdManager.isPpsActive();
     bool avs = pdManager.isAvsActive();
     if (!pps && !avs) {
-        _regulating = false;
-        _r_estimate = 0.0f;
-        _last_requested_mv = 0;
+        resetRegulationState();
         return;
     }
 
@@ -158,8 +199,8 @@ void update() {
     if (new_voltage_mv < voltage_min_mv) new_voltage_mv = voltage_min_mv;
     if (new_voltage_mv > user_max_mv) new_voltage_mv = user_max_mv;
 
-    // Round to PD spec step boundary
-    new_voltage_mv = (new_voltage_mv / (int32_t)step_size) * (int32_t)step_size;
+    new_voltage_mv = static_cast<int32_t>(PdVoltage::alignDown(
+        static_cast<uint32_t>(new_voltage_mv), step_size));
 
     // Skip if voltage hasn't changed from last request
     if (new_voltage_mv == _last_requested_mv) {
@@ -187,35 +228,37 @@ void update() {
     _next_pd_request = make_timeout_time_ms(AppConfig::CC_PD_REQUEST_COOLDOWN_MS);
 }
 
-void setEnabled(bool enabled) {
-    _enabled = enabled;
-    if (!enabled) {
-        _regulating = false;
+void setMode(CurrentLimitMode mode) {
+    mode = normalizeCurrentLimitMode(mode);
+    if (_mode == mode) {
+        return;
     }
-    _r_estimate = 0.0f;
-    _last_requested_mv = 0;
-    settings.setCcModeEnabled(enabled);
+
+    _mode = mode;
+    resetRegulationState();
+    _next_poll = get_absolute_time();
+    _next_pd_request = get_absolute_time();
+    applyHardwareAlertLimit();
+    settings.setCurrentLimitMode(mode);
     settings.requestSave();
 
-    // Update OCP threshold based on mode
-    if (enabled) {
-        // CC mode: set OCP margin above target
-        uint32_t ocp_ma = _target_current_ma + AppConfig::CC_SAFETY_MARGIN_MA;
-        if (ocp_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
-            ocp_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
-        }
-        hw.powerMonitor.setOvercurrentLimit(ocp_ma / 1000.0f, true);
-    } else {
-        // OCP mode: set to exact current limit
-        hw.powerMonitor.setOvercurrentLimit(_target_current_ma / 1000.0f, true);
-    }
+    LOG_INFO("Current limit mode set to %s", currentLimitModeName(mode));
+}
 
-    LOG_INFO("CC mode %s, OCP=%.2fA", enabled ? "enabled" : "disabled",
-             hw.powerMonitor.getOvercurrentLimit());
+CurrentLimitMode getMode() {
+    return _mode;
+}
+
+bool isDisabled() {
+    return _mode == CurrentLimitMode::OFF;
+}
+
+void setEnabled(bool enabled) {
+    setMode(enabled ? CurrentLimitMode::CC : CurrentLimitMode::OCP);
 }
 
 bool isEnabled() {
-    return _enabled;
+    return _mode == CurrentLimitMode::CC;
 }
 
 void setTargetCurrentMa(uint32_t target_ma) {
@@ -226,15 +269,10 @@ void setTargetCurrentMa(uint32_t target_ma) {
         target_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
     }
     _target_current_ma = target_ma;
-
-    // Update OCP threshold
-    if (_enabled) {
-        uint32_t ocp_ma = target_ma + AppConfig::CC_SAFETY_MARGIN_MA;
-        if (ocp_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
-            ocp_ma = AppConfig::CURRENT_LIMIT_MAX_MA;
-        }
-        hw.powerMonitor.setOvercurrentLimit(ocp_ma / 1000.0f, true);
-    }
+    resetRegulationState();
+    _next_poll = get_absolute_time();
+    _next_pd_request = get_absolute_time();
+    applyHardwareAlertLimit();
 }
 
 uint32_t getTargetCurrentMa() {

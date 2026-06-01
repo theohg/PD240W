@@ -17,6 +17,30 @@ static constexpr uint32_t FLASH_TARGET_OFFSET = (2 * 1024 * 1024) - FLASH_SECTOR
 
 namespace {
 
+struct UserSettingsV5 {
+    uint32_t magic;
+    uint8_t version;
+    uint32_t current_limit_ma;
+    int8_t last_pdo_index;
+    bool load_switch_enabled;
+    bool buck_17v_enabled;
+    uint8_t lcd_brightness;
+    bool sounds_enabled;
+    bool auto_pps_enabled;
+    uint8_t auto_dim_minutes;
+    uint8_t startup_melody;
+    bool auto_output;
+    uint8_t last_contract_type;
+    uint32_t last_requested_voltage_mv;
+    uint32_t last_contract_min_voltage_mv;
+    uint32_t last_contract_max_voltage_mv;
+    uint8_t startup_negotiation;
+    bool auto_avs_enabled;
+    uint8_t energy_display_mode;
+    bool cc_mode_enabled;
+    uint32_t crc32;
+};
+
 struct UserSettingsV4 {
     uint32_t magic;
     uint8_t version;
@@ -63,6 +87,31 @@ const char* savedStartupContractTypeName(SavedStartupContractType type) {
     }
 
     return "unknown";
+}
+
+CurrentLimitMode normalizeCurrentLimitMode(uint8_t raw_mode) {
+    switch (static_cast<CurrentLimitMode>(raw_mode)) {
+        case CurrentLimitMode::OFF:
+        case CurrentLimitMode::OCP:
+        case CurrentLimitMode::CC:
+            return static_cast<CurrentLimitMode>(raw_mode);
+    }
+
+    return CurrentLimitMode::OCP;
+}
+
+CurrentLimitMode legacyCurrentLimitMode(bool cc_mode_enabled) {
+    return cc_mode_enabled ? CurrentLimitMode::CC : CurrentLimitMode::OCP;
+}
+
+const char* currentLimitModeName(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OFF: return "OFF";
+        case CurrentLimitMode::OCP: return "OCP";
+        case CurrentLimitMode::CC: return "CC";
+    }
+
+    return "OCP";
 }
 
 }  // namespace
@@ -261,12 +310,17 @@ void Settings::setEnergyDisplayMode(uint8_t mode) {
     }
 }
 
-void Settings::setCcModeEnabled(bool enabled) {
-    if (_settings.cc_mode_enabled != enabled) {
-        _settings.cc_mode_enabled = enabled;
+void Settings::setCurrentLimitMode(CurrentLimitMode mode) {
+    uint8_t raw_mode = static_cast<uint8_t>(normalizeCurrentLimitMode(static_cast<uint8_t>(mode)));
+    if (_settings.current_limit_mode != raw_mode) {
+        _settings.current_limit_mode = raw_mode;
         _dirty = true;
-        LOG_DEBUG("CC mode %s", enabled ? "enabled" : "disabled");
+        LOG_DEBUG("Current limit mode %s", currentLimitModeName(static_cast<CurrentLimitMode>(raw_mode)));
     }
+}
+
+void Settings::setCcModeEnabled(bool enabled) {
+    setCurrentLimitMode(enabled ? CurrentLimitMode::CC : CurrentLimitMode::OCP);
 }
 
 // ============================================================================
@@ -337,9 +391,47 @@ bool Settings::loadFromFlash() {
             return false;
         }
 
+        _settings.current_limit_mode = static_cast<uint8_t>(normalizeCurrentLimitMode(_settings.current_limit_mode));
+
         _dirty = false;
         LOG_INFO("Settings loaded from flash: brightness=%d, sounds=%d, auto_pps=%d, auto_avs=%d, auto_out_en=%d",
                  _settings.lcd_brightness, _settings.sounds_enabled, _settings.auto_pps_enabled, _settings.auto_avs_enabled, _settings.auto_output);
+        return true;
+    }
+
+    if (flash_settings->version == 5) {
+        const UserSettingsV5* legacy_settings = reinterpret_cast<const UserSettingsV5*>(FLASH_TARGET_ADDR);
+        uint32_t expected_crc = legacy_settings->crc32;
+        if (calculateSettingsCrc(*legacy_settings) != expected_crc) {
+            LOG_WARN("Settings: Legacy CRC mismatch, using defaults");
+            return false;
+        }
+
+        memset(&_settings, 0, sizeof(_settings));
+        _settings.magic = SETTINGS_MAGIC;
+        _settings.version = SETTINGS_VERSION;
+        _settings.current_limit_ma = legacy_settings->current_limit_ma;
+        _settings.last_pdo_index = legacy_settings->last_pdo_index;
+        _settings.load_switch_enabled = legacy_settings->load_switch_enabled;
+        _settings.buck_17v_enabled = legacy_settings->buck_17v_enabled;
+        _settings.lcd_brightness = legacy_settings->lcd_brightness;
+        _settings.sounds_enabled = legacy_settings->sounds_enabled;
+        _settings.auto_pps_enabled = legacy_settings->auto_pps_enabled;
+        _settings.auto_dim_minutes = legacy_settings->auto_dim_minutes;
+        _settings.startup_melody = legacy_settings->startup_melody;
+        _settings.auto_output = legacy_settings->auto_output;
+        _settings.last_contract_type = legacy_settings->last_contract_type;
+        _settings.last_requested_voltage_mv = legacy_settings->last_requested_voltage_mv;
+        _settings.last_contract_min_voltage_mv = legacy_settings->last_contract_min_voltage_mv;
+        _settings.last_contract_max_voltage_mv = legacy_settings->last_contract_max_voltage_mv;
+        _settings.startup_negotiation = legacy_settings->startup_negotiation;
+        _settings.auto_avs_enabled = legacy_settings->auto_avs_enabled;
+        _settings.energy_display_mode = legacy_settings->energy_display_mode;
+        _settings.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(legacy_settings->cc_mode_enabled));
+        _settings.crc32 = 0;
+
+        _dirty = false;
+        LOG_INFO("Settings migrated from v5: current limit mode=%s", currentLimitModeName(getCurrentLimitMode()));
         return true;
     }
 
@@ -367,7 +459,7 @@ bool Settings::loadFromFlash() {
         _settings.startup_negotiation = legacy_settings->startup_negotiation;
         _settings.auto_avs_enabled = legacy_settings->auto_avs_enabled;
         _settings.energy_display_mode = legacy_settings->energy_display_mode;
-        _settings.cc_mode_enabled = legacy_settings->cc_mode_enabled;
+        _settings.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(legacy_settings->cc_mode_enabled));
 
         bool has_legacy_snapshot = (legacy_settings->last_pdo_index >= 0) ||
                                    (legacy_settings->last_pps_avs_voltage_mv > 0);
@@ -413,7 +505,7 @@ void Settings::resetToDefaults() {
     _settings.last_contract_max_voltage_mv = 0;
     _settings.startup_negotiation = 2;                              // Last used (remember last contract)
     _settings.energy_display_mode = 0;                              // mAh by default
-    _settings.cc_mode_enabled = false;                              // OCP mode by default
+    _settings.current_limit_mode = static_cast<uint8_t>(CurrentLimitMode::OCP);
     _settings.crc32 = 0;                                            // Will be calculated on save
 
     _dirty = false;

@@ -119,6 +119,7 @@ private:
     int8_t _last_pdo_selection;
     int8_t _last_pdo_scroll_idx;  // Scroll position in PDO list
     uint32_t _last_adjust_value;
+    uint32_t _last_main_current_limit_ma;
     uint8_t _last_current_limit_percent;
     uint32_t _last_pps_voltage;
     uint8_t _last_pps_percent;
@@ -145,9 +146,10 @@ private:
     bool _last_pps_converged;
     bool _last_avs_converged;
 
-    // CC mode badge tracking
-    int8_t _last_cc_badge_state;  // -1=unknown, 0=hidden, 1=grey(enabled but fixed), 2=white(regulating)
-    int8_t _last_cc_adjust_state; // Separate tracker for current limit adjust screen
+    // Current-limit badge tracking
+    int8_t _last_cc_badge_state;  // -1=unknown, 0=hidden, 1=OCP, 2=CC regulating, 3=CC idle
+    int8_t _last_cc_adjust_state; // -1=unknown, 0=OFF, 1=OCP, 2=CC
+    int8_t _last_main_current_limit_mode;  // -1=unknown, 0=OFF, 1=OCP, 2=CC
 
     // Energy display mode tracking
     int8_t _last_energy_mode;  // -1=unknown, 0=mAh, 1=mWh

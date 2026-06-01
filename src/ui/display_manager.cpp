@@ -164,6 +164,7 @@ DisplayManager::DisplayManager()
     , _last_pdo_selection(-1)
     , _last_pdo_scroll_idx(-1)
     , _last_adjust_value(0)
+    , _last_main_current_limit_ma(0)
     , _last_current_limit_percent(255)
     , _last_pps_voltage(0)
     , _last_pps_percent(255)
@@ -190,6 +191,7 @@ DisplayManager::DisplayManager()
     , _last_avs_converged(false)
     , _last_cc_badge_state(-1)
     , _last_cc_adjust_state(-1)
+    , _last_main_current_limit_mode(-1)
     , _last_energy_mode(-1)
     , _last_ntc_temp(-999.0f)
     , _last_ina_temp(-999.0f)
@@ -220,8 +222,10 @@ void DisplayManager::init() {
     _last_epr_badge_drawn = false;  // Force EPR badge redraw
     _last_cc_badge_state = -1;     // Force CC badge redraw
     _last_cc_adjust_state = -1;    // Force CC adjust badge redraw
+    _last_main_current_limit_mode = -1;  // Force main current-limit redraw
     _last_remote_mode = false;     // Force RMT badge redraw
     _last_energy_mode = -1;        // Force energy unit redraw
+    _last_main_current_limit_ma = 0;
     _last_current_limit_percent = 255;
     _last_pps_percent = 255;
     _last_avs_percent = 255;
@@ -800,51 +804,68 @@ void DisplayManager::drawPowerReadings() {
     hw.display.drawStringAA(UNIT_X, y, "A", UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
 
     // OCP/CC mode badge (next to "A" on current row)
-    // OCP always shown when not in PPS/AVS (regardless of CC setting)
-    // CC shown only in PPS/AVS: grey=not regulating, white=regulating
+    // OFF hides the badge, OCP is grey, CC is white when actively regulating.
     {
-        bool cc_enabled = CcController::isEnabled();
+        CurrentLimitMode current_limit_mode = CcController::getMode();
         bool in_pps_avs = pdManager.isPpsActive() || pdManager.isAvsActive();
         bool cc_regulating = CcController::isRegulating();
-        // 0=OCP grey, 1=CC white (regulating), 2=CC grey (enabled+PPS/AVS, not regulating)
         int8_t badge_state;
-        if (cc_enabled && in_pps_avs) {
-            badge_state = cc_regulating ? 1 : 2;
+        if (current_limit_mode == CurrentLimitMode::OFF) {
+            badge_state = 0;
+        } else if (current_limit_mode == CurrentLimitMode::CC && in_pps_avs) {
+            badge_state = cc_regulating ? 2 : 3;
         } else {
-            badge_state = 0;  // OCP
+            badge_state = 1;
         }
         if (badge_state != _last_cc_badge_state || _needs_full_redraw) {
             const int BADGE_AREA_X = UNIT_X + ST7789::getStringWidthAA("A", FONT_LARGE) + 6;
             const int BADGE_H = 16;
             const int BADGE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
-            // OCP is the widest badge — use its width as the clear/centering area
-            int ocp_w = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 8;
-            hw.display.fillRect(BADGE_AREA_X, BADGE_Y, ocp_w, BADGE_H, UIColors::BACKGROUND);
+            int badge_area_w = ST7789::getStringWidthAA("OCP", FONT_SMALL) + 8;
+            hw.display.fillRect(BADGE_AREA_X, BADGE_Y, badge_area_w, BADGE_H, UIColors::BACKGROUND);
 
-            const char* txt;
-            uint16_t badge_color;
-            if (badge_state == 1) {
-                txt = "CC"; badge_color = UIColors::TEXT_PRIMARY;
-            } else if (badge_state == 2) {
-                txt = "CC"; badge_color = UIColors::MUTED;
-            } else {
-                txt = "OCP"; badge_color = UIColors::MUTED;
+            if (badge_state != 0) {
+                const char* txt;
+                uint16_t badge_color;
+                if (badge_state == 2) {
+                    txt = "CC";
+                    badge_color = UIColors::TEXT_PRIMARY;
+                } else if (badge_state == 3) {
+                    txt = "CC";
+                    badge_color = UIColors::MUTED;
+                } else {
+                    txt = "OCP";
+                    badge_color = UIColors::MUTED;
+                }
+                int badge_w = ST7789::getStringWidthAA(txt, FONT_SMALL) + 8;
+                int badge_x = BADGE_AREA_X + (badge_area_w - badge_w) / 2;
+                hw.display.fillRoundRect(badge_x, BADGE_Y, badge_w, BADGE_H, 3, badge_color);
+                int tx = badge_x + (badge_w - ST7789::getStringWidthAA(txt, FONT_SMALL)) / 2;
+                int ty = BADGE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
+                hw.display.drawStringAA(tx, ty, txt, UIColors::BACKGROUND, badge_color, FONT_SMALL);
             }
-            int badge_w = ST7789::getStringWidthAA(txt, FONT_SMALL) + 8;
-            int badge_x = BADGE_AREA_X + (ocp_w - badge_w) / 2;
-            hw.display.fillRoundRect(badge_x, BADGE_Y, badge_w, BADGE_H, 3, badge_color);
-            int tx = badge_x + (badge_w - ST7789::getStringWidthAA(txt, FONT_SMALL)) / 2;
-            int ty = BADGE_Y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
-            hw.display.drawStringAA(tx, ty, txt, UIColors::BACKGROUND, badge_color, FONT_SMALL);
             _last_cc_badge_state = badge_state;
         }
     }
 
     // Secondary: Current Limit
     y += 32;
-    float limit_a = stateMachine.getCurrentLimitMa() / 1000.0f;
-    snprintf(buf, sizeof(buf), "Lim: %.2f A", limit_a);
-    hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+    CurrentLimitMode current_limit_mode = CcController::getMode();
+    uint32_t current_limit_ma = stateMachine.getCurrentLimitMa();
+    bool limit_mode_changed = (_last_main_current_limit_mode != static_cast<int8_t>(current_limit_mode));
+    bool limit_value_changed = (_last_main_current_limit_ma != current_limit_ma);
+    if (_needs_full_redraw || limit_mode_changed || limit_value_changed) {
+        hw.display.fillRect(VALUE_X, y, SCREEN_WIDTH - VALUE_X - MARGIN, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
+        if (current_limit_mode == CurrentLimitMode::OFF) {
+            snprintf(buf, sizeof(buf), "Lim: OFF");
+        } else {
+            float limit_a = current_limit_ma / 1000.0f;
+            snprintf(buf, sizeof(buf), "Lim: %.2f A", limit_a);
+        }
+        hw.display.drawStringAA(VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        _last_main_current_limit_mode = static_cast<int8_t>(current_limit_mode);
+        _last_main_current_limit_ma = current_limit_ma;
+    }
 
     // --- Power Section ---
     y += 14; // Gap between sections
@@ -853,7 +874,11 @@ void DisplayManager::drawPowerReadings() {
     // Zero out power when current displays as zero (consistent with current reading)
     float display_power = (display_current == 0.0f) ? 0.0f : state.power_w;
     hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-    snprintf(buf, sizeof(buf), "%.3f", display_power);
+    if (display_power >= 100.0f) {
+        snprintf(buf, sizeof(buf), "%.2f", display_power);
+    } else {
+        snprintf(buf, sizeof(buf), "%.3f", display_power);
+    }
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
     if (VALUE_X + num_w < UNIT_X)
@@ -1294,8 +1319,9 @@ void DisplayManager::drawCurrentLimitAdjust() {
     uint8_t percent = (range > 0)
         ? ((current_ma - AppConfig::CURRENT_LIMIT_MIN_MA) * 100) / range
         : 0;
-    bool cc_enabled = CcController::isEnabled();
-    int8_t cc_state = cc_enabled ? 1 : 0;
+    CurrentLimitMode current_limit_mode = CcController::getMode();
+    bool adjustment_disabled = (current_limit_mode == CurrentLimitMode::OFF);
+    int8_t cc_state = static_cast<int8_t>(current_limit_mode);
     bool cc_changed = (cc_state != _last_cc_adjust_state);
     bool value_changed = (current_ma != _last_adjust_value);
     bool percent_changed = (percent != _last_current_limit_percent);
@@ -1325,23 +1351,30 @@ void DisplayManager::drawCurrentLimitAdjust() {
     const int BADGE_Y = y + (FONT_LARGE->lineHeight - BADGE_H) / 2;
 
     // Only redraw value+unit when the current value changed (avoids flicker on badge toggle)
-    if (value_changed || _needs_full_redraw) {
+    if (value_changed || cc_changed || _needs_full_redraw) {
         _last_adjust_value = current_ma;
         hw.display.fillRect(VALUE_X, y, VALUE_AREA_W, FONT_LARGE->lineHeight, UIColors::BACKGROUND);
-        hw.display.drawStringAA(VALUE_X, y, buf, UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        uint16_t value_color = adjustment_disabled ? UIColors::MUTED : UIColors::ACCENT;
+        hw.display.drawStringAA(VALUE_X, y, buf, value_color, UIColors::BACKGROUND, FONT_LARGE);
         int value_width = ST7789::getStringWidthAA(buf, FONT_LARGE);
         if (VALUE_X + value_width < UNIT_X) {
             hw.display.fillRect(VALUE_X + value_width, y,
                                 UNIT_X - VALUE_X - value_width,
                                 FONT_LARGE->lineHeight, UIColors::BACKGROUND);
         }
-        hw.display.drawStringAA(UNIT_X, y, "A", UIColors::ACCENT, UIColors::BACKGROUND, FONT_LARGE);
+        hw.display.drawStringAA(UNIT_X, y, "A", value_color, UIColors::BACKGROUND, FONT_LARGE);
     }
 
-    // CC/OCP mode indicator badge — only redraw when badge state changes
+    // OFF/OCP/CC mode indicator badge — only redraw when badge state changes
     if (cc_changed || _needs_full_redraw) {
-        const char* mode_text = cc_enabled ? "CC" : "OCP";
-        uint16_t badge_color = cc_enabled ? UIColors::ACCENT : UIColors::MUTED;
+        const char* mode_text = "OCP";
+        uint16_t badge_color = UIColors::MUTED;
+        if (current_limit_mode == CurrentLimitMode::OFF) {
+            mode_text = "OFF";
+        } else if (current_limit_mode == CurrentLimitMode::CC) {
+            mode_text = "CC";
+            badge_color = UIColors::ACCENT;
+        }
         hw.display.fillRect(BADGE_AREA_X - 1, BADGE_Y - 1, BADGE_AREA_W + 2, BADGE_H + 2, UIColors::BACKGROUND);
         int badge_w = ST7789::getStringWidthAA(mode_text, FONT_SMALL) + 8;
         int badge_x = BADGE_AREA_X + (BADGE_AREA_W - badge_w) / 2;
@@ -1354,13 +1387,15 @@ void DisplayManager::drawCurrentLimitAdjust() {
 
     // Draw progress bar (scaled to effective max)
     y += 50;
-    if (_needs_full_redraw || _last_current_limit_percent == 255) {
+    uint16_t progress_start = adjustment_disabled ? UIColors::MUTED : PROGRESS_GRADIENT_START;
+    uint16_t progress_end = adjustment_disabled ? UIColors::MUTED : PROGRESS_GRADIENT_END;
+    if (_needs_full_redraw || cc_changed || _last_current_limit_percent == 255) {
         drawProgressBar(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20, percent,
-                        PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+                        progress_start, progress_end);
     } else if (percent_changed) {
         updateProgressBarFill(MARGIN * 2, y, SCREEN_WIDTH - MARGIN * 4, 20,
                               _last_current_limit_percent, percent,
-                              PROGRESS_GRADIENT_START, PROGRESS_GRADIENT_END);
+                              progress_start, progress_end);
     }
     _last_current_limit_percent = percent;
 
@@ -1378,9 +1413,11 @@ void DisplayManager::drawCurrentLimitAdjust() {
         hw.display.drawStringAA(SCREEN_WIDTH - MARGIN * 2 - max_width, y, max_str,
                               UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
 
-        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 35,
-                              "Rotate: Adjust  BTN2: CC/OCP", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 46,
+                              "Rotate: Adjust", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 31,
+                              "BTN2: OFF/OCP/CC", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+        hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 16,
                               "Click: Confirm", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     }
 }
