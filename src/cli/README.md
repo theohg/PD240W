@@ -4,6 +4,9 @@
 
 The PD240W exposes a serial CLI over USB CDC at **115200 baud, 8N1**. Lines are terminated with `\n`.
 
+> [!NOTE]
+> On the current PCB revision, native USB CDC requires the USB D+/D- rework described in the repository [README](../../README.md).
+
 **Finding the serial port:**
 
 | OS | Command |
@@ -59,7 +62,7 @@ Receiving any serial command puts the device in **REMOTE** mode:
 
 | Command | Arguments | Response | Description |
 |---------|-----------|----------|-------------|
-| `*IDN?` | — | `PD240W,HWA.1,FWv1.0.0` | Device identification |
+| `*IDN?` | — | `PD240W,HWA.1,FWv2.0.0` | Device identification |
 | `SYST:STAT?` | — | `MAIN` / `FAULT:OVERTEMP` / ... | System state |
 | `SYST:UPTIME?` | — | `12345` | Uptime in seconds |
 | `SYST:REBOOT` | — | `OK` | Software reboot (watchdog reset) |
@@ -121,7 +124,7 @@ Receiving any serial command puts the device in **REMOTE** mode:
 | `SETT:AUTOOUT?` | — | `ON` / `OFF` | Query auto output |
 | `SETT:AUTOOUT` | `ON` / `OFF` | `OK` | Toggle auto output |
 | `SETT:DIM?` | — | `5` | Query dim timeout in minutes |
-| `SETT:DIM` | `<1-10>` | `OK` | Set dim timeout in minutes |
+| `SETT:DIM` | `<0-10>` | `OK` | Set dim timeout in minutes (`0` = OFF) |
 | `SETT:SAVE` | — | `OK` | Force save settings to flash |
 | `SETT:RESET` | — | `OK` | Reset all settings to defaults |
 
@@ -144,7 +147,7 @@ Receiving any serial command puts the device in **REMOTE** mode:
 
 ```
 > *IDN?
-PD240W,HWA.1,FWv1.0.0
+PD240W,HWA.1,FWv2.0.0
 > LOG:OFF
 OK
 > SYST:STAT?
@@ -185,7 +188,7 @@ OK
 from pd240w import PD240W
 
 with PD240W("/dev/ttyACM0") as psu:
-    print(psu.identity())           # PD240W,HWA.1,FWv1.0.0
+    print(psu.identity())           # PD240W,HWA.1,FWv2.0.0
     print(psu.list_pdos())          # ['0:5000/3000', '1:9000/3000', ...]
     psu.select_pdo(3)               # Select 20V
     psu.output(True)                # Enable output

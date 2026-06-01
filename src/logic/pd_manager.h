@@ -29,9 +29,9 @@ struct ActiveContract {
     bool is_avs;
     bool is_epr;             ///< True when is_avs and the contract is EPR (APDO min > 9V)
     bool valid;
-    // PPS-specific fields
-    uint32_t pps_min_mv;    // PPS range min voltage
-    uint32_t pps_max_mv;    // PPS range max voltage
+    // Programmable-contract fields (PPS or AVS)
+    uint32_t programmable_min_mv;  // Active APDO range min voltage
+    uint32_t programmable_max_mv;  // Active APDO range max voltage
 };
 
 enum class DetectedCableRating : uint8_t {

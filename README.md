@@ -18,7 +18,7 @@ Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday
 </p>
 
 > [!WARNING]
-> **Disclaimer**: This device has currently only been tested for the **USB-PD 3.0** standard (up to 20V, including PPS). It has not yet been validated with the **USB-PD 3.1 ERP** extensions (28V, 36V, and 48V with AVS). Use at your own risk when testing high-voltage EPR profiles.
+> **Disclaimer**: Firmware v2.0.0 includes guarded AVS/EPR negotiation, startup restore, and EPR-exit handling, but high-voltage charger interoperability still depends on the source and cable combination you test with. Validate 28V/36V/48V operation on your hardware before relying on it in the field.
 
 ## Table of Contents
 
@@ -34,11 +34,13 @@ Hackaday.io <img src="https://cdn.simpleicons.org/hackaday/F5A623" alt="Hackaday
 ## Features
 
 - **USB-C Power Delivery**: Negotiates Fixed, PPS (5-21V programmable), and AVS (15-48V EPR) profiles
-- **Current Limiting**: Adjustable 50mA-5A via INA228 power monitor with hardware overcurrent protection
+- **Current Limiting**: Adjustable 10mA-5A via INA228 power monitor with hardware overcurrent protection
 - **LCD Interface**: 240x320 ST7789 display with anti-aliased fonts and Prusa-style encoder navigation
 - **Safety**: Overcurrent ISR, overtemperature monitoring (NTC + INA228)
 - **Settings Persistence**: User settings stored in RP2040 flash with CRC32 validation
 - **Auto PPS Tuning**: Closed-loop voltage correction for PPS charger output accuracy
+- **Charger Diagnostics**: On-device PD revision, charger identity, cable inference, and max-power reporting
+- **Remote CLI**: USB serial command interface for measurements, PD selection, and settings updates
 - **Energy Monitoring**: Tracks mAh delivered since boot via INA228 charge accumulator
 - **17V Buck Output**: Optional mock STO/SBC voltage for motor drive safety circuits
 - **Configurable**: Brightness, auto-dim, startup melody, auto-output on boot and more
@@ -231,17 +233,9 @@ src/
 │
 ├── utils/
 │   ├── logging.h                   LOG_INFO/WARN/ERROR/DEBUG/CRITICAL macros
+│   ├── pd_voltage.h                Shared programmable-voltage alignment helper
 │   ├── tps_eeprom_loader.h/cpp     Low-level TPS26750 EEPROM read/write
 │   └── tps26750_patch.c            TPS26750 binary configuration blob
-│
-├── external/
-│   └── ina228_multiplatform/       Git submodule for the shared INA228 driver
-│       ├── include/                Public INA228 headers used by this firmware
-│       └── src/                    RP2040-compatible driver implementation and I2C wrappers
-│
-└── tools/
-    ├── generate_font.py            Font bitmap generator (Python + Pillow)
-    └── fonts/                      Source TTF files (Inter)
 ```
 
 ## Want one?

@@ -7,6 +7,74 @@
 #include "tps26750.h"
 #include <cstring>
 
+namespace {
+
+constexpr uint8_t  PDO_TYPE_SHIFT = 30;
+constexpr uint32_t PDO_TYPE_MASK = 0x03;
+constexpr uint8_t  PDO_TYPE_AUGMENTED = 0x03;
+
+constexpr uint8_t  APDO_TYPE_SHIFT = 28;
+constexpr uint32_t APDO_TYPE_MASK = 0x03;
+constexpr uint8_t  APDO_TYPE_PPS = 0x00;
+constexpr uint8_t  APDO_TYPE_EPR_AVS = 0x01;
+constexpr uint8_t  APDO_TYPE_SPR_AVS = 0x02;
+
+constexpr uint8_t  FIXED_PDO_VOLTAGE_SHIFT = 10;
+constexpr uint32_t FIXED_PDO_VOLTAGE_MASK = 0x3FF;
+constexpr uint32_t FIXED_PDO_VOLTAGE_UNIT_MV = 50;
+constexpr uint32_t FIXED_PDO_CURRENT_MASK = 0x3FF;
+constexpr uint32_t FIXED_PDO_CURRENT_UNIT_MA = 10;
+
+constexpr uint8_t  PPS_RDO_VOLTAGE_SHIFT = 9;
+constexpr uint32_t PPS_RDO_VOLTAGE_MASK = 0xFFF;
+constexpr uint32_t PPS_RDO_VOLTAGE_UNIT_MV = 20;
+
+constexpr uint8_t  AVS_RDO_VOLTAGE_SHIFT = 9;
+constexpr uint32_t AVS_RDO_VOLTAGE_MASK = 0x7FF;
+constexpr uint32_t AVS_RDO_VOLTAGE_UNIT_MV = 25;
+
+constexpr uint32_t APDO_RDO_CURRENT_MASK = 0x7F;
+constexpr uint32_t APDO_RDO_CURRENT_UNIT_MA = 50;
+
+constexpr uint8_t  EPR_AVS_PDO_MAX_VOLTAGE_SHIFT = 17;
+constexpr uint32_t EPR_AVS_PDO_MAX_VOLTAGE_MASK = 0x1FF;
+constexpr uint8_t  PROGRAMMABLE_PDO_MIN_VOLTAGE_SHIFT = 8;
+constexpr uint32_t PROGRAMMABLE_PDO_MIN_VOLTAGE_MASK = 0xFF;
+constexpr uint32_t PROGRAMMABLE_PDO_VOLTAGE_UNIT_MV = 100;
+constexpr uint32_t EPR_AVS_PDO_PDP_MASK_W = 0xFF;
+
+constexpr uint8_t  SPR_AVS_9_15_CURRENT_SHIFT = 10;
+constexpr uint32_t SPR_AVS_CURRENT_MASK = 0x3FF;
+constexpr uint32_t SPR_AVS_CURRENT_UNIT_MA = 10;
+
+constexpr uint8_t  PPS_PDO_MAX_VOLTAGE_SHIFT = 17;
+constexpr uint32_t PPS_PDO_MAX_VOLTAGE_MASK = 0xFF;
+constexpr uint32_t PPS_PDO_CURRENT_MASK = 0x7F;
+constexpr uint32_t PPS_PDO_CURRENT_UNIT_MA = 50;
+
+constexpr uint8_t SPR_PDO_COUNT_MASK = 0x07;
+constexpr uint8_t EPR_PDO_COUNT_SHIFT = 3;
+constexpr uint8_t EPR_PDO_COUNT_MASK = 0x07;
+constexpr uint8_t SPR_PDO_START_OFFSET = 1;
+constexpr uint8_t EPR_PDO_START_OFFSET = 29;
+constexpr uint8_t PDO_BYTES = 4;
+
+constexpr uint32_t PPS_REQUEST_STEP_MV = 20;
+constexpr uint32_t AVS_REQUEST_STEP_MV = 25;
+
+constexpr uint32_t extractBits(uint32_t value, uint8_t shift, uint32_t mask) {
+    return (value >> shift) & mask;
+}
+
+uint32_t readLe32(const uint8_t* buffer) {
+    return static_cast<uint32_t>(buffer[0]) |
+           (static_cast<uint32_t>(buffer[1]) << 8) |
+           (static_cast<uint32_t>(buffer[2]) << 16) |
+           (static_cast<uint32_t>(buffer[3]) << 24);
+}
+
+}  // namespace
+
 // ============================================================================
 // Constructor & Init
 // ============================================================================
@@ -135,44 +203,44 @@ bool TPS26750::getActiveContract(uint32_t& voltage_mv, uint32_t& current_ma) {
     if (!readRegister(TPS_REG_ACTIVE_CONTRACT_RDO, rdoBuf, 4)) return false;
 
     // Convert to 32-bit integers
-    uint32_t pdo = pdoBuf[0] | (pdoBuf[1] << 8) | (pdoBuf[2] << 16) | (pdoBuf[3] << 24);
-    uint32_t rdo = rdoBuf[0] | (rdoBuf[1] << 8) | (rdoBuf[2] << 16) | (rdoBuf[3] << 24);
+    uint32_t pdo = readLe32(pdoBuf);
+    uint32_t rdo = readLe32(rdoBuf);
 
     // PDO bits 31:30 define type: 00=Fixed, 01=Battery, 10=Variable, 11=Augmented (PPS or AVS)
-    uint8_t supplyType = (pdo >> 30) & 0x03;
+    uint8_t supplyType = static_cast<uint8_t>(extractBits(pdo, PDO_TYPE_SHIFT, PDO_TYPE_MASK));
 
-    if (supplyType == 0x03) { 
+    if (supplyType == PDO_TYPE_AUGMENTED) {
         // --- Augmented PDO (PPS or AVS) ---
         // Distinguish using APDO type bits (29:28) from the PDO
-        uint8_t apdo_type = (pdo >> 28) & 0x03;
+        uint8_t apdo_type = static_cast<uint8_t>(extractBits(pdo, APDO_TYPE_SHIFT, APDO_TYPE_MASK));
         
-        if (apdo_type == 0x01 || apdo_type == 0x02) {
+        if (apdo_type == APDO_TYPE_EPR_AVS || apdo_type == APDO_TYPE_SPR_AVS) {
             // === AVS Contract ===
             // EPR AVS (0x01) and SPR AVS (0x02) share the same RDO layout.
             // TPS26750 maps AVS RDO into PPS-compatible bit positions:
             // Voltage: Bits 19:9 (11 bits), 25mV units
-            voltage_mv = ((rdo >> 9) & 0x7FF) * 25;
+            voltage_mv = extractBits(rdo, AVS_RDO_VOLTAGE_SHIFT, AVS_RDO_VOLTAGE_MASK) * AVS_RDO_VOLTAGE_UNIT_MV;
             // Current: Bits 6:0 (7 bits), 50mA units
-            current_ma = (rdo & 0x7F) * 50;
-        } else if (apdo_type == 0x00) {
+            current_ma = extractBits(rdo, 0, APDO_RDO_CURRENT_MASK) * APDO_RDO_CURRENT_UNIT_MA;
+        } else if (apdo_type == APDO_TYPE_PPS) {
             // === PPS Contract ===
             // PPS RDO Voltage: Bits 20:9 (12 bits), 20mV units
-            voltage_mv = ((rdo >> 9) & 0xFFF) * 20; 
+            voltage_mv = extractBits(rdo, PPS_RDO_VOLTAGE_SHIFT, PPS_RDO_VOLTAGE_MASK) * PPS_RDO_VOLTAGE_UNIT_MV;
             // PPS RDO Current: Bits 6:0 (7 bits), 50mA units
-            current_ma = (rdo & 0x7F) * 50;
+            current_ma = extractBits(rdo, 0, APDO_RDO_CURRENT_MASK) * APDO_RDO_CURRENT_UNIT_MA;
         }
 
     } else {
         // --- Fixed / Variable / Battery Contract ---
         // For Fixed: Voltage is in PDO bits 19:10 (10 bits), unit 50mV
-        voltage_mv = ((pdo >> 10) & 0x3FF) * 50;
+        voltage_mv = extractBits(pdo, FIXED_PDO_VOLTAGE_SHIFT, FIXED_PDO_VOLTAGE_MASK) * FIXED_PDO_VOLTAGE_UNIT_MV;
 
         // Max Current from PDO bits 9:0 (10 bits), unit 10mA
         // NOTE: Using PDO max current, NOT RDO operating current.
         // The RDO operating current (bits 19:10) reflects what the TPS26750
         // auto-negotiated internally, which can be much lower than the PDO max.
         // The PDO max is what the contract actually allows.
-        current_ma = (pdo & 0x3FF) * 10;
+        current_ma = extractBits(pdo, 0, FIXED_PDO_CURRENT_MASK) * FIXED_PDO_CURRENT_UNIT_MA;
     }
 
     return true;
@@ -328,8 +396,8 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
     }
 
     // Extract SPR count (0-7) and EPR count (0-6)
-    uint8_t num_spr = raw_data[0] & 0x07;
-    uint8_t num_epr = (raw_data[0] >> 3) & 0x07;
+    uint8_t num_spr = raw_data[0] & SPR_PDO_COUNT_MASK;
+    uint8_t num_epr = (raw_data[0] >> EPR_PDO_COUNT_SHIFT) & EPR_PDO_COUNT_MASK;
     uint8_t total_available = num_spr + num_epr;
 
     uint8_t to_parse = (total_available < max_caps) ? total_available : max_caps;
@@ -342,19 +410,16 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
         // Determine offset in buffer
         if (i < num_spr) {
             // SPR PDOs start at Byte 1
-            offset = 1 + (i * 4);
+            offset = SPR_PDO_START_OFFSET + (i * PDO_BYTES);
         } else {
             // EPR PDOs start at Byte 29 (1 + 28)
             // i - num_spr gives index into EPR list (0 to 5)
-            offset = 29 + ((i - num_spr) * 4);
+            offset = EPR_PDO_START_OFFSET + ((i - num_spr) * PDO_BYTES);
         }
 
-        uint32_t pdo = raw_data[offset] |
-                      (raw_data[offset+1] << 8)  |
-                      (raw_data[offset+2] << 16) |
-                      (raw_data[offset+3] << 24);
+        uint32_t pdo = readLe32(&raw_data[offset]);
 
-        uint8_t type = (pdo >> 30) & 0x03;
+        uint8_t type = static_cast<uint8_t>(extractBits(pdo, PDO_TYPE_SHIFT, PDO_TYPE_MASK));
 
         // Temporary storage for validation
         SourceCapability temp;
@@ -365,35 +430,35 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
         temp.min_voltage_mv = 0;
         temp.max_current_9_15_ma = 0;  // SPR AVS 9-15V band limit; 0 for all other types
 
-        if (type == 0x03) {
+        if (type == PDO_TYPE_AUGMENTED) {
             // --- Augmented PDO ---
             // Distinguish AVS from PPS by reading APDO type bits (29:28)
-            uint8_t apdo_type = (pdo >> 28) & 0x03;
+            uint8_t apdo_type = static_cast<uint8_t>(extractBits(pdo, APDO_TYPE_SHIFT, APDO_TYPE_MASK));
 
-            if (apdo_type == 0x01) {
+            if (apdo_type == APDO_TYPE_EPR_AVS) {
                 // === EPR AVS ===
                 temp.is_avs = true;
                 // AVS Max Voltage: Bits 25-17 (9 bits), 100mV units
-                temp.voltage_mv = ((pdo >> 17) & 0x1FF) * 100;
+                temp.voltage_mv = extractBits(pdo, EPR_AVS_PDO_MAX_VOLTAGE_SHIFT, EPR_AVS_PDO_MAX_VOLTAGE_MASK) * PROGRAMMABLE_PDO_VOLTAGE_UNIT_MV;
                 // AVS Min Voltage: Bits 15-8 (8 bits), 100mV units
-                temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
+                temp.min_voltage_mv = extractBits(pdo, PROGRAMMABLE_PDO_MIN_VOLTAGE_SHIFT, PROGRAMMABLE_PDO_MIN_VOLTAGE_MASK) * PROGRAMMABLE_PDO_VOLTAGE_UNIT_MV;
                 // AVS specifies Max Power (PDP) in Watts in Bits 7-0.
                 // Calculate Max Current at Max Voltage for compatibility:
-                uint32_t max_power_w = pdo & 0xFF;
+                uint32_t max_power_w = extractBits(pdo, 0, EPR_AVS_PDO_PDP_MASK_W);
                 if (temp.voltage_mv > 0) {
                     temp.max_current_ma = (max_power_w * 1000UL * 1000UL) / temp.voltage_mv;
                 } else {
                     temp.max_current_ma = 0;
                 }
-            } else if (apdo_type == 0x02) {
+            } else if (apdo_type == APDO_TYPE_SPR_AVS) {
                 // === SPR AVS ===
                 temp.is_avs = true;
                 
                 // SPR AVS does NOT use the EPR AVS layout.
                 // Bits 19:10 = Max Current for 9V-15V (in 10mA units)
                 // Bits 9:0   = Max Current for 15V-20V (in 10mA units)
-                uint32_t max_curr_9_15_ma  = ((pdo >> 10) & 0x3FF) * 10;
-                uint32_t max_curr_15_20_ma = (pdo & 0x3FF) * 10;
+                uint32_t max_curr_9_15_ma = extractBits(pdo, SPR_AVS_9_15_CURRENT_SHIFT, SPR_AVS_CURRENT_MASK) * SPR_AVS_CURRENT_UNIT_MA;
+                uint32_t max_curr_15_20_ma = extractBits(pdo, 0, SPR_AVS_CURRENT_MASK) * SPR_AVS_CURRENT_UNIT_MA;
 
                 // USB PD 3.2 dictates that SPR AVS minimum voltage is always 9V
                 temp.min_voltage_mv = 9000;
@@ -410,20 +475,20 @@ uint8_t TPS26750::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps
                 // Both bands share the same 9V floor; store lower-band limit separately
                 // so requestAvsVoltage() can cap the current for voltages below 15V.
                 temp.max_current_9_15_ma = max_curr_9_15_ma;
-            } else if (apdo_type == 0x00) {
+            } else if (apdo_type == APDO_TYPE_PPS) {
                 // === SPR PPS ===
                 temp.is_pps = true;
                 // PPS Max Voltage: Bits 24-17 (8 bits), 100mV units
-                temp.voltage_mv = ((pdo >> 17) & 0xFF) * 100;
+                temp.voltage_mv = extractBits(pdo, PPS_PDO_MAX_VOLTAGE_SHIFT, PPS_PDO_MAX_VOLTAGE_MASK) * PROGRAMMABLE_PDO_VOLTAGE_UNIT_MV;
                 // PPS Min Voltage: Bits 15-8 (8 bits), 100mV units
-                temp.min_voltage_mv = ((pdo >> 8) & 0xFF) * 100;
+                temp.min_voltage_mv = extractBits(pdo, PROGRAMMABLE_PDO_MIN_VOLTAGE_SHIFT, PROGRAMMABLE_PDO_MIN_VOLTAGE_MASK) * PROGRAMMABLE_PDO_VOLTAGE_UNIT_MV;
                 // PPS Max Current: Bits 6-0 (7 bits), 50mA units
-                temp.max_current_ma = (pdo & 0x7F) * 50;
+                temp.max_current_ma = extractBits(pdo, 0, PPS_PDO_CURRENT_MASK) * PPS_PDO_CURRENT_UNIT_MA;
             }
         } else {
             // --- Fixed / Variable / Battery ---
-            temp.voltage_mv = ((pdo >> 10) & 0x3FF) * 50;
-            temp.max_current_ma = (pdo & 0x3FF) * 10;
+            temp.voltage_mv = extractBits(pdo, FIXED_PDO_VOLTAGE_SHIFT, FIXED_PDO_VOLTAGE_MASK) * FIXED_PDO_VOLTAGE_UNIT_MV;
+            temp.max_current_ma = extractBits(pdo, 0, FIXED_PDO_CURRENT_MASK) * FIXED_PDO_CURRENT_UNIT_MA;
             temp.min_voltage_mv = 0;
         }
 
@@ -580,9 +645,8 @@ bool TPS26750::requestPPSProfile(uint32_t voltage_mv, uint32_t current_ma,
     // otherwise outrank a PPS contract of lower power (e.g. a 15 V fixed PDO beats
     // PPS at 11 V on a 3.3-16 V APDO). Clamping max to voltage_mv - 20 mV (the
     // minimum PPS step) excludes those higher-voltage fixed PDOs from contention.
-    const uint32_t PPS_STEP_MV = 20;
-    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + PPS_STEP_MV)
-                             ? (voltage_mv - PPS_STEP_MV)
+    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + PPS_REQUEST_STEP_MV)
+                             ? (voltage_mv - PPS_REQUEST_STEP_MV)
                              : pdo_min_mv;
     return modifySinkRegister(pdo_min_mv, std_max_v, current_ma,
                               voltage_mv, current_ma, true,
@@ -595,9 +659,8 @@ bool TPS26750::requestAVSProfile(uint32_t voltage_mv, uint32_t current_ma,
     // Same narrowing strategy as PPS: keep the standard window max strictly below
     // the requested AVS voltage (25 mV minimum AVS step) so that fixed PDOs at or
     // above the target cannot outrank the AVS contract.
-    const uint32_t AVS_STEP_MV = 25;
-    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + AVS_STEP_MV)
-                             ? (voltage_mv - AVS_STEP_MV)
+    uint32_t std_max_v = (voltage_mv >= pdo_min_mv + AVS_REQUEST_STEP_MV)
+                             ? (voltage_mv - AVS_REQUEST_STEP_MV)
                              : pdo_min_mv;
     return modifySinkRegister(pdo_min_mv, std_max_v, current_ma,
                               0, 0, false,

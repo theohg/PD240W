@@ -13,7 +13,6 @@ Hardware::Hardware() :
     overcurrentAlert(Board::PIN_SWITCH_EN_READ, IOMode::INPUT),
     pdInterrupt(Board::PIN_USB_PD_IRQ, IOMode::INPUT),
     encoder(Board::PIN_ENC_A, Board::PIN_ENC_B),
-    debugLed(Board::PIN_DEBUG_LED, IOMode::OUTPUT),
     EN_17V(Board::PIN_17V_EN, IOMode::OUTPUT),
     loadSwitch(Board::PIN_SWITCH_EN, IOMode::OUTPUT),
     buzzer(Board::PIN_BUZZER),
@@ -82,5 +81,4 @@ void Hardware::init() {
 void Hardware::update() {
     // Update drivers that need periodic polling
     rgbLed.update();
-    debugLed.update();
 }

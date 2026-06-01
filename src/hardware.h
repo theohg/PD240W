@@ -26,7 +26,6 @@ struct Hardware {
     // Outputs
     Buzzer buzzer;
     SK6812 rgbLed;       // RGB LED
-    SimpleIO debugLed;   // Blue Debug LED
     SimpleIO EN_17V;     // 17V EN
     SimpleIO loadSwitch; // Load Switch
     

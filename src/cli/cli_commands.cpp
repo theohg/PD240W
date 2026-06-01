@@ -9,6 +9,7 @@
 #include "hardware.h"
 #include "config/version.h"
 #include "config/app_config.h"
+#include "logic/cc_controller.h"
 #include "logic/state_machine.h"
 #include "logic/settings.h"
 #include "logic/safety.h"
@@ -313,7 +314,7 @@ void pdPps(const char* arg) {
     if (*end != '\0') { Cli::error("INVALID_PARAM"); return; }
 
     const ActiveContract& c = pdManager.getActiveContract();
-    if (voltage_mv < (long)c.pps_min_mv || voltage_mv > (long)c.pps_max_mv) {
+    if (voltage_mv < (long)c.programmable_min_mv || voltage_mv > (long)c.programmable_max_mv) {
         Cli::error("OUT_OF_RANGE");
         return;
     }
@@ -343,7 +344,7 @@ void pdAvs(const char* arg) {
     if (*end != '\0') { Cli::error("INVALID_PARAM"); return; }
 
     const ActiveContract& c = pdManager.getActiveContract();
-    if (voltage_mv < (long)c.pps_min_mv || voltage_mv > (long)c.pps_max_mv) {
+    if (voltage_mv < (long)c.programmable_min_mv || voltage_mv > (long)c.programmable_max_mv) {
         Cli::error("OUT_OF_RANGE");
         return;
     }

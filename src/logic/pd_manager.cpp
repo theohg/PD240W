@@ -5,12 +5,43 @@
 #include "logic/cc_controller.h"
 #include "logic/settings.h"
 #include "utils/logging.h"
+#include "utils/pd_voltage.h"
+#include <array>
 #include <cstring>
 #include <cstdlib>  // abs()
 
 namespace {
 
 constexpr uint8_t GPPI_RESPONSE_READ_BYTES = 32;
+constexpr uint8_t TPS_INTERRUPT_REGISTER_BYTES = 11;
+
+constexpr uint16_t USB_VID_FRAMEWORK = 0x32AC;
+constexpr uint16_t USB_VID_ANKER     = 0x291A;
+constexpr uint16_t USB_VID_APPLE     = 0x05AC;
+constexpr uint16_t USB_VID_SAMSUNG   = 0x04E8;
+constexpr uint16_t USB_VID_LENOVO    = 0x17EF;
+
+void copyStringTruncated(char* dest, size_t dest_len, const char* src) {
+    if (!dest || dest_len == 0) {
+        return;
+    }
+
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+
+    strncpy(dest, src, dest_len - 1);
+    dest[dest_len - 1] = '\0';
+}
+
+std::array<uint8_t, TPS_INTERRUPT_REGISTER_BYTES> makeInterruptClearMask(uint8_t bit_index) {
+    std::array<uint8_t, TPS_INTERRUPT_REGISTER_BYTES> clear_mask{};
+    if (bit_index < (TPS_INTERRUPT_REGISTER_BYTES * 8)) {
+        clear_mask[bit_index / 8] = static_cast<uint8_t>(1u << (bit_index % 8));
+    }
+    return clear_mask;
+}
 
 uint32_t powerWatts(uint32_t voltage_mv, uint32_t current_ma) {
     return (voltage_mv * current_ma) / 1000000UL;
@@ -94,13 +125,6 @@ uint32_t getSavedTargetVoltageMv(const SavedStartupContractSnapshot& snapshot,
         return pdos[snapshot.pdo_index_hint].voltage_mv;
     }
     return 0;
-}
-
-uint32_t alignProgrammableVoltageMv(uint32_t voltage_mv, uint32_t step_mv) {
-    if (step_mv == 0) {
-        return voltage_mv;
-    }
-    return (voltage_mv / step_mv) * step_mv;
 }
 
 bool snapshotPrefersEprRetry(const SavedStartupContractSnapshot& snapshot) {
@@ -201,16 +225,16 @@ StartupMatchResult findBestStartupMatch(const SavedStartupContractSnapshot& snap
             candidate_requested_mv = target_voltage_mv;
             if (candidate_requested_mv < candidate.min_voltage_mv) candidate_requested_mv = candidate.min_voltage_mv;
             if (candidate_requested_mv > candidate.voltage_mv) candidate_requested_mv = candidate.voltage_mv;
-            candidate_requested_mv = alignProgrammableVoltageMv(candidate_requested_mv,
-                                                                AppConfig::PPS_VOLTAGE_STEP_MV);
+            candidate_requested_mv = PdVoltage::alignDown(candidate_requested_mv,
+                                                          AppConfig::PPS_VOLTAGE_STEP_MV);
             diff_mv = static_cast<uint32_t>(abs(static_cast<int32_t>(candidate_requested_mv) -
                                                 static_cast<int32_t>(target_voltage_mv)));
         } else if (candidate.is_avs) {
             candidate_requested_mv = target_voltage_mv;
             if (candidate_requested_mv < candidate.min_voltage_mv) candidate_requested_mv = candidate.min_voltage_mv;
             if (candidate_requested_mv > candidate.voltage_mv) candidate_requested_mv = candidate.voltage_mv;
-            candidate_requested_mv = alignProgrammableVoltageMv(candidate_requested_mv,
-                                                                AppConfig::AVS_VOLTAGE_STEP_MV);
+            candidate_requested_mv = PdVoltage::alignDown(candidate_requested_mv,
+                                                          AppConfig::AVS_VOLTAGE_STEP_MV);
             diff_mv = static_cast<uint32_t>(abs(static_cast<int32_t>(candidate_requested_mv) -
                                                 static_cast<int32_t>(target_voltage_mv)));
         } else {
@@ -235,11 +259,11 @@ StartupMatchResult findBestStartupMatch(const SavedStartupContractSnapshot& snap
 
 const char* getVendorBrandName(uint16_t vid) {
     switch (vid) {
-        case 0x32AC: return "Framework";
-        case 0x291A: return "Anker";
-        case 0x05AC: return "Apple";
-        case 0x04E8: return "Samsung";
-        case 0x17EF: return "Lenovo";
+        case USB_VID_FRAMEWORK: return "Framework";
+        case USB_VID_ANKER: return "Anker";
+        case USB_VID_APPLE: return "Apple";
+        case USB_VID_SAMSUNG: return "Samsung";
+        case USB_VID_LENOVO: return "Lenovo";
         default: return "Unknown";
     }
 }
@@ -307,8 +331,7 @@ bool decodeManufacturerInfoResponse(const uint8_t* response_buf,
 
     if (name_bytes == 0) {
         const char* fallback_name = getVendorBrandName(vendor_id);
-        strncpy(manufacturer_name, fallback_name, manufacturer_name_len - 1);
-        manufacturer_name[manufacturer_name_len - 1] = '\0';
+        copyStringTruncated(manufacturer_name, manufacturer_name_len, fallback_name);
     }
 
     return vendor_id != 0;
@@ -424,8 +447,8 @@ PdManager::PdManager()
     _active_contract.is_avs = false;
     _active_contract.is_epr = false;
     _active_contract.valid = false;
-    _active_contract.pps_min_mv = 0;
-    _active_contract.pps_max_mv = 0;
+    _active_contract.programmable_min_mv = 0;
+    _active_contract.programmable_max_mv = 0;
     _pd_revision[0] = '\0';
     clearChargerIdentity();
 }
@@ -546,8 +569,9 @@ void PdManager::update() {
                 LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
                 _epr_exit_state = EprExitState::NONE;
             } else {
-                // BUG 1 FIX: update polling-fallback tracking so isRequestedContractReached()
-                // matches the 5V Fixed contract instead of the prior AVS step-down target.
+                // Keep the polling fallback aligned with the intermediate 5V request,
+                // otherwise the EPR exit sequence keeps comparing against the prior
+                // AVS step-down target and never reports this stage as complete.
                 _requested_contract_type = RequestedContractType::FIXED;
                 _requested_voltage_mv    = EPR_EXIT_SAFE_MV;
                 _requested_current_ma    = EPR_EXIT_SAFE_CURRENT_MA;
@@ -658,8 +682,9 @@ void PdManager::update() {
                     if (adjusted > (int32_t)_pps_range_max_mv) adjusted = (int32_t)_pps_range_max_mv;
                 }
 
-                // Round to 20mV steps (PD spec)
-                adjusted = (adjusted / AppConfig::PPS_VOLTAGE_STEP_MV) * AppConfig::PPS_VOLTAGE_STEP_MV;
+                // Align to the PPS request step before re-requesting the contract.
+                adjusted = static_cast<int32_t>(PdVoltage::alignDown(
+                    static_cast<uint32_t>(adjusted), AppConfig::PPS_VOLTAGE_STEP_MV));
 
                 request_mv = (uint32_t)adjusted;
             }
@@ -741,8 +766,9 @@ void PdManager::update() {
                     if (adjusted > (int32_t)_avs_range_max_mv) adjusted = (int32_t)_avs_range_max_mv;
                 }
 
-                // Round to 25mV steps (AVS PD spec)
-                adjusted = (adjusted / AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+                // Align to the configured AVS request step before re-requesting the contract.
+                adjusted = static_cast<int32_t>(PdVoltage::alignDown(
+                    static_cast<uint32_t>(adjusted), AppConfig::AVS_VOLTAGE_STEP_MV));
 
                 request_mv = (uint32_t)adjusted;
             }
@@ -815,8 +841,7 @@ bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
     info.charger_identity_valid = _charger_identity_valid;
     info.charger_vendor_id = _charger_vendor_id;
     info.charger_product_id = _charger_product_id;
-    strncpy(info.charger_name, _charger_name, sizeof(info.charger_name) - 1);
-    info.charger_name[sizeof(info.charger_name) - 1] = '\0';
+    copyStringTruncated(info.charger_name, sizeof(info.charger_name), _charger_name);
     info.detected_cable_rating = DetectedCableRating::UNKNOWN_CHARGER_LIMIT;
     info.charger_max_power_w = 0;
 
@@ -900,8 +925,7 @@ bool PdManager::refreshChargerIdentity() {
     _charger_identity_valid = true;
     _charger_vendor_id = charger_vendor_id;
     _charger_product_id = charger_product_id;
-    strncpy(_charger_name, charger_name, sizeof(_charger_name) - 1);
-    _charger_name[sizeof(_charger_name) - 1] = '\0';
+    copyStringTruncated(_charger_name, sizeof(_charger_name), charger_name);
     return true;
 }
 
@@ -1212,9 +1236,9 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
 bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
     LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
 
-    // BUG 2 FIX: EPR safe exit interception — mirror requestFixedVoltage() guard.
-    // A direct EPR->SPR AVS transition causes the charger to hard-reset; use the
-    // 3-step AVS step-down sequence instead.
+    // Mirror the fixed-request EPR exit guard here as well. A direct EPR->SPR
+    // AVS transition can hard-reset the charger, so route it through the staged
+    // AVS step-down sequence first.
     if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, false)) {
         uint32_t avs_v, avs_i;
         int8_t avs_idx = -1;
@@ -1416,13 +1440,16 @@ bool PdManager::refreshActiveContract() {
             _active_contract.current_ma = _avs_current_ma;
         }
 
-        // Store PPS voltage range if active
+        // Cache the active programmable range for UI/CLI validation.
         if (detected_pps) {
-            _active_contract.pps_min_mv = _pps_voltage_mv;
-            _active_contract.pps_max_mv = _pps_voltage_mv;
+            _active_contract.programmable_min_mv = _pps_range_min_mv;
+            _active_contract.programmable_max_mv = _pps_range_max_mv;
+        } else if (detected_avs) {
+            _active_contract.programmable_min_mv = _avs_range_min_mv;
+            _active_contract.programmable_max_mv = _avs_range_max_mv;
         } else {
-            _active_contract.pps_min_mv = 0;
-            _active_contract.pps_max_mv = 0;
+            _active_contract.programmable_min_mv = 0;
+            _active_contract.programmable_max_mv = 0;
         }
 
         return true;
@@ -1432,8 +1459,8 @@ bool PdManager::refreshActiveContract() {
     _active_contract.is_pps = false;
     _active_contract.is_avs = false;
     _active_contract.is_epr = false;
-    _active_contract.pps_min_mv = 0;
-    _active_contract.pps_max_mv = 0;
+    _active_contract.programmable_min_mv = 0;
+    _active_contract.programmable_max_mv = 0;
     if (!_pdos_valid || !_charger_connected) {
         clearPpsTracking();
         clearAvsTracking();
@@ -1489,7 +1516,7 @@ void PdManager::detectPdRevision() {
 
     if (strcmp(_pd_revision, detected_revision) != 0) {
         if (detected_revision[0] != '\0') {
-            strcpy(_pd_revision, detected_revision);
+            copyStringTruncated(_pd_revision, sizeof(_pd_revision), detected_revision);
             LOG_INFO("Detected PD revision (from PDOs): %s", _pd_revision);
         } else {
             _pd_revision[0] = '\0';
@@ -1531,9 +1558,8 @@ void PdManager::handlePdInterrupt() {
         }
 
         // Clear the interrupt
-        uint8_t clear_mask[11] = {0};
-        clear_mask[1] = (1 << 4);  // Bit 12
-        hw.pdController.clearInterrupts(clear_mask);
+        const auto clear_mask = makeInterruptClearMask(12);
+        hw.pdController.clearInterrupts(clear_mask.data());
     }
 
     // Check for source capabilities received (bit 14) - happens on EPR mode entry/exit
@@ -1556,9 +1582,8 @@ void PdManager::handlePdInterrupt() {
         refreshActiveContract();
 
         // Clear the interrupt
-        uint8_t clear_mask[11] = {0};
-        clear_mask[1] = (1 << 6);  // Bit 14
-        hw.pdController.clearInterrupts(clear_mask);
+        const auto clear_mask = makeInterruptClearMask(14);
+        hw.pdController.clearInterrupts(clear_mask.data());
     }
 
     // Check for plug insert/removal (bit 3)
@@ -1575,8 +1600,8 @@ void PdManager::handlePdInterrupt() {
         _active_contract.valid = false;
         _active_contract.is_pps = false;
         _active_contract.is_avs = false;
-        _active_contract.pps_min_mv = 0;
-        _active_contract.pps_max_mv = 0;
+        _active_contract.programmable_min_mv = 0;
+        _active_contract.programmable_max_mv = 0;
         _negotiation_state = NegotiationState::IDLE;
         _epr_exit_state = EprExitState::NONE;
 
@@ -1588,9 +1613,8 @@ void PdManager::handlePdInterrupt() {
         }
 
         // Clear the interrupt
-        uint8_t clear_mask[11] = {0};
-        clear_mask[0] = (1 << 3);  // Bit 3
-        hw.pdController.clearInterrupts(clear_mask);
+        const auto clear_mask = makeInterruptClearMask(3);
+        hw.pdController.clearInterrupts(clear_mask.data());
     }
 
     // Check for hard reset (bit 1)
@@ -1602,8 +1626,8 @@ void PdManager::handlePdInterrupt() {
         _active_contract.valid = false;
         _active_contract.is_pps = false;
         _active_contract.is_avs = false;
-        _active_contract.pps_min_mv = 0;
-        _active_contract.pps_max_mv = 0;
+        _active_contract.programmable_min_mv = 0;
+        _active_contract.programmable_max_mv = 0;
         _negotiation_state = NegotiationState::IDLE;
         clearPpsTracking();
         clearAvsTracking();
@@ -1613,9 +1637,8 @@ void PdManager::handlePdInterrupt() {
         _epr_exit_state = EprExitState::NONE;
 
         // Clear the interrupt
-        uint8_t clear_mask[11] = {0};
-        clear_mask[0] = (1 << 1);  // Bit 1
-        hw.pdController.clearInterrupts(clear_mask);
+        const auto clear_mask = makeInterruptClearMask(1);
+        hw.pdController.clearInterrupts(clear_mask.data());
     }
 }
 
@@ -1820,8 +1843,8 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                             target_voltage_mv <= hinted_pdo.voltage_mv) {
                             target_idx = snapshot.pdo_index_hint;
                             target_request_voltage_mv = hinted_pdo.is_pps ?
-                                alignProgrammableVoltageMv(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
-                                alignProgrammableVoltageMv(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
+                                PdVoltage::alignDown(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
+                                PdVoltage::alignDown(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
                             LOG_INFO("Startup negotiation: using legacy snapshot hint PDO[%d] to restore %s at %umV",
                                      snapshot.pdo_index_hint,
                                      sourceCapabilityTypeName(hinted_pdo),
@@ -1843,8 +1866,8 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                             target_voltage_mv <= hinted_pdo.voltage_mv) {
                             target_idx = snapshot.pdo_index_hint;
                             target_request_voltage_mv = hinted_pdo.is_pps ?
-                                alignProgrammableVoltageMv(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
-                                alignProgrammableVoltageMv(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
+                                PdVoltage::alignDown(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
+                                PdVoltage::alignDown(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
                             LOG_INFO("Startup negotiation: exact %s restore match on PDO[%d], target %umV within %u-%umV",
                                      savedStartupContractTypeName(snapshot.type),
                                      snapshot.pdo_index_hint,
