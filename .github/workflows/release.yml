@@ -41,20 +41,51 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          changelog = Path("CHANGELOG.md").read_text().splitlines()
+          notes = []
+          capture = False
+
+          for line in changelog:
+            if line.startswith("## "):
+              if capture:
+                break
+              capture = True
+
+            if capture:
+              notes.append(line)
+
+          if not notes:
+            raise SystemExit("No release notes found in CHANGELOG.md")
+
+          body = [
+              f"## PD240W Firmware {os.environ['VERSION']}",
+              "",
+              *notes[1:],
+              "",
+              "### Installation",
+              "1. Hold BOOTSEL button while connecting the Pico via USB",
+              "2. Drag `PD240W.uf2` to the mounted `RPI-RP2` drive",
+              "",
+              "### Files",
+              "- `PD240W.uf2` - Flash image for USB drag-and-drop",
+              "- `PD240W.elf` - Debug binary with symbols (for SWD flashing)",
+          ]
+          Path("release-body.md").write_text("\n".join(body) + "\n")
+          PY
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: "PD240W ${{ steps.version.outputs.VERSION }}"
-          body: |
-            ## PD240W Firmware ${{ steps.version.outputs.VERSION }}
-
-            ### Installation
-            1. Hold BOOTSEL button while connecting the Pico via USB
-            2. Drag `PD240W.uf2` to the mounted `RPI-RP2` drive
-
-            ### Files
-            - `PD240W.uf2` - Flash image for USB drag-and-drop
-            - `PD240W.elf` - Debug binary with symbols (for SWD flashing)
+          body_path: release-body.md
           files: |
             build/PD240W.uf2
             build/PD240W.elf
