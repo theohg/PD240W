@@ -28,6 +28,12 @@ static constexpr int STATUS_BAR_HEIGHT = 20;
 static constexpr int CONTENT_Y_START = HEADER_HEIGHT + 5;
 static constexpr int MENU_ITEM_HEIGHT = 25;
 static constexpr int MARGIN = 10;
+// Voltage-select list layout. The list is pulled up close to the header
+// separator (at HEADER_HEIGHT - 2 = 38) to reclaim vertical space, and the
+// "Click: Select" hint sits at SCREEN_HEIGHT - 20 (= 300). With a start of
+// y=44, 10 rows of 25px end at y=294, leaving ~6px margins above and below.
+static constexpr int PDO_LIST_Y_START = CONTENT_Y_START - 1;
+static constexpr int PDO_VISIBLE_ROWS = 10;
 static constexpr uint16_t PROGRESS_TRACK_COLOR = 0x2004;
 static constexpr uint16_t PROGRESS_GRADIENT_START = 0x780F;
 static constexpr uint16_t PROGRESS_GRADIENT_END = 0xFC7D;
@@ -1179,12 +1185,13 @@ void DisplayManager::drawPdoList() {
     // Total items: PDOs + Back
     int total_items = count + 1;  // +1 for "Back" entry
 
-    // Calculate scroll position
+    // Calculate scroll position. Keep the cursor visible while preserving a few
+    // rows of context below it (the original behaviour reserved 2 rows below).
     int start_idx = 0;
-    if (selected_idx > 5 && total_items > 8) {
-        start_idx = selected_idx - 5;
-        if (start_idx + 8 > total_items) {
-            start_idx = total_items - 8;
+    if (selected_idx > PDO_VISIBLE_ROWS - 3 && total_items > PDO_VISIBLE_ROWS) {
+        start_idx = selected_idx - (PDO_VISIBLE_ROWS - 3);
+        if (start_idx + PDO_VISIBLE_ROWS > total_items) {
+            start_idx = total_items - PDO_VISIBLE_ROWS;
         }
     }
 
@@ -1197,8 +1204,8 @@ void DisplayManager::drawPdoList() {
         return;
     }
 
-    int visible_count = (total_items - start_idx > 8) ? 8 : (total_items - start_idx);
-    int y = CONTENT_Y_START + 10;
+    int visible_count = (total_items - start_idx > PDO_VISIBLE_ROWS) ? PDO_VISIBLE_ROWS : (total_items - start_idx);
+    int y = PDO_LIST_Y_START;
 
     for (int i = start_idx; i < start_idx + visible_count; i++) {
         // Only redraw items that need it: full redraw, scroll changed, or selection affects this item
@@ -1300,7 +1307,7 @@ void DisplayManager::drawPdoList() {
 
     // Clear remaining slots only on full redraw or scroll change
     if (_needs_full_redraw || scroll_changed) {
-        for (int i = visible_count; i < 8; i++) {
+        for (int i = visible_count; i < PDO_VISIBLE_ROWS; i++) {
             hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, UIColors::BACKGROUND);
             y += MENU_ITEM_HEIGHT;
         }
