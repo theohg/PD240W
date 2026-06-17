@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.1] - 2026-06-16
+
+### UI Improvements
+
+- Voltage select menu now fits up to 10 contracts on screen (was 8) and sits closer to the header, reducing scrolling on chargers with many contracts.
+
 ## [2.0.0] - 2026-05-31
 
 ### USB-PD 3.1 / 3.2 Release
