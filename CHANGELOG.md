@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.0.2] - 2026-06-25
+
+### Internal
+
+- Migrated the TPS26750 USB-PD driver to the shared `tps26750_multiplatform` submodule, replacing the in-tree driver.
+
+### UI Improvements
+
+- Added a TPS firmware version line to the About PD240W screen and tightened its spacing so the layout sits clear of the bottom navigation hint.
+
 ## [2.0.1] - 2026-06-16
 
 ### UI Improvements
