@@ -309,7 +309,7 @@ void DisplayManager::invalidate() {
     _last_pdo_scroll_idx = -1;  // Reset scroll position on invalidate
 }
 
-void DisplayManager::setPdoList(const SourceCapability* pdos, uint8_t count) {
+void DisplayManager::setPdoList(const TPS26750_SourceCapability* pdos, uint8_t count) {
     _pdo_list = pdos;
     _pdo_count = count;
 }
@@ -1163,7 +1163,7 @@ void DisplayManager::drawPdoList() {
     int8_t selected_idx = stateMachine.getSelectedPdoIndex();
 
     // Get PDO list and active contract for highlighting
-    SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
+    TPS26750_SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
     uint8_t count = pdManager.getSourceCapabilities(pdos, AppConfig::MAX_PDO_COUNT);
     const ActiveContract& active = pdManager.getActiveContract();
 
@@ -1993,15 +1993,15 @@ void DisplayManager::drawAboutScreen() {
     const float aspect_ratio = static_cast<float>(PD240W_WIDTH) / PD240W_HEIGHT;
     const int logo_h = static_cast<int>(logo_w / aspect_ratio);
     const int logo_x = (SCREEN_WIDTH - logo_w) / 2;
-    const int logo_y = CONTENT_Y_START + 8;
+    const int logo_y = CONTENT_Y_START + 4;
     hw.display.drawBitmapScaled(logo_x, logo_y, logo_w, logo_h,
                                 PD240W_WIDTH, PD240W_HEIGHT, pd240w_data);
 
-    const int subtitle_y = logo_y + logo_h + 8;
+    const int subtitle_y = logo_y + logo_h + 4;
     drawCenteredStringAA(subtitle_y, Version::PRODUCT_SUBTITLE, UIColors::TEXT_PRIMARY, FONT_SMALL);
 
     // Start info section below logo
-    int y = subtitle_y + FONT_SMALL->lineHeight + 10;
+    int y = subtitle_y + FONT_SMALL->lineHeight + 6;
 
     // Separator
     hw.display.drawLine(MARGIN * 3, y, SCREEN_WIDTH - MARGIN * 3, y, UIColors::HEADER_LINE);
@@ -2009,7 +2009,7 @@ void DisplayManager::drawAboutScreen() {
 
     // Info lines — compact two-column layout to fit 240px width
     const int LABEL_X = MARGIN * 3;
-    const int VALUE_X = LABEL_X + 57;
+    const int VALUE_X = LABEL_X + 66;
     char buf[48];
 
     // HW / FW on one line
@@ -2023,6 +2023,10 @@ void DisplayManager::drawAboutScreen() {
 
     hw.display.drawStringAA(LABEL_X, y, "INA FW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     hw.display.drawStringAA(VALUE_X, y, Version::INA_FIRMWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
+    y += LINE_H;
+
+    hw.display.drawStringAA(LABEL_X, y, "TPS FW:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    hw.display.drawStringAA(VALUE_X, y, Version::TPS_FIRMWARE_VERSION, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
     hw.display.drawStringAA(LABEL_X, y, "Author:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);

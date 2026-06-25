@@ -3,7 +3,7 @@
 #include <cstdint>
 #include "pico/stdlib.h"
 #include "config/app_config.h"
-#include "drivers/power/tps26750/tps26750.h"
+#include "tps26750.h"
 
 // ============================================================================
 // USB Power Delivery Manager
@@ -66,10 +66,10 @@ public:
     void update();
 
     // Get available PDOs from charger
-    uint8_t getSourceCapabilities(SourceCapability* caps, uint8_t max_caps);
+    uint8_t getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps);
 
     // Request a specific contract (non-blocking)
-    bool requestContract(const SourceCapability& pdo);
+    bool requestContract(const TPS26750_SourceCapability& pdo);
     bool requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma);
     /// @param pdo_index Index into the PDO cache of the selected APDO. Pass -1 when the
     ///        caller does not have an explicit index (startup restore, EPR exit) to fall back
@@ -195,7 +195,7 @@ private:
     bool _charger_connected;
 
     // Cached PDO list
-    SourceCapability _pdo_cache[AppConfig::MAX_PDO_COUNT];
+    TPS26750_SourceCapability _pdo_cache[AppConfig::MAX_PDO_COUNT];
     uint8_t _pdo_count;
     bool _pdos_valid;
 

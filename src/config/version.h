@@ -11,6 +11,10 @@ namespace Version {
         #define INA228_FW_VERSION "unknown"
     #endif
     constexpr const char* INA_FIRMWARE_VERSION = INA228_FW_VERSION;
+    #ifndef TPS26750_FW_VERSION
+        #define TPS26750_FW_VERSION "unknown"
+    #endif
+    constexpr const char* TPS_FIRMWARE_VERSION = TPS26750_FW_VERSION;
     constexpr const char* PRODUCT_NAME = "PD240W";
     constexpr const char* PRODUCT_SUBTITLE = "Power Supply";
     constexpr const char* AUTHOR = "Theo Heng";

@@ -84,13 +84,13 @@ const char* savedStartupContractTypeName(SavedStartupContractType type) {
     return "UNKNOWN";
 }
 
-const char* sourceCapabilityTypeName(const SourceCapability& pdo) {
+const char* sourceCapabilityTypeName(const TPS26750_SourceCapability& pdo) {
     if (pdo.is_avs) return "AVS";
     if (pdo.is_pps) return "PPS";
     return "FIXED";
 }
 
-bool sourceCapabilityMatchesSavedType(const SourceCapability& pdo,
+bool sourceCapabilityMatchesSavedType(const TPS26750_SourceCapability& pdo,
                                      SavedStartupContractType type) {
     switch (type) {
         case SavedStartupContractType::FIXED:
@@ -113,7 +113,7 @@ bool isProgrammableSavedType(SavedStartupContractType type) {
 }
 
 uint32_t getSavedTargetVoltageMv(const SavedStartupContractSnapshot& snapshot,
-                                 const SourceCapability* pdos,
+                                 const TPS26750_SourceCapability* pdos,
                                  uint8_t count) {
     if (snapshot.requested_voltage_mv > 0) {
         return snapshot.requested_voltage_mv;
@@ -132,7 +132,7 @@ bool snapshotPrefersEprRetry(const SavedStartupContractSnapshot& snapshot) {
            snapshot.range_max_voltage_mv > AppConfig::EPR_SPR_MAX_MV;
 }
 
-bool hasVisibleEprPdos(const SourceCapability* pdos, uint8_t count) {
+bool hasVisibleEprPdos(const TPS26750_SourceCapability* pdos, uint8_t count) {
     for (uint8_t i = 0; i < count; i++) {
         if (pdos[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
             return true;
@@ -142,12 +142,12 @@ bool hasVisibleEprPdos(const SourceCapability* pdos, uint8_t count) {
     return false;
 }
 
-bool matchesFixedPdo(const SourceCapability* pdos,
+bool matchesFixedPdo(const TPS26750_SourceCapability* pdos,
                      uint8_t count,
                      uint32_t voltage_mv,
                      uint32_t tolerance_mv) {
     for (uint8_t i = 0; i < count; i++) {
-        const SourceCapability& pdo = pdos[i];
+        const TPS26750_SourceCapability& pdo = pdos[i];
         if (pdo.is_pps || pdo.is_avs) {
             continue;
         }
@@ -187,7 +187,7 @@ void describeSavedStartupContract(const SavedStartupContractSnapshot& snapshot,
              snapshot.pdo_index_hint);
 }
 
-void describeSourceCapability(const SourceCapability& pdo,
+void describeSourceCapability(const TPS26750_SourceCapability& pdo,
                               char* buffer,
                               size_t buffer_size) {
     if (pdo.is_pps || pdo.is_avs) {
@@ -206,14 +206,14 @@ void describeSourceCapability(const SourceCapability& pdo,
 }
 
 StartupMatchResult findBestStartupMatch(const SavedStartupContractSnapshot& snapshot,
-                                        const SourceCapability* pdos,
+                                        const TPS26750_SourceCapability* pdos,
                                         uint8_t count,
                                         uint32_t target_voltage_mv,
                                         bool same_type_only) {
     StartupMatchResult best{false, -1, 0, UINT32_MAX};
 
     for (uint8_t i = 0; i < count; i++) {
-        const SourceCapability& candidate = pdos[i];
+        const TPS26750_SourceCapability& candidate = pdos[i];
         if (same_type_only && !sourceCapabilityMatchesSavedType(candidate, snapshot.type)) {
             continue;
         }
@@ -337,7 +337,7 @@ bool decodeManufacturerInfoResponse(const uint8_t* response_buf,
     return vendor_id != 0;
 }
 
-uint32_t getSourceCapabilityMaxPowerW(const SourceCapability& pdo) {
+uint32_t getSourceCapabilityMaxPowerW(const TPS26750_SourceCapability& pdo) {
     if (pdo.is_avs && pdo.max_current_9_15_ma > 0) {
         uint32_t low_band_power_w = powerWatts(15000, pdo.max_current_9_15_ma);
         uint32_t high_band_power_w = powerWatts(pdo.voltage_mv, pdo.max_current_ma);
@@ -351,13 +351,13 @@ uint32_t getSourceCapabilityMaxPowerW(const SourceCapability& pdo) {
 // strongest signal: a charger must cap them to 3 A when the cable is not 5 A capable.
 // Programmable PDOs above 3 A are only trusted when the source also proves it can
 // exceed 60 W on its non-programmable rails.
-DetectedCableRating inferDetectedCableRating(const SourceCapability* pdos, uint8_t count) {
+DetectedCableRating inferDetectedCableRating(const TPS26750_SourceCapability* pdos, uint8_t count) {
     bool has_fixed_over_3a = false;
     bool has_programmable_over_3a = false;
     uint32_t max_fixed_power_w = 0;
 
     for (uint8_t i = 0; i < count; i++) {
-        const SourceCapability& pdo = pdos[i];
+        const TPS26750_SourceCapability& pdo = pdos[i];
         if (pdo.voltage_mv > 21000) {
             return DetectedCableRating::EPR_CAPABLE;
         }
@@ -816,7 +816,7 @@ void PdManager::update() {
 // PDO Access
 // ============================================================================
 
-uint8_t PdManager::getSourceCapabilities(SourceCapability* caps, uint8_t max_caps) {
+uint8_t PdManager::getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps) {
     // Refresh cache if needed
     if (!_pdos_valid) {
         _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
@@ -863,13 +863,13 @@ bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
 
     uint8_t status_buf[5] = {0};
     if (hw.pdController.getStatus(status_buf)) {
-        info.cc_orientation = (status_buf[0] & TPS_STATUS_ORIENTATION) ? 2 : 1;
+        info.cc_orientation = (status_buf[0] & TPS26750_STATUS_ORIENTATION) ? 2 : 1;
     }
 
     bool has_pps = false;
 
     for (uint8_t i = 0; i < _pdo_count; i++) {
-        const SourceCapability& pdo = _pdo_cache[i];
+        const TPS26750_SourceCapability& pdo = _pdo_cache[i];
         uint32_t pdo_power_w = getSourceCapabilityMaxPowerW(pdo);
         if (pdo_power_w > info.charger_max_power_w) {
             info.charger_max_power_w = pdo_power_w;
@@ -902,7 +902,7 @@ bool PdManager::refreshChargerIdentity() {
 
     uint8_t charger_response[GPPI_RESPONSE_READ_BYTES] = {0};
     uint16_t charger_response_len = 0;
-    bool charger_ok = hw.pdController.getManufacturerInfo(GppiFrameType::SOP,
+    bool charger_ok = hw.pdController.getManufacturerInfo(TPS26750_GPPI_FRAME_SOP,
                                                           charger_response,
                                                           GPPI_RESPONSE_READ_BYTES,
                                                           &charger_response_len);
@@ -1087,7 +1087,7 @@ bool PdManager::primeStartupContract() {
     return requestFixedVoltage(5000, startup_current_ma);
 }
 
-bool PdManager::requestContract(const SourceCapability& pdo) {
+bool PdManager::requestContract(const TPS26750_SourceCapability& pdo) {
     if (pdo.is_pps) {
         // For PPS, request max voltage as default (user can adjust via PPS voltage mode)
         return requestPpsVoltage(pdo.voltage_mv, pdo.max_current_ma);
@@ -1831,7 +1831,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                     LOG_INFO("Startup negotiation: saved PDO hint PDO[%d] is out of range on this charger (%d PDOs)",
                              snapshot.pdo_index_hint, _pdo_count);
                 } else {
-                    const SourceCapability& hinted_pdo = _pdo_cache[snapshot.pdo_index_hint];
+                    const TPS26750_SourceCapability& hinted_pdo = _pdo_cache[snapshot.pdo_index_hint];
                     char hinted_desc[64];
                     describeSourceCapability(hinted_pdo, hinted_desc, sizeof(hinted_desc));
                     LOG_INFO("Startup negotiation: charger PDO[%d] is %s",
@@ -1918,7 +1918,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                 if (same_type_match.valid) {
                     target_idx = same_type_match.pdo_index;
                     target_request_voltage_mv = same_type_match.requested_voltage_mv;
-                    const SourceCapability& candidate = _pdo_cache[target_idx];
+                    const TPS26750_SourceCapability& candidate = _pdo_cache[target_idx];
                     LOG_INFO("Startup negotiation: same-type fallback selected %s PDO[%d] at %umV (delta %umV from saved target %umV)",
                              sourceCapabilityTypeName(candidate),
                              target_idx,
@@ -1953,7 +1953,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
 
                     target_idx = fallback_match.pdo_index;
                     target_request_voltage_mv = fallback_match.requested_voltage_mv;
-                    const SourceCapability& candidate = _pdo_cache[target_idx];
+                    const TPS26750_SourceCapability& candidate = _pdo_cache[target_idx];
                     LOG_INFO("Startup negotiation: cross-type fallback selected %s PDO[%d] at %umV (delta %umV from saved target %umV)",
                              sourceCapabilityTypeName(candidate),
                              target_idx,
@@ -1968,7 +1968,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
 
     // Execute the negotiation
     if (target_idx >= 0 && target_idx < _pdo_count) {
-        const SourceCapability& pdo = _pdo_cache[target_idx];
+        const TPS26750_SourceCapability& pdo = _pdo_cache[target_idx];
 
         if (pdo.is_pps && target_request_voltage_mv > 0) {
             LOG_INFO("Startup negotiation: requesting PPS %umV using PDO[%d]",
@@ -2007,6 +2007,6 @@ void PdManager::probeEpr() {
     // Request EPR capabilities if we haven't received them yet
     if (!has_epr && _pdo_count > 0) {
         LOG_INFO("Probing for EPR capabilities...");
-        hw.pdController.sendCommand(TPS_CMD_ESrC);
+        hw.pdController.sendCommand(TPS26750_CMD_ESRC);
     }
 }

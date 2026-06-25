@@ -209,7 +209,7 @@ void measAll(const char* arg) {
 // -------------------------------------------------------------------------
 
 void pdList(const char* arg) {
-    SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+    TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
     uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
 
     if (count == 0) {
@@ -267,7 +267,7 @@ void pdSel(const char* arg) {
     long index = strtol(arg, &end, 10);
     if (*end != '\0') { Cli::error("INVALID_PARAM"); return; }
 
-    SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+    TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
     uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
 
     if (index < 0 || index >= count) {

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include "pico/stdlib.h"
-#include "drivers/power/tps26750/tps26750.h"
+#include "tps26750.h"
 
 // ============================================================================
 // Application State Machine
@@ -208,7 +208,7 @@ private:
     void applyPpsVoltage();
     void applyAvsVoltage();
     void handleSettingsMenuState(EncoderEvent event);
-    void saveStartupContractSnapshot(const SourceCapability& pdo,
+    void saveStartupContractSnapshot(const TPS26750_SourceCapability& pdo,
                                      int8_t pdo_index,
                                      uint32_t requested_voltage_mv);
     bool saveCurrentContractSnapshot();

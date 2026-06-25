@@ -3,7 +3,7 @@
 #include <cstdint>
 #include "logic/state_machine.h"
 #include "logic/safety.h"
-#include "drivers/power/tps26750/tps26750.h"
+#include "tps26750.h"
 #include "drivers/display/aa_font.h"
 
 // ============================================================================
@@ -44,7 +44,7 @@ public:
     void invalidate();
 
     // Set PDO list for rendering (called by state machine)
-    void setPdoList(const SourceCapability* pdos, uint8_t count);
+    void setPdoList(const TPS26750_SourceCapability* pdos, uint8_t count);
 
 private:
     // Render flags
@@ -57,7 +57,7 @@ private:
     bool _last_epr_badge_drawn;    // True if EPR badge was drawn
 
     // PDO list reference
-    const SourceCapability* _pdo_list;
+    const TPS26750_SourceCapability* _pdo_list;
     uint8_t _pdo_count;
 
     // Screen renderers

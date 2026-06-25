@@ -32,6 +32,8 @@ project(PD240W C CXX ASM)
 
 set(INA228_SUBMODULE_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ina228_multiplatform")
 set(INA228_FIRMWARE_VERSION "unknown")
+set(TPS26750_SUBMODULE_DIR "${CMAKE_CURRENT_LIST_DIR}/external/tps26750_multiplatform")
+set(TPS26750_FIRMWARE_VERSION "unknown")
 find_package(Git QUIET)
 if(GIT_FOUND AND EXISTS "${INA228_SUBMODULE_DIR}/.git")
     execute_process(
@@ -42,6 +44,17 @@ if(GIT_FOUND AND EXISTS "${INA228_SUBMODULE_DIR}/.git")
         ERROR_QUIET)
     if(NOT INA228_GIT_DESCRIBE_RESULT EQUAL 0 OR INA228_FIRMWARE_VERSION STREQUAL "")
         set(INA228_FIRMWARE_VERSION "unknown")
+    endif()
+endif()
+if(GIT_FOUND AND EXISTS "${TPS26750_SUBMODULE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C "${TPS26750_SUBMODULE_DIR}" describe --tags --always --dirty
+        OUTPUT_VARIABLE TPS26750_FIRMWARE_VERSION
+        RESULT_VARIABLE TPS26750_GIT_DESCRIBE_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT TPS26750_GIT_DESCRIBE_RESULT EQUAL 0 OR TPS26750_FIRMWARE_VERSION STREQUAL "")
+        set(TPS26750_FIRMWARE_VERSION "unknown")
     endif()
 endif()
 
@@ -63,7 +76,8 @@ add_executable(PD240W
         # Drivers
         src/drivers/buzzer/buzzer.cpp
         src/drivers/display/st7789.cpp
-        src/drivers/power/tps26750/tps26750.cpp
+        external/tps26750_multiplatform/src/tps26750.cpp
+        external/tps26750_multiplatform/src/tps26750_platform_i2c.cpp
         external/ina228_multiplatform/src/ina228.cpp
         external/ina228_multiplatform/src/ina228_platform_i2c.cpp
         src/drivers/rgb_led/sk6812.cpp
@@ -117,6 +131,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   # Build date from CMake (always updates on rebuild)
   BUILD_DATE="${BUILD_TIMESTAMP}"
     INA228_FW_VERSION="${INA228_FIRMWARE_VERSION}"
+    TPS26750_FW_VERSION="${TPS26750_FIRMWARE_VERSION}"
 )
 
 # Add the standard library to the build
@@ -134,6 +149,7 @@ target_link_libraries(PD240W
 target_include_directories(PD240W PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
     external/ina228_multiplatform/include
+    external/tps26750_multiplatform/include
         src
         src/config
         src/drivers

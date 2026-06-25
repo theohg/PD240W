@@ -60,7 +60,12 @@ void Hardware::init() {
     LOG_HW_INIT("ST7789 Display", display.init());
 
     // I2C devices
-    LOG_HW_INIT("TPS26750 PD Controller", pdController.init());
+    if (pdController.init()) {
+        LOG_INFO("TPS26750 PD Controller initialized successfully with FW %s",
+                 Version::TPS_FIRMWARE_VERSION);
+    } else {
+        LOG_ERROR("TPS26750 PD Controller initialization FAILED");
+    }
     if (powerMonitor.init()) {
         if (!powerMonitor.setADCRange(Board::INA228_USE_LOW_ADC_RANGE)) {
             LOG_WARN("INA228 ADC range configuration failed");

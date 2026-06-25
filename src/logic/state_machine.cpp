@@ -87,7 +87,7 @@ static const char* BOOT_MESSAGES[] = {
 static constexpr uint8_t BOOT_STAGE_COUNT = 4;
 
 // Storage for PDO list (shared with display)
-static SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
+static TPS26750_SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
 
 // ============================================================================
 // Constructor
@@ -499,7 +499,7 @@ void StateMachine::handleMainState(EncoderEvent event) {
         if (contract.valid && contract.is_pps && pdManager.isPpsActive()) {
             // Use the authoritative active PDO index when available (avoids first-match
             // ambiguity when overlapping PPS APDOs exist, e.g. 3.3-11V and 3.3-16V).
-            SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+            TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
             uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
             int8_t active_idx = pdManager.getActivePdoIndex();
             uint8_t selected = 0;
@@ -537,7 +537,7 @@ void StateMachine::handleMainState(EncoderEvent event) {
             }
         } else if (contract.valid && contract.is_avs && pdManager.isAvsActive()) {
             // Find AVS PDO that covers current voltage and set up adjustment
-            SourceCapability caps[AppConfig::MAX_PDO_COUNT];
+            TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
             uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
             int8_t active_idx = pdManager.getActivePdoIndex();
             uint8_t selected = 0;
@@ -863,7 +863,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                 }
                 // Check if selected PDO is PPS - if so, enter voltage adjustment mode
                 if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos) {
-                    SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+                    TPS26750_SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
                     const ActiveContract& contract = pdManager.getActiveContract();
                     int8_t active_pdo_index = pdManager.getActivePdoIndex();
                     if (pdo.is_pps) {
@@ -1272,7 +1272,7 @@ void StateMachine::requestSelectedPdo() {
         return;
     }
 
-    SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+    TPS26750_SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
 
     LOG_INFO("Requesting PDO[%d]: %umV @ %umA (PPS=%d, AVS=%d)",
              _selected_pdo_index, pdo.voltage_mv, pdo.max_current_ma,
@@ -1297,7 +1297,7 @@ void StateMachine::requestSelectedPdo() {
     }
 }
 
-void StateMachine::saveStartupContractSnapshot(const SourceCapability& pdo,
+void StateMachine::saveStartupContractSnapshot(const TPS26750_SourceCapability& pdo,
                                                int8_t pdo_index,
                                                uint32_t requested_voltage_mv) {
     SavedStartupContractType contract_type = SavedStartupContractType::FIXED;
