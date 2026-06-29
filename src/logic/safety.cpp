@@ -233,9 +233,9 @@ void Safety::updateVoltage() {
     _state.ina_voltage_v = hw.powerMonitor.getBusVoltage();
 
     // Check PD connection status
-    // Consider disconnected if VBUS < 4V (below USB minimum)
+    // Consider disconnected if VBUS < 3.3V (below USB minimum)
     bool was_connected = _state.pd_connected;
-    _state.pd_connected = (_state.vbus_voltage_v >= 4.0f);
+    _state.pd_connected = (_state.vbus_voltage_v >= 3.3f);
 
     if (was_connected && !_state.pd_connected) {
         // Just disconnected
