@@ -2041,12 +2041,12 @@ void DisplayManager::drawAboutScreen() {
     hw.display.drawStringAA(VALUE_X, y, Version::TARGET, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_SMALL);
     y += LINE_H;
 
-    // Flash usage using linker symbols (RP2040 has 2MB flash)
+    // Flash usage using linker symbols (binary span)
     // These symbols are defined by the Pico SDK linker script
     extern char __flash_binary_start;
     extern char __flash_binary_end;
     uint32_t flash_used = (uint32_t)(&__flash_binary_end - &__flash_binary_start);
-    constexpr uint32_t FLASH_TOTAL = 2 * 1024 * 1024;  // 2MB RP2040 internal flash
+    constexpr uint32_t FLASH_TOTAL = PICO_FLASH_SIZE_BYTES;  // Configured chip size (board config)
     float flash_percent = (flash_used * 100.0f) / FLASH_TOTAL;
     hw.display.drawStringAA(LABEL_X, y, "Flash:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     snprintf(buf, sizeof(buf), "%luKB (%.1f%%)", (unsigned long)(flash_used / 1024), flash_percent);

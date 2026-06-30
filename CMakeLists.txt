@@ -30,6 +30,12 @@ include(pico_sdk_import.cmake)
 
 project(PD240W C CXX ASM)
 
+# Set the external flash size to 16MB (128Mbit) for the RP2040.
+# Single source of truth: drives the linker flash region (CMake var, below)
+# AND the C macro (compile definition, in target_compile_definitions further down).
+# Plain integer (no spaces) so it works cleanly as a -D flag.
+set(PICO_FLASH_SIZE_BYTES "16777216")   # 16 MB = 128 Mbit
+
 set(INA228_SUBMODULE_DIR "${CMAKE_CURRENT_LIST_DIR}/external/ina228_multiplatform")
 set(INA228_FIRMWARE_VERSION "unknown")
 set(TPS26750_SUBMODULE_DIR "${CMAKE_CURRENT_LIST_DIR}/external/tps26750_multiplatform")
@@ -129,6 +135,8 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   PICO_DEFAULT_UART_TX_PIN=16
   PICO_DEFAULT_UART_RX_PIN=29
   PICO_DEFAULT_UART_BAUD_RATE=115200
+  # Make the C code (About screen, settings storage) see the real flash size.
+  PICO_FLASH_SIZE_BYTES=${PICO_FLASH_SIZE_BYTES}
   # Build date from CMake (always updates on rebuild)
   BUILD_DATE="${BUILD_TIMESTAMP}"
     INA228_FW_VERSION="${INA228_FIRMWARE_VERSION}"

@@ -10,9 +10,10 @@
 Settings settings;
 
 // Flash storage configuration
-// Use the last 4KB sector of flash for settings
-// RP2040 has 2MB flash, sectors are 4KB
-static constexpr uint32_t FLASH_TARGET_OFFSET = (2 * 1024 * 1024) - FLASH_SECTOR_SIZE;  // Last sector
+// Use the last 4KB sector of flash for settings.
+// PICO_FLASH_SIZE_BYTES tracks the configured chip size (from the board config),
+// so settings always land in the true last sector regardless of flash size.
+static constexpr uint32_t FLASH_TARGET_OFFSET = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;  // Last sector
 #define FLASH_TARGET_ADDR ((const uint8_t*)(XIP_BASE + FLASH_TARGET_OFFSET))
 
 namespace {
