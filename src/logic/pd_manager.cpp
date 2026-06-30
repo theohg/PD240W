@@ -844,6 +844,7 @@ bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
     copyStringTruncated(info.charger_name, sizeof(info.charger_name), _charger_name);
     info.detected_cable_rating = DetectedCableRating::UNKNOWN_CHARGER_LIMIT;
     info.charger_max_power_w = 0;
+    info.charger_power_is_upper_bound = false;
 
     if (!_charger_connected) {
         return false;
@@ -877,6 +878,32 @@ bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
 
         if (pdo.is_pps) {
             has_pps = true;
+        }
+    }
+
+    // Non-PD (Type-C only) source: no source-capability PDOs are advertised, so
+    // fall back to the advertised Type-C current (Rp level) in POWER_STATUS.
+    //   - Rp-1.5A / Rp-3.0A: the source guarantees that current at 5V -> exact W.
+    //   - Rp-default: the source advertises no current over CC; its real capability
+    //     (often signaled out-of-band via BC1.2) is unknowable here, so report the
+    //     true ceiling for any 5V Type-C source (15W) as an upper bound.
+    if (info.charger_max_power_w == 0) {
+        uint8_t pwr_status[2] = {0};
+        if (hw.pdController.getPowerStatus(pwr_status)) {
+            switch (pwr_status[0] & TPS26750_PWR_STATUS_TYPEC_CURR_MASK) {
+                case TPS26750_PWR_STATUS_TYPEC_3_0A:
+                    info.charger_max_power_w = 15;  // 5V @ 3.0A
+                    break;
+                case TPS26750_PWR_STATUS_TYPEC_1_5A:
+                    info.charger_max_power_w = 7;   // 5V @ 1.5A
+                    break;
+                case TPS26750_PWR_STATUS_TYPEC_USB_DEF:
+                    info.charger_max_power_w = 15;  // 5V Type-C ceiling
+                    info.charger_power_is_upper_bound = true;
+                    break;
+                default:
+                    break;  // PD contract advertised but no PDOs cached yet
+            }
         }
     }
 

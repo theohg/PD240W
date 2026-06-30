@@ -2111,7 +2111,9 @@ void DisplayManager::drawAboutChargerScreen() {
         drawInfoRow("Brand:", "Not reported", UIColors::TEXT_SECONDARY);
     }
 
-    snprintf(buf, sizeof(buf), "%luW", static_cast<unsigned long>(diag.charger_max_power_w));
+    snprintf(buf, sizeof(buf), "%s%luW",
+             diag.charger_power_is_upper_bound ? "<=" : "",
+             static_cast<unsigned long>(diag.charger_max_power_w));
     drawInfoRow("Max Power:", buf);
     drawInfoRow("Cable:",
                 getDetectedCableText(diag.detected_cable_rating),

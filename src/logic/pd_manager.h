@@ -52,6 +52,8 @@ struct ChargerDiagInfo {
     char charger_name[32];
     DetectedCableRating detected_cable_rating;
     uint32_t charger_max_power_w;   // Maximum power offered by the source
+    bool charger_power_is_upper_bound;  // true when the value is a "<=" estimate
+                                        // (non-PD USB-default source, real cap unknown)
 };
 
 class PdManager {
