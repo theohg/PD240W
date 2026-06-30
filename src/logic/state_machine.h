@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "pico/stdlib.h"
 #include "tps26750.h"
+#include "utils/tps_patch_loader.h"
 
 // ============================================================================
 // Application State Machine
@@ -153,6 +154,14 @@ private:
     absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
     absolute_time_t _boot_neg_start;    // When contract negotiation started (for timeout)
 
+    // PD-config push (RP2040 -> TPS26750 over I2C0) performed before PDO discovery.
+    // Pushes the embedded patch bundle when the TPS booted in PTCH mode (blank
+    // EEPROM / future EEPROM-less board); skips instantly when already in APP mode.
+    TpsPatchSession _boot_patch_session;
+    bool _boot_patch_active;            // True while the push runs (drives loading bar/message)
+    bool _boot_patch_done;             // True once the push has been attempted (run once)
+    uint8_t _boot_patch_progress;      // Push progress 0-100 (for loading bar)
+
     // Menu navigation
     MenuItem _selected_menu_item;
     SettingsItem _selected_settings_item;
@@ -189,6 +198,10 @@ private:
 
     // State handlers
     void handleBootState();
+
+    // Push the PD config to the TPS26750 over I2C (blocking, animates the boot
+    // loading bar). No-op/instant skip when the TPS is already in APP mode.
+    void runPatchPush();
     void handleMainState(EncoderEvent event);
     void handleMenuState(EncoderEvent event);
     void handleAdjustState(EncoderEvent event);

@@ -137,11 +137,6 @@ static bool eeprom_write_block(uint16_t mem_addr, const uint8_t* data, size_t le
         // Wait for EEPROM internal write cycle to complete
         sleep_ms(EEPROM_WRITE_DELAY_MS);
 
-        // Progress indicator (every 1KB)
-        if ((written % 1024) == 0) {
-            LOG_INFO("[EEPROM] Writing... %u / %u bytes", written, len);
-        }
-
         // Advance pointers
         mem_addr += chunk_size;
         written += chunk_size;
@@ -438,6 +433,46 @@ EepromCompareResult eepromCompare() {
 
     LOG_INFO("[EEPROM] EEPROM has different configuration");
     return EepromCompareResult::DIFFERENT;
+}
+
+bool eepromEraseAll() {
+    eeprom_i2c_init();
+    sleep_ms(50);  // Allow bus to stabilize
+
+    bool ok = eeprom_probe_device();
+    if (!ok) {
+        LOG_ERROR("[EEPROM] Erase: device not found at 0x%02X", EEPROM_I2C_ADDR);
+        eeprom_i2c_deinit();
+        return false;
+    }
+
+    // Only the config-image region needs to be invalidated for the TPS to reject
+    // it; clamp to the firmware size when known, else the full device.
+    size_t erase_size = (gSizeFullFlashArray > 0 && (size_t)gSizeFullFlashArray <= EEPROM_TOTAL_SIZE)
+                            ? (size_t)gSizeFullFlashArray
+                            : EEPROM_TOTAL_SIZE;
+
+    uint8_t blank[EEPROM_PAGE_SIZE];
+    memset(blank, 0xFF, sizeof(blank));
+
+    size_t offset = 0;
+    while (offset < erase_size) {
+        size_t chunk = std::min(sizeof(blank), erase_size - offset);
+        if (!eeprom_write_block((uint16_t)offset, blank, chunk)) {
+            LOG_ERROR("[EEPROM] Erase failed at 0x%04X", (unsigned)offset);
+            eeprom_i2c_deinit();
+            return false;
+        }
+        offset += chunk;
+        if ((offset % 4096) == 0 || offset == erase_size) {
+            LOG_INFO("[EEPROM] Erasing... %u / %u bytes", (unsigned)offset, (unsigned)erase_size);
+        }
+    }
+
+    LOG_INFO("[EEPROM] Erased %u bytes to 0xFF - power-cycle to boot TPS into PTCH",
+             (unsigned)erase_size);
+    eeprom_i2c_deinit();
+    return true;
 }
 
 bool eepromFlash(EepromProgressCallback callback, void* user_data) {

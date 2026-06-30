@@ -14,6 +14,7 @@
 #include "logic/settings.h"
 #include "logic/safety.h"
 #include "logic/pd_manager.h"
+#include "utils/tps_eeprom_loader.h"
 
 // ============================================================================
 // CLI Command Implementations
@@ -394,6 +395,29 @@ void currLim(const char* arg) {
     CcController::setTargetCurrentMa(limit);
     settings.requestSave();
     Cli::respond("OK");
+}
+
+// -------------------------------------------------------------------------
+// TPS26750 diagnostics / config test
+// -------------------------------------------------------------------------
+
+void tpsMode(const char* arg) {
+    char mode[5] = {0};
+    if (hw.pdController.getMode(mode)) {
+        Cli::respond(mode);  // "APP ", "PTCH", "BOOT", ...
+    } else {
+        Cli::error("READ_FAILED");
+    }
+}
+
+void tpsGarbage(const char* arg) {
+    // Blank the EEPROM so the TPS rejects it and boots into PTCH on next power
+    // cycle, letting the RP2040 boot-time patch push take over. Blocking.
+    if (eepromEraseAll()) {
+        Cli::respond("OK");
+    } else {
+        Cli::error("ERASE_FAILED");
+    }
 }
 
 // -------------------------------------------------------------------------

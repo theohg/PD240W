@@ -64,6 +64,8 @@ static void cmd_sett_autoout(const char* arg);
 static void cmd_sett_dim(const char* arg);
 static void cmd_sett_save(const char* arg);
 static void cmd_sett_reset(const char* arg);
+static void cmd_tps_mode(const char* arg);
+static void cmd_tps_garbage(const char* arg);
 static void cmd_log_on(const char* arg);
 static void cmd_log_off(const char* arg);
 
@@ -111,6 +113,10 @@ static const CommandEntry commands[] = {
     {"SETT:DIM",     false, cmd_sett_dim},
     {"SETT:SAVE",    false, cmd_sett_save},
     {"SETT:RESET",   false, cmd_sett_reset},
+
+    // TPS26750 diagnostics / config test
+    {"TPS:MODE",     true,  cmd_tps_mode},
+    {"TPS:GARBAGE",  false, cmd_tps_garbage},
 
     // Logging
     {"LOG:ON",       false, cmd_log_on},
@@ -272,6 +278,8 @@ static void cmd_sett_autoout(const char* arg) { CliCmd::settAutoOut(arg); }
 static void cmd_sett_dim(const char* arg)     { CliCmd::settDim(arg); }
 static void cmd_sett_save(const char* arg)    { CliCmd::settSave(arg); }
 static void cmd_sett_reset(const char* arg)   { CliCmd::settReset(arg); }
+static void cmd_tps_mode(const char* arg)     { CliCmd::tpsMode(arg); }
+static void cmd_tps_garbage(const char* arg)  { CliCmd::tpsGarbage(arg); }
 static void cmd_log_on(const char* arg)       { g_cli_log_enabled = true; respond("OK"); }
 static void cmd_log_off(const char* arg)      { g_cli_log_enabled = false; respond("OK"); }
 

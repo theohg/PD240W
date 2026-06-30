@@ -42,6 +42,10 @@ void pdAvs(const char* arg);
 // Current Limit
 void currLim(const char* arg);
 
+// TPS26750 diagnostics / config test
+void tpsMode(const char* arg);      // Query: read MODE register (APP/PTCH/BOOT)
+void tpsGarbage(const char* arg);   // Action: blank EEPROM so TPS boots into PTCH
+
 // Settings
 void settBright(const char* arg);
 void settSound(const char* arg);

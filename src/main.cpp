@@ -56,10 +56,6 @@ int main() {
     // Initialize PD manager
     pdManager.init();
 
-    // Push a safe startup request immediately, before boot-screen delays the
-    // normal settings-based restore path.
-    pdManager.primeStartupContract();
-
     // Initialize display manager
     displayManager.init();
 

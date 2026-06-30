@@ -141,6 +141,10 @@ StateMachine::StateMachine()
     , _contract_mode_adjusting(false)
     , _energy_display_mwh(false)
     , _boot_neg_start(nil_time)
+    , _boot_patch_session{}
+    , _boot_patch_active(false)
+    , _boot_patch_done(false)
+    , _boot_patch_progress(0)
 {}
 
 // ============================================================================
@@ -279,9 +283,26 @@ bool StateMachine::update() {
 void StateMachine::handleBootState() {
     uint32_t elapsed_ms = absolute_time_diff_us(_state_enter_time, get_absolute_time()) / 1000;
 
-    // Stage 0 -> 1: Show logo briefly, then start PDO discovery
+    // Stage 0 -> 1: Show logo briefly, push the PD config if needed, then start
+    // PDO discovery.
     if (_boot_stage == 0 && elapsed_ms >= AppConfig::BOOT_MIN_DISPLAY_MS / 2) {
+        if (!_boot_patch_done) {
+            // Push the patch bundle from the RP2040 when the TPS booted in PTCH
+            // mode (blank EEPROM / future EEPROM-less board). Instant skip when
+            // it is already in APP mode (valid EEPROM). Blocking + animates the
+            // loading bar; restart the boot budget so the push time doesn't eat
+            // into the PDO/negotiation timeouts below.
+            runPatchPush();
+            _state_enter_time = get_absolute_time();
+
+            // Now that the TPS is in APP mode (patch pushed, or already valid),
+            // issue the startup pre-boot request before PDO discovery so the saved
+            // contract is requested up front. This was previously attempted in
+            // main.cpp but failed there because the TPS was still in PTCH mode.
+            pdManager.primeStartupContract();
+        }
         _boot_stage = 1;  // Start PDO discovery
+        return;
     }
 
     // Stage 1: Wait for PDOs with timeout
@@ -1231,25 +1252,72 @@ void StateMachine::setFault(FaultType fault) {
 uint8_t StateMachine::getBootProgress() const {
     if (_state != AppState::BOOT) return 100;
 
+    // While the RP2040 pushes the PD config, map the push 0-100% into 5-30%
+    // so the bar advances smoothly through the (long) burst phase.
+    if (_boot_patch_active) {
+        return static_cast<uint8_t>(5 + (static_cast<uint16_t>(_boot_patch_progress) * 25) / 100);
+    }
+
     // Progress based on current boot stage
-    // Stage 0: 0-25%  (logo/melody)
-    // Stage 1: 25-50% (PDO discovery)
-    // Stage 2: 50-90% (negotiation)
-    // Stage 3: 100%   (ready)
+    // Stage 0:  5%   (logo/melody, before config push)
+    // Stage 1: 50%   (PDO discovery)
+    // Stage 2: 75%   (negotiation)
+    // Stage 3: 100%  (ready)
     switch (_boot_stage) {
-        case 0: return 10;
-        case 1: return 35;
-        case 2: return 70;
+        case 0: return 5;
+        case 1: return 50;
+        case 2: return 75;
         case 3: return 100;
         default: return 100;
     }
 }
 
 const char* StateMachine::getBootStageMessage() const {
+    if (_boot_patch_active) {
+        return "Loading PD config...";
+    }
     if (_boot_stage < BOOT_STAGE_COUNT) {
         return BOOT_MESSAGES[_boot_stage];
     }
     return "";
+}
+
+void StateMachine::runPatchPush() {
+    _boot_patch_done = true;  // run exactly once per boot
+    _boot_patch_active = true;
+    _boot_patch_progress = 0;
+
+    if (!tpsPatchBegin(&_boot_patch_session)) {
+        LOG_WARN("Boot: PD config push setup failed: %s",
+                 _boot_patch_session.error_message ? _boot_patch_session.error_message : "unknown");
+        _boot_patch_active = false;
+        return;
+    }
+
+    TpsPatchStatus status;
+    uint8_t last_rendered = 0xFF;
+    do {
+        status = tpsPatchStep(&_boot_patch_session);
+        uint8_t progress = tpsPatchProgress(&_boot_patch_session);
+        // Animate the boot loading bar during the push. Skip rendering on the
+        // already-in-APP fast path so valid-EEPROM units never flash the message.
+        if (progress != last_rendered && !_boot_patch_session.skipped) {
+            _boot_patch_progress = progress;
+            displayManager.render();
+            last_rendered = progress;
+        }
+    } while (status == TpsPatchStatus::IN_PROGRESS);
+
+    _boot_patch_active = false;
+    _boot_patch_progress = 100;
+
+    if (status == TpsPatchStatus::ERROR) {
+        LOG_WARN("Boot: PD config push failed: %s - continuing",
+                 _boot_patch_session.error_message ? _boot_patch_session.error_message : "unknown");
+    } else if (!_boot_patch_session.skipped) {
+        // The TPS was just pushed into APP mode; refresh PD manager state.
+        pdManager.init();
+    }
 }
 
 // ============================================================================

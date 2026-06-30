@@ -126,3 +126,15 @@ bool eepromFlashBegin(EepromFlashSession* session);
 EepromFlashStatus eepromFlashStep(EepromFlashSession* session,
                                   EepromProgressCallback callback = nullptr,
                                   void* user_data = nullptr);
+
+/**
+ * @brief Blank the EEPROM (write 0xFF over the config image region).
+ *
+ * Test/diagnostic helper: corrupts the stored config so the TPS26750 rejects the
+ * EEPROM at power-up and falls back to 'PTCH' mode, where the RP2040 boot-time
+ * patch push (see tps_patch_loader) takes over. Blocking; initializes and
+ * releases I2C1 internally. Power-cycle the board afterwards.
+ *
+ * @return true if the erase completed and verified at the device, false otherwise.
+ */
+bool eepromEraseAll();

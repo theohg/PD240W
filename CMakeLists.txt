@@ -71,6 +71,7 @@ add_executable(PD240W
 
         # Utils
         src/utils/tps_eeprom_loader.cpp
+        src/utils/tps_patch_loader.cpp
         src/utils/tps26750_patch.c
 
         # Drivers
