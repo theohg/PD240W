@@ -79,8 +79,13 @@ SafetyStatus Safety::update() {
         _last_voltage_check = now;
     }
 
-    // Determine overall status
-    if (_state.overcurrent_latched || _temp_fault_active || !_state.pd_connected) {
+    // Determine overall status.
+    // NOTE: Overcurrent is owned entirely by the ISR path
+    // (Interrupts::handleOvercurrent() -> StateMachine::setFault(OVERCURRENT)).
+    // It is deliberately NOT folded in here: this status is polled every loop and
+    // has no clear/acknowledge path, so a latched overcurrent bit would pin the
+    // status to FAULT forever (continuous full-rate rendering, red LED stuck).
+    if (_temp_fault_active || !_state.pd_connected) {
         overall_status = SafetyStatus::FAULT;
     } else if (_temp_warning_active) {
         overall_status = SafetyStatus::WARNING;
@@ -268,18 +273,15 @@ void Safety::updateCurrent() {
         _state.current_overflow = hw.powerMonitor.hasMathOverflow();
         _state.power_w = hw.powerMonitor.getPower();
 
-        // Check if INA228 ALERT is latched (overcurrent already triggered by ISR)
-        // The ALERT pin is active-low and latched
-        // IMPORTANT: Only check when switch is enabled - pin goes low when switch is off
-        if (!hw.overcurrentAlert.read()) {
-            _state.overcurrent_latched = true;
-        }
+        // Overcurrent detection/latching is handled by the hardware ALERT ISR
+        // (interrupts.cpp), which disables the load switch immediately and raises
+        // an OVERCURRENT fault through the state machine. We intentionally do NOT
+        // latch it here — see the note in update() about the missing clear path.
     } else {
         // Switch is off - current and power are effectively 0
         _state.current_a = 0.0f;
         _state.current_overflow = false;
         _state.power_w = 0.0f;
-        // Don't update overcurrent_latched when switch is off
     }
 }
 

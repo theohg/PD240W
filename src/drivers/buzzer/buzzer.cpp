@@ -2,6 +2,7 @@
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#include "hardware/sync.h"
 #include <stdint.h>
 
 Buzzer::Buzzer(uint pin) {
@@ -88,14 +89,19 @@ int64_t Buzzer::stopToneCallback(alarm_id_t id, void *user_data) {
 void Buzzer::playTone(uint32_t frequency, uint32_t duration_ms) {
     // 1. If a previous note is still playing (alarm pending), cancel it!
     // This prevents the old "stop" command from cutting off our NEW note.
-    if (_alarm_id > 0) {
-        cancel_alarm(_alarm_id);
-    }
-
-    // A tone interrupts any melody in progress: clear the melody state so
+    // Cancel-and-reset must be atomic w.r.t. the alarm IRQ callback, which also
+    // mutates _alarm_id/_melody_* — otherwise a callback firing mid-sequence can
+    // schedule a stray alarm whose id is then lost (orphaned chain).
+    // A tone also interrupts any melody in progress: clear the melody state so
     // isPlayingMelody() doesn't stay latched true after its alarm chain is
     // cancelled (a stuck flag silences the critical-temperature alarm restart).
+    uint32_t irq = save_and_disable_interrupts();
+    if (_alarm_id > 0) {
+        cancel_alarm(_alarm_id);
+        _alarm_id = 0;
+    }
     _playing_melody = false;
+    restore_interrupts(irq);
 
     // 2. Start the sound
     setFrequency(frequency);
@@ -228,26 +234,32 @@ int64_t Buzzer::playNextNoteCallback(alarm_id_t id, void *user_data) {
 }
 
 void Buzzer::playMelody(const Note* melody, uint8_t length) {
-    // Cancel any currently playing tone or melody
+    // Cancel any pending alarm and install the new melody state atomically w.r.t.
+    // the alarm IRQ callback (see playTone). Once cancelled with _alarm_id=0, no
+    // callback is pending, so it is safe to kick off the first note below.
+    uint32_t irq = save_and_disable_interrupts();
     if (_alarm_id > 0) {
         cancel_alarm(_alarm_id);
+        _alarm_id = 0;
     }
-
-    // Setup melody state
     _melody = melody;
     _melody_length = length;
     _melody_index = 0;
     _playing_melody = true;
+    restore_interrupts(irq);
 
     // Start playing first note
     playNextNoteCallback(0, this);
 }
 
 void Buzzer::stopMelody() {
+    // Cancel-and-reset atomically w.r.t. the alarm IRQ callback (see playTone).
+    uint32_t irq = save_and_disable_interrupts();
     if (_alarm_id > 0) {
         cancel_alarm(_alarm_id);
         _alarm_id = 0;
     }
-    stop();
     _playing_melody = false;
+    restore_interrupts(irq);
+    stop();
 }

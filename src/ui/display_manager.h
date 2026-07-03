@@ -145,6 +145,8 @@ private:
     // PPS/AVS tuning badge tracking
     bool _last_pps_converged;
     bool _last_avs_converged;
+    bool _last_pps_tuning_active;   // Track so badge redraws when tuning turns off
+    bool _last_avs_tuning_active;
 
     // Current-limit badge tracking
     int8_t _last_cc_badge_state;  // -1=unknown, 0=hidden, 1=OCP, 2=CC regulating, 3=CC idle

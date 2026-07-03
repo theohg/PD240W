@@ -33,7 +33,7 @@ Button::Button(uint p, ButtonPull pull_config, uint32_t debounce_ms, bool active
 bool Button::isPressed() {
     bool raw_read = gpio_get(pin);
     bool current_state = active_low ? !raw_read : raw_read;
-    uint64_t now = get_absolute_time();
+    absolute_time_t now = get_absolute_time();
 
     // Check if the physical state is different from what we think the steady state is
     if (current_state != last_steady_state) {

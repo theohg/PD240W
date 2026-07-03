@@ -30,6 +30,15 @@ static int parseOnOff(const char* arg) {
     return -1;
 }
 
+// Helper: scale a measurement to unsigned milli-units, clamping negatives to 0.
+// Measured current/power can read slightly negative from noise near zero, and a
+// negative-float -> unsigned conversion is undefined behavior. Mirrors the clamp
+// the display code applies.
+static unsigned toMilliUnsigned(float value) {
+    if (value < 0.0f) value = 0.0f;
+    return static_cast<unsigned>(value * 1000.0f);
+}
+
 // -------------------------------------------------------------------------
 // Identity & System
 // -------------------------------------------------------------------------
@@ -140,21 +149,21 @@ void outpBuck(const char* arg) {
 void measVolt(const char* arg) {
     const SafetyState& s = safety.getState();
     char buf[16];
-    snprintf(buf, sizeof(buf), "%u", (unsigned)(s.ina_voltage_v * 1000.0f));
+    snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.ina_voltage_v));
     Cli::respond(buf);
 }
 
 void measCurr(const char* arg) {
     const SafetyState& s = safety.getState();
     char buf[16];
-    snprintf(buf, sizeof(buf), "%u", (unsigned)(s.current_a * 1000.0f));
+    snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.current_a));
     Cli::respond(buf);
 }
 
 void measPow(const char* arg) {
     const SafetyState& s = safety.getState();
     char buf[16];
-    snprintf(buf, sizeof(buf), "%u", (unsigned)(s.power_w * 1000.0f));
+    snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.power_w));
     Cli::respond(buf);
 }
 
@@ -184,7 +193,7 @@ void measEnergy(const char* arg) {
 void measVbus(const char* arg) {
     float vbus_v = hw.adc.getVBUS();
     char buf[16];
-    snprintf(buf, sizeof(buf), "%u", (unsigned)(vbus_v * 1000.0f));
+    snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(vbus_v));
     Cli::respond(buf);
 }
 
@@ -196,9 +205,9 @@ void measAll(const char* arg) {
 
     char buf[80];
     snprintf(buf, sizeof(buf), "%u,%u,%u,%d,%d,%u",
-             (unsigned)(s.ina_voltage_v * 1000.0f),
-             (unsigned)(s.current_a * 1000.0f),
-             (unsigned)(s.power_w * 1000.0f),
+             toMilliUnsigned(s.ina_voltage_v),
+             toMilliUnsigned(s.current_a),
+             toMilliUnsigned(s.power_w),
              (int)(s.temperature_c * 10.0f),
              (int)(s.ina_temperature_c * 10.0f),
              (unsigned)mah);
@@ -412,7 +421,14 @@ void tpsMode(const char* arg) {
 
 void tpsGarbage(const char* arg) {
     // Blank the EEPROM so the TPS rejects it and boots into PTCH on next power
-    // cycle, letting the RP2040 boot-time patch push take over. Blocking.
+    // cycle, letting the RP2040 boot-time patch push take over.
+    //
+    // eepromEraseAll() is blocking (tens of ms) and stalls safety/PD/CC
+    // monitoring for its full duration. Disable both outputs first so nothing is
+    // powered through the load switch / 17V buck while monitoring is frozen.
+    hw.loadSwitch.off();
+    hw.EN_17V.off();
+
     if (eepromEraseAll()) {
         Cli::respond("OK");
     } else {

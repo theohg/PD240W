@@ -195,6 +195,8 @@ DisplayManager::DisplayManager()
     , _last_melody_adjusting(false)
     , _last_pps_converged(false)
     , _last_avs_converged(false)
+    , _last_pps_tuning_active(false)
+    , _last_avs_tuning_active(false)
     , _last_cc_badge_state(-1)
     , _last_cc_adjust_state(-1)
     , _last_main_current_limit_mode(-1)
@@ -623,7 +625,10 @@ void DisplayManager::drawActiveContract() {
             strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
             _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
         } else if (pd_rev[0] == '\0' && (_last_pd_revision_drawn || _last_epr_badge_drawn)) {
-            hw.display.fillRect(SCREEN_WIDTH - 120, y - 3, 110, BADGE_H + 4, UIColors::BACKGROUND);
+            // Clear the whole badge strip (EPR + revision + PPS/AVS). The old rect
+            // (SCREEN_WIDTH-120, w=110) missed the EPR badge's leftmost ~15px and the
+            // PPS/AVS badge's right edge, leaving pink remnants on unplug.
+            hw.display.fillRect(SCREEN_WIDTH - 142, y - 3, 138, BADGE_H + 4, UIColors::BACKGROUND);
             _last_pd_revision_drawn = false;
             _last_pd_revision[0] = '\0';
             _last_epr_badge_drawn = false;
@@ -661,8 +666,11 @@ void DisplayManager::drawActiveContract() {
             bool tuning_converged = pdManager.isPpsTuningConverged();
             bool tuning_active = pdManager.isPpsTuningActive();
 
-            // Redraw badge when PPS state changes OR convergence state changes
-            if (_last_pps_state != 1 || (tuning_active && tuning_converged != _last_pps_converged)) {
+            // Redraw badge when PPS state changes, tuning turns on/off, OR
+            // convergence changes. Tracking tuning_active is required so the badge
+            // flips yellow->green when auto-tune is switched off while unconverged.
+            if (_last_pps_state != 1 || tuning_active != _last_pps_tuning_active ||
+                tuning_converged != _last_pps_converged) {
                 int badge_x = RIGHTMOST_BADGE_X;
                 int badge_y = y - 2;
                 int badge_w = RIGHTMOST_BADGE_W;
@@ -677,14 +685,17 @@ void DisplayManager::drawActiveContract() {
                 hw.display.drawStringAA(text_x, text_y, "PPS", UIColors::BACKGROUND, badge_color, FONT_SMALL);
                 _last_pps_state = 1;
                 _last_pps_converged = tuning_converged;
+                _last_pps_tuning_active = tuning_active;
             }
         } else if (contract.is_avs) {
             // AVS badge - with tuning convergence colors (like PPS), same position
             bool tuning_converged = pdManager.isAvsTuningConverged();
             bool tuning_active = pdManager.isAvsTuningActive();
 
-            // Redraw badge when AVS state changes OR convergence state changes
-            if (_last_pps_state != 2 || (tuning_active && tuning_converged != _last_avs_converged)) {
+            // Redraw badge when AVS state changes, tuning turns on/off, OR
+            // convergence changes (see PPS branch — tuning_active must be tracked).
+            if (_last_pps_state != 2 || tuning_active != _last_avs_tuning_active ||
+                tuning_converged != _last_avs_converged) {
                 int badge_x = RIGHTMOST_BADGE_X;
                 int badge_y = y - 2;
                 int badge_w = RIGHTMOST_BADGE_W;
@@ -699,6 +710,7 @@ void DisplayManager::drawActiveContract() {
                 hw.display.drawStringAA(text_x, text_y, "AVS", UIColors::BACKGROUND, badge_color, FONT_SMALL);
                 _last_pps_state = 2;
                 _last_avs_converged = tuning_converged;
+                _last_avs_tuning_active = tuning_active;
             }
         } else {
             // Clear badge area when neither PPS nor AVS active
@@ -710,7 +722,8 @@ void DisplayManager::drawActiveContract() {
     } else {
         // Non-PD charger or no contract: show USB default
         hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
-        hw.display.fillRect(SCREEN_WIDTH - 120, y - 3, 110, BADGE_H + 4, UIColors::BACKGROUND);
+        // Clear the whole badge strip (see the pd_rev-empty branch above).
+        hw.display.fillRect(SCREEN_WIDTH - 142, y - 3, 138, BADGE_H + 4, UIColors::BACKGROUND);
         _last_pps_state = 0;
         _last_epr_badge_drawn = false;
         _last_pd_revision_drawn = false;
@@ -1622,8 +1635,12 @@ void DisplayManager::drawSettingsMenu() {
     bool auto_avs = settings.isAutoAvsEnabled();
     bool auto_output = settings.isAutoOutput();
     bool sounds = settings.isSoundsEnabled();
-    uint8_t brightness = stateMachine.getBrightnessValue();
     bool brightness_adj = stateMachine.isBrightnessAdjusting();
+    // Track the value actually shown by drawBrightnessItem: the live adjust value
+    // while adjusting, otherwise the saved setting. Using getBrightnessValue()
+    // unconditionally meant a CLI brightness change never refreshed this row.
+    uint8_t brightness = brightness_adj ? stateMachine.getBrightnessValue()
+                                        : settings.getLcdBrightness();
     uint8_t dim_val = stateMachine.getDimTimeoutValue();
     bool dim_adj = stateMachine.isDimTimeoutAdjusting();
     uint8_t mel_val = stateMachine.getMelodyValue();

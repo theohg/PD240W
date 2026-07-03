@@ -175,6 +175,14 @@ private:
     uint32_t _current_limit_ma;
     uint32_t _adjust_original_value;    // For cancellation
 
+    // Non-blocking EPR probe (replaces a blocking sleep_ms after probeEpr() in the
+    // menu). When the user opens "Select Voltage" / "About Charger" we send the
+    // probe, record the time, and keep pumping the main loop until the charger has
+    // had EPR_PROBE_DELAY_MS to respond, then load PDOs and enter the target screen.
+    bool _epr_probe_pending;
+    absolute_time_t _epr_probe_start;
+    AdjustMode _epr_probe_target;       // PDO_SELECT or ABOUT_CHARGER once the probe completes
+
     // Fault handling
     FaultType _fault_type;
     float _fault_measured_value;

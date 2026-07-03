@@ -117,6 +117,9 @@ StateMachine::StateMachine()
     , _adjust_mode(AdjustMode::NONE)
     , _current_limit_ma(AppConfig::CURRENT_LIMIT_DEFAULT_MA)
     , _adjust_original_value(0)
+    , _epr_probe_pending(false)
+    , _epr_probe_start(nil_time)
+    , _epr_probe_target(AdjustMode::NONE)
     , _fault_type(FaultType::NONE)
     , _fault_measured_value(0.0f)
     , _fault_limit_value(0.0f)
@@ -608,6 +611,27 @@ void StateMachine::handleMainState(EncoderEvent event) {
 }
 
 void StateMachine::handleMenuState(EncoderEvent event) {
+    // Complete a pending non-blocking EPR probe (started on a prior click).
+    // Replaces a blocking sleep_ms after probeEpr() so safety/PD/CC keep ticking
+    // during the wait. Encoder input is ignored until the probe window elapses,
+    // mirroring the old blocking behavior.
+    if (_epr_probe_pending) {
+        if (absolute_time_diff_us(_epr_probe_start, get_absolute_time())
+                >= (int64_t)AppConfig::EPR_PROBE_DELAY_MS * 1000) {
+            _epr_probe_pending = false;
+            pdManager.invalidatePdoCache();  // Force an absolute reload of the _pdo_cache
+            if (_epr_probe_target == AdjustMode::ABOUT_CHARGER) {
+                pdManager.refreshChargerIdentity();
+                _adjust_mode = AdjustMode::ABOUT_CHARGER;
+            } else {
+                loadPdoList();
+                _adjust_mode = AdjustMode::PDO_SELECT;
+            }
+            transitionTo(AppState::ADJUST);
+        }
+        return;
+    }
+
     // Helper to play navigation beep (respects sound setting)
     auto playNavBeep = [this]() {
         if (settings.isSoundsEnabled()) {
@@ -646,12 +670,12 @@ void StateMachine::handleMenuState(EncoderEvent event) {
             // Select current menu item (no select beep - navigation sounds removed)
             switch (_selected_menu_item) {
                 case MenuItem::SELECT_VOLTAGE:
+                    // Send the EPR probe, then wait non-blockingly (see handler top)
+                    // for the charger to respond before reloading the PDO cache.
                     pdManager.probeEpr();
-                    sleep_ms(AppConfig::EPR_PROBE_DELAY_MS); // Brief blocking wait for charger to respond with EPR caps
-                    pdManager.invalidatePdoCache(); // Force an absolute reload of the _pdo_cache
-                    loadPdoList();
-                    _adjust_mode = AdjustMode::PDO_SELECT;
-                    transitionTo(AppState::ADJUST);
+                    _epr_probe_pending = true;
+                    _epr_probe_start = get_absolute_time();
+                    _epr_probe_target = AdjustMode::PDO_SELECT;
                     break;
 
                 case MenuItem::CURRENT_LIMIT:
@@ -687,12 +711,11 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     break;
 
                 case MenuItem::ABOUT_CHARGER:
+                    // Same non-blocking EPR probe path as Select Voltage.
                     pdManager.probeEpr();
-                    sleep_ms(AppConfig::EPR_PROBE_DELAY_MS);
-                    pdManager.invalidatePdoCache();
-                    pdManager.refreshChargerIdentity();
-                    _adjust_mode = AdjustMode::ABOUT_CHARGER;
-                    transitionTo(AppState::ADJUST);
+                    _epr_probe_pending = true;
+                    _epr_probe_start = get_absolute_time();
+                    _epr_probe_target = AdjustMode::ABOUT_CHARGER;
                     break;
 
                 case MenuItem::BACK:
@@ -980,6 +1003,10 @@ void StateMachine::handleFaultState(EncoderEvent event) {
 
 void StateMachine::transitionTo(AppState new_state) {
     if (_state == new_state) return;
+
+    // Any state change cancels an in-flight EPR probe wait so a stale pending
+    // request (e.g. interrupted by a fault) can't fire on a later menu visit.
+    _epr_probe_pending = false;
 
     LOG_INFO("State transition: %s -> %s", appStateName(_state), appStateName(new_state));
     if (_state == AppState::BOOT && new_state == AppState::MAIN) {
