@@ -92,6 +92,11 @@ void Buzzer::playTone(uint32_t frequency, uint32_t duration_ms) {
         cancel_alarm(_alarm_id);
     }
 
+    // A tone interrupts any melody in progress: clear the melody state so
+    // isPlayingMelody() doesn't stay latched true after its alarm chain is
+    // cancelled (a stuck flag silences the critical-temperature alarm restart).
+    _playing_melody = false;
+
     // 2. Start the sound
     setFrequency(frequency);
     setDutyCycle(32768); // 50% Duty Cycle (Standard square wave beep)

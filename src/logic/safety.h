@@ -84,6 +84,13 @@ private:
     bool _temp_warning_active;
     bool _temp_fault_active;
 
+    // Critical-temperature audible alarm state
+    bool _critical_alarm_active;
+
+    // RGB LED status tracking (avoid redundant setColor calls)
+    SafetyStatus _last_led_status;
+    bool _led_first_run;
+
     // Update individual monitors
     void updateTemperature();
     void updateVoltage();

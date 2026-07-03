@@ -442,7 +442,7 @@ void settBright(const char* arg) {
     }
 
     settings.setLcdBrightness(static_cast<uint8_t>(val));
-    hw.display.setBacklight(static_cast<uint8_t>(val));
+    hw.display.setBacklightBrightness(static_cast<uint8_t>(val));
     settings.requestSave();
     Cli::respond("OK");
 }

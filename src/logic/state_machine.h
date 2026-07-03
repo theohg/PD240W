@@ -151,6 +151,8 @@ private:
     bool _boot_retry_after_epr;         // True when LAST_USED must be retried after EPR PDO discovery
     bool _boot_epr_probed;              // True once EPR probe sent after negotiation
     absolute_time_t _boot_epr_probe_time; // When EPR probe was sent
+    uint32_t _boot_last_epr_poll_ms;    // Elapsed time of last EPR PDO poll during boot
+    bool _boot_epr_pdos_found;          // True once EPR PDOs appeared during boot probe
     absolute_time_t _boot_ready_time;   // When "Ready!" was first shown (for adaptive exit)
     absolute_time_t _boot_neg_start;    // When contract negotiation started (for timeout)
 

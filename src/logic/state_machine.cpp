@@ -107,6 +107,8 @@ StateMachine::StateMachine()
     , _boot_retry_after_epr(false)
     , _boot_epr_probed(false)
     , _boot_epr_probe_time(nil_time)
+    , _boot_last_epr_poll_ms(0)
+    , _boot_epr_pdos_found(false)
     , _boot_ready_time(nil_time)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
     , _selected_settings_item(SettingsItem::FLASH_EEPROM)
@@ -399,10 +401,8 @@ void StateMachine::handleBootState() {
         bool is_highest_mode = (settings.getStartupNegotiationMode() == StartupContractMode::HIGHEST_VOLTAGE);
 
         // Poll for EPR PDOs every ~150ms during the wait window
-        static uint32_t last_epr_poll_ms = 0;
-        static bool epr_pdos_found = false;
-        if (epr_elapsed >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS && epr_elapsed - last_epr_poll_ms >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS) {
-            last_epr_poll_ms = epr_elapsed;
+        if (epr_elapsed >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS && epr_elapsed - _boot_last_epr_poll_ms >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS) {
+            _boot_last_epr_poll_ms = epr_elapsed;
             pdManager.invalidatePdoCache();
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
@@ -410,17 +410,17 @@ void StateMachine::handleBootState() {
             // Check if EPR/AVS PDOs have arrived. SPR AVS has voltage_mv == 20000 (==
             // EPR_SPR_MAX_MV) so the strict > comparison excludes it; EPR fixed PDOs
             // (28/36/48 V) and EPR AVS (max > 20 V) satisfy it.
-            if (!epr_pdos_found) {
+            if (!_boot_epr_pdos_found) {
                 for (uint8_t i = 0; i < _num_pdos; i++) {
                     if (s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
-                        epr_pdos_found = true;
+                        _boot_epr_pdos_found = true;
                         LOG_INFO("Boot: EPR PDOs found after %ums: %d PDOs", epr_elapsed, _num_pdos);
                         break;
                     }
                 }
             }
 
-            if (epr_pdos_found && _boot_retry_after_epr) {
+            if (_boot_epr_pdos_found && _boot_retry_after_epr) {
                 LOG_INFO("Boot: Retrying deferred startup contract after EPR discovery");
                 _boot_retry_after_epr = false;
 
@@ -435,27 +435,27 @@ void StateMachine::handleBootState() {
 
             // EPR found but not in highest-voltage mode: proceed immediately
             // (contract was already explicitly negotiated in stage 2)
-            if (epr_pdos_found && !is_highest_mode) {
-                last_epr_poll_ms = 0;
-                epr_pdos_found = false;
+            if (_boot_epr_pdos_found && !is_highest_mode) {
+                _boot_last_epr_poll_ms = 0;
+                _boot_epr_pdos_found = false;
                 _boot_stage = 3;
             }
         }
 
         // Highest voltage + EPR: wait for TPS26750 auto-negotiation to settle
-        if (epr_pdos_found && is_highest_mode && _boot_stage == 2) {
+        if (_boot_epr_pdos_found && is_highest_mode && _boot_stage == 2) {
             pdManager.refreshActiveContract();
             const auto& contract = pdManager.getActiveContract();
             if (contract.valid && contract.voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                 LOG_INFO("Boot: Contract settled at %umV after %ums", contract.voltage_mv, epr_elapsed);
-                last_epr_poll_ms = 0;
-                epr_pdos_found = false;
+                _boot_last_epr_poll_ms = 0;
+                _boot_epr_pdos_found = false;
                 _boot_stage = 3;
             }
         }
 
         // Timeouts: non-EPR chargers get shorter timeout, EPR needs more time for contract settlement
-        uint32_t timeout_ms = epr_pdos_found ? AppConfig::BOOT_EPR_CONTRACT_TIMEOUT_MS : AppConfig::BOOT_EPR_TIMEOUT_MS;
+        uint32_t timeout_ms = _boot_epr_pdos_found ? AppConfig::BOOT_EPR_CONTRACT_TIMEOUT_MS : AppConfig::BOOT_EPR_TIMEOUT_MS;
         if (_boot_stage == 2 && epr_elapsed >= timeout_ms) {
             if (_boot_retry_after_epr) {
                 LOG_INFO("Boot: EPR probe finished without a direct match, retrying startup restore with fallback search");
@@ -463,8 +463,8 @@ void StateMachine::handleBootState() {
                 if (pdManager.negotiateStartupContract(false)) {
                     _boot_contract_complete = false;
                     _boot_neg_start = nil_time;
-                    last_epr_poll_ms = 0;
-                    epr_pdos_found = false;
+                    _boot_last_epr_poll_ms = 0;
+                    _boot_epr_pdos_found = false;
                     return;
                 }
             }
@@ -473,8 +473,8 @@ void StateMachine::handleBootState() {
             _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
             pdManager.refreshActiveContract();
             LOG_INFO("Boot: EPR probe timeout, proceeding with %d PDOs", _num_pdos);
-            last_epr_poll_ms = 0;
-            epr_pdos_found = false;
+            _boot_last_epr_poll_ms = 0;
+            _boot_epr_pdos_found = false;
             _boot_stage = 3;
         }
     }
@@ -999,6 +999,10 @@ void StateMachine::transitionTo(AppState new_state) {
             _boot_contract_requested = false;
             _boot_contract_complete = false;
             _boot_retry_after_epr = false;
+            _boot_epr_probed = false;
+            _boot_epr_probe_time = nil_time;
+            _boot_last_epr_poll_ms = 0;
+            _boot_epr_pdos_found = false;
             _boot_ready_time = nil_time;
             _boot_neg_start = nil_time;
             break;

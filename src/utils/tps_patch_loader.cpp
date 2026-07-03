@@ -172,7 +172,10 @@ bool tpsPatchBegin(TpsPatchSession* session) {
 }
 
 TpsPatchStatus tpsPatchStep(TpsPatchSession* session) {
-    if (!session || !session->data || session->size == 0) {
+    if (!session) {
+        return TpsPatchStatus::ERROR;
+    }
+    if (!session->data || session->size == 0) {
         return fail(session, "Invalid session");
     }
 

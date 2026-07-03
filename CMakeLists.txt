@@ -110,7 +110,7 @@ add_executable(PD240W
 )
 
 pico_set_program_name(PD240W "PD240W")
-pico_set_program_version(PD240W "0.1")
+pico_set_program_version(PD240W "2.0.2")
 
 # =============================================================================
 # STDIO Configuration - Choose ONE output method

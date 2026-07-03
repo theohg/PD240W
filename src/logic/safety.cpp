@@ -26,6 +26,9 @@ Safety::Safety()
     , _temp_caution_active(false)
     , _temp_warning_active(false)
     , _temp_fault_active(false)
+    , _critical_alarm_active(false)
+    , _last_led_status(SafetyStatus::OK)
+    , _led_first_run(true)
 {
     _state.temperature_c = 25.0f;
     _state.ina_temperature_c = 25.0f;
@@ -87,25 +90,23 @@ SafetyStatus Safety::update() {
 
     // Critical temperature audible alarm (75-80C range)
     // Melody repeats continuously while in critical range, stops on exit
-    static bool critical_alarm_active = false;
-
     bool in_critical_range = _state.max_temperature_c >= static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C)
                           && !_temp_fault_active
                           && stateMachine.getState() != AppState::FAULT;
 
     if (in_critical_range) {
         // Start or restart melody when it finishes playing
-        if (!critical_alarm_active || !hw.buzzer.isPlayingMelody()) {
+        if (!_critical_alarm_active || !hw.buzzer.isPlayingMelody()) {
             hw.buzzer.playMelody(CRITICAL_WARNING_ALARM, CRITICAL_WARNING_ALARM_LENGTH);
-            critical_alarm_active = true;
+            _critical_alarm_active = true;
         }
-    } else if (critical_alarm_active) {
+    } else if (_critical_alarm_active) {
         // Left critical range (below 75C with hysteresis, fault at 80C, or on fault screen)
         if (_temp_fault_active ||
             stateMachine.getState() == AppState::FAULT ||
             _state.max_temperature_c < static_cast<float>(AppConfig::TEMP_CRITICAL_WARNING_C) - TEMP_HYSTERESIS_C) {
             hw.buzzer.stopMelody();
-            critical_alarm_active = false;
+            _critical_alarm_active = false;
         }
     }
 
@@ -116,10 +117,7 @@ SafetyStatus Safety::update() {
         led_status = SafetyStatus::FAULT;
     }
 
-    static SafetyStatus last_led_status = SafetyStatus::OK;
-    static bool first_run = true;
-
-    if (led_status != last_led_status || first_run) {
+    if (led_status != _last_led_status || _led_first_run) {
         switch (led_status) {
             case SafetyStatus::FAULT:
                 hw.rgbLed.setColor(LedColor::RED);
@@ -134,8 +132,8 @@ SafetyStatus Safety::update() {
             default:
                 break;
         }
-        last_led_status = led_status;
-        first_run = false;
+        _last_led_status = led_status;
+        _led_first_run = false;
     }
 
     return overall_status;
