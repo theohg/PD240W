@@ -42,7 +42,9 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          cmake -G Ninja ..
+          # Build the shipping (Release) config so CI validates what releases ship
+          # and catches optimization-dependent warnings.
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
 
       - name: Build
         run: |

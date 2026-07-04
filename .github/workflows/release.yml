@@ -34,7 +34,8 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          cmake -G Ninja ..
+          # Ship an optimized image with debug logging compiled out (DEBUG_BUILD=0).
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
           ninja
 
       - name: Get version from tag
