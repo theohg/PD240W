@@ -1424,7 +1424,15 @@ bool PdManager::refreshActiveContract() {
         bool detected_pps = _pps_active;
         bool detected_avs = _avs_active;
 
-        if (!_pps_active && !_avs_active && _pdos_valid && voltage_mv > 0) {
+        // Suppress warm-reset re-detection while a contract request is in flight.
+        // When exiting a programmable (PPS/AVS) contract to a Fixed PDO, the TPS26750
+        // transiently keeps reporting the OLD programmable voltage before it settles to
+        // the new rail. Re-arming keep-alive from that stale reading would re-request the
+        // old voltage and fight the in-flight Fixed request, making the contract
+        // impossible to exit. During a request the requested type is authoritative;
+        // genuine warm-reset detection only needs to run when idle/settled.
+        if (_negotiation_state != NegotiationState::REQUESTING &&
+            !_pps_active && !_avs_active && _pdos_valid && voltage_mv > 0) {
             // Check if this voltage matches any fixed PDO
             bool matches_fixed = false;
             for (uint8_t i = 0; i < _pdo_count; i++) {
