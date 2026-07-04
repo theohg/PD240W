@@ -4,7 +4,7 @@
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include "hardware/pwm.h"
-#include "src/drivers/display/aa_font.h"
+#include "drivers/display/aa_font.h"
 
 // ST7789 LCD Driver for PD240W
 // Resolution: 240x320 (2.4" display, model HS20HS072RX)

@@ -33,6 +33,7 @@ Safety::Safety()
     _state.ina_temperature_c = 25.0f;
     _state.max_temperature_c = 25.0f;
     _state.temp_status = SafetyStatus::OK;
+    _state.ina_voltage_v = 0.0f;
     _state.vbus_voltage_v = 0.0f;
     _state.pd_connected = false;
     _state.current_a = 0.0f;
@@ -242,7 +243,7 @@ void Safety::updateVoltage() {
         // Just disconnected
         LOG_WARN("USB-PD disconnected (VBUS=%.2fV)", _state.vbus_voltage_v);
         hw.loadSwitch.off();
-        hw.EN_17V.off();
+        hw.en17v.off();
     } else if (!was_connected && _state.pd_connected) {
         // Just connected
         LOG_INFO("USB-PD connected (VBUS=%.2fV)", _state.vbus_voltage_v);
@@ -250,10 +251,10 @@ void Safety::updateVoltage() {
 
     // Auto-disable 17V buck if VBUS drops below minimum (e.g., new contract < 18V)
     // This handles the case where user enables 17V at 20V, then negotiates a lower voltage
-    if (hw.EN_17V.read()) {
+    if (hw.en17v.read()) {
         uint32_t vbus_mv = static_cast<uint32_t>(_state.vbus_voltage_v * 1000.0f);
         if (vbus_mv < AppConfig::MIN_VBUS_FOR_17V_MV) {
-            hw.EN_17V.off();
+            hw.en17v.off();
             LOG_WARN("17V buck auto-disabled: VBUS=%.1fV < 18V", _state.vbus_voltage_v);
             hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_WARNING_DURATION);
         }

@@ -113,34 +113,28 @@ void outpSw(const char* arg) {
     int val = parseOnOff(arg);
     if (val < 0) { Cli::error("INVALID_PARAM"); return; }
 
-    if (stateMachine.getState() == AppState::FAULT) {
+    // Route through the shared policy (fault gate, INA latch clear, tuning recheck)
+    // so CLI and front-panel buttons behave identically.
+    if (stateMachine.setLoadSwitch(val != 0) == OutputResult::FAULT_ACTIVE) {
         Cli::error("FAULT_ACTIVE");
         return;
     }
-
-    if (val) hw.loadSwitch.on(); else hw.loadSwitch.off();
     Cli::respond("OK");
 }
 
 void outpBuck(const char* arg) {
     if (!arg) {
         // Query
-        Cli::respond(hw.EN_17V.read() ? "ON" : "OFF");
+        Cli::respond(hw.en17v.read() ? "ON" : "OFF");
         return;
     }
     int val = parseOnOff(arg);
     if (val < 0) { Cli::error("INVALID_PARAM"); return; }
 
-    if (val) {
-        // Check VBUS > 18V before enabling
-        float vbus_mv = hw.adc.getVBUS() * 1000.0f;
-        if (vbus_mv < AppConfig::MIN_VBUS_FOR_17V_MV) {
-            Cli::error("NOT_AVAILABLE");
-            return;
-        }
-        hw.EN_17V.on();
-    } else {
-        hw.EN_17V.off();
+    // Shared policy enforces the VBUS >= 18V interlock (pre-switch ADC VBUS).
+    if (stateMachine.set17vBuck(val != 0) == OutputResult::NOT_AVAILABLE) {
+        Cli::error("NOT_AVAILABLE");
+        return;
     }
     Cli::respond("OK");
 }
@@ -430,7 +424,7 @@ void tpsGarbage(const char* /*arg*/) {
     // monitoring for its full duration. Disable both outputs first so nothing is
     // powered through the load switch / 17V buck while monitoring is frozen.
     hw.loadSwitch.off();
-    hw.EN_17V.off();
+    hw.en17v.off();
 
     if (eepromEraseAll()) {
         Cli::respond("OK");

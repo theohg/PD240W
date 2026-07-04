@@ -39,6 +39,43 @@ enum class CurrentLimitMode : uint8_t {
     CC = 2,
 };
 
+// Shared CurrentLimitMode helpers, defined once next to the enum. These were
+// previously copy-pasted into state_machine.cpp, cc_controller.cpp, and
+// settings.cpp; keeping a single inline definition ends that drift.
+inline const char* currentLimitModeName(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OFF: return "OFF";
+        case CurrentLimitMode::OCP: return "OCP";
+        case CurrentLimitMode::CC:  return "CC";
+    }
+    return "OCP";
+}
+
+// Clamp a raw persisted byte to a valid mode (falls back to OCP for garbage).
+inline CurrentLimitMode normalizeCurrentLimitMode(uint8_t raw) {
+    switch (static_cast<CurrentLimitMode>(raw)) {
+        case CurrentLimitMode::OFF:
+        case CurrentLimitMode::OCP:
+        case CurrentLimitMode::CC:
+            return static_cast<CurrentLimitMode>(raw);
+    }
+    return CurrentLimitMode::OCP;
+}
+
+inline CurrentLimitMode normalizeCurrentLimitMode(CurrentLimitMode mode) {
+    return normalizeCurrentLimitMode(static_cast<uint8_t>(mode));
+}
+
+// Cycle order for the BTN2 mode toggle on the Current Limit screen.
+inline CurrentLimitMode nextCurrentLimitMode(CurrentLimitMode mode) {
+    switch (mode) {
+        case CurrentLimitMode::OCP: return CurrentLimitMode::CC;
+        case CurrentLimitMode::CC:  return CurrentLimitMode::OFF;
+        case CurrentLimitMode::OFF: return CurrentLimitMode::OCP;
+    }
+    return CurrentLimitMode::OCP;
+}
+
 // Debounce delay for flash writes (reduces wear)
 constexpr uint32_t SETTINGS_SAVE_DEBOUNCE_MS = 2000;
 

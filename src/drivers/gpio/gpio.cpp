@@ -1,6 +1,6 @@
 #include "drivers/gpio/gpio.h"
 
-SimpleIO::SimpleIO(int p, IOMode mode) : pin(p), is_input(mode == INPUT) {
+SimpleIO::SimpleIO(int p, IOMode mode) : pin(p), is_input(mode == IOMode::INPUT) {
     gpio_init(pin);
     gpio_set_dir(pin, is_input ? GPIO_IN : GPIO_OUT);
 

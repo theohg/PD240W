@@ -178,28 +178,37 @@ void ST7789::setBacklight(bool on) {
 }
 
 void ST7789::setBacklightBrightness(uint8_t percent) {
-    // Convert 0-100% to 0-255 PWM level with perceptual correction
-    // Use square root curve (gamma 0.5) for more linear perceived brightness
+    // Map 0-100% duty request to an 0-255 PWM level with a perceptual (not gamma)
+    // curve: three straight segments, steeper at the low end where the eye is most
+    // sensitive so a small % change stays visible, gentler over the bright range.
+    // (Earlier comments mislabelled this as a gamma 0.5/1.5 curve; it is piecewise
+    // linear.)
     if (percent > 100) percent = 100;
-    
-    // Apply gamma 1.5 (softer than pure linear, avoids harsh low-end dropoff)
-    // Formula: level = (percent/100)^1.5 * 255
-    // Approximation using integer math: sqrt(p) * p / 100 * 255 / 10
+
+    // Segment knees: (percent, PWM level) breakpoints of the piecewise-linear map.
+    constexpr uint32_t LOW_KNEE_PCT   = 10;   // end of the steep low segment
+    constexpr uint32_t MID_KNEE_PCT   = 30;   // end of the mid segment
+    constexpr uint32_t LOW_KNEE_LEVEL = 28;   // PWM level at LOW_KNEE_PCT
+    constexpr uint32_t MID_KNEE_LEVEL = 88;   // PWM level at MID_KNEE_PCT
+    constexpr uint32_t MAX_LEVEL      = 255;  // PWM level at 100%
+
     uint32_t p = percent;
-    // Use lookup for common values or linear interpolation with floor
     uint32_t level;
     if (p == 0) {
         level = 0;
-    } else if (p <= 10) {
-        level = 8 + (p * 2);  // 10% -> 28 (~11% of 255)
-    } else if (p <= 30) {
-        level = 28 + ((p - 10) * 3);  // 30% -> 88 (~35% of 255)
+    } else if (p <= LOW_KNEE_PCT) {
+        // 1% -> 10 ... 10% -> 28
+        level = 8 + (p * 2);
+    } else if (p <= MID_KNEE_PCT) {
+        // 10% -> 28 ... 30% -> 88
+        level = LOW_KNEE_LEVEL + (p - LOW_KNEE_PCT) * 3;
     } else {
-        // Above 30%, linear from 88 to 255
-        level = 88 + ((p - 30) * 167 / 70);
+        // 30% -> 88 ... 100% -> 255 (linear over the remaining span)
+        level = MID_KNEE_LEVEL +
+                (p - MID_KNEE_PCT) * (MAX_LEVEL - MID_KNEE_LEVEL) / (100 - MID_KNEE_PCT);
     }
-    if (level > 255) level = 255;
-    
+    if (level > MAX_LEVEL) level = MAX_LEVEL;
+
     pwm_set_gpio_level(_pinBL, level);
 }
 
@@ -263,6 +272,21 @@ void ST7789::drawPixel(int16_t x, int16_t y, uint16_t color) {
 // ===== Shapes =====
 
 void ST7789::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
+    // Horizontal / vertical fast paths: one windowed fill instead of a full
+    // setAddressWindow per pixel (~11 SPI transactions each). Horizontal and
+    // vertical are the only orientations actually drawn (borders, separators,
+    // round-rect edges), so the Bresenham path below is rarely hit.
+    if (y0 == y1) {
+        int16_t xs = (x0 < x1) ? x0 : x1;
+        fillRect(xs, y0, static_cast<int16_t>(abs(x1 - x0) + 1), 1, color);
+        return;
+    }
+    if (x0 == x1) {
+        int16_t ys = (y0 < y1) ? y0 : y1;
+        fillRect(x0, ys, 1, static_cast<int16_t>(abs(y1 - y0) + 1), color);
+        return;
+    }
+
     // Bresenham's line algorithm
     int16_t dx = abs(x1 - x0);
     int16_t dy = abs(y1 - y0);
@@ -321,9 +345,10 @@ void ST7789::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color
         spi_write_blocking(_spi, buffer, 64);
     }
 
-    // Write remaining pixels
-    for (uint32_t i = 0; i < remainder; i++) {
-        spi_write_blocking(_spi, buffer, 2);
+    // Write the remaining pixels (< 32, so < 64 bytes) in a single burst rather
+    // than one 2-byte SPI transaction per pixel.
+    if (remainder > 0) {
+        spi_write_blocking(_spi, buffer, remainder * 2);
     }
 
     gpio_put(_pinCS, 1);

@@ -59,18 +59,31 @@ void RotaryEncoder::reset() {
     _ticks = 0;
 }
 
+// Velocity acceleration bands: inter-tick interval (ms) -> step multiplier.
+// Slower rotation gives finer control; faster rotation multiplies the step for
+// quick sweeps. Kept as named driver-local constants (drivers do not include the
+// project's AppConfig) so the thresholds are not bare magic numbers.
+namespace {
+constexpr uint32_t VEL_SLOW_MS   = 200;  // above this: 1x (fine)
+constexpr uint32_t VEL_MEDIUM_MS = 100;  // above this: 2x
+constexpr uint32_t VEL_FAST_MS   = 60;   // above this: 5x
+constexpr uint32_t VEL_TURBO_MS  = 30;   // above this: 10x; at/below: 25x (coarse)
+
+constexpr uint32_t VEL_MULT_SLOW   = 1;
+constexpr uint32_t VEL_MULT_MEDIUM = 2;
+constexpr uint32_t VEL_MULT_FAST   = 5;
+constexpr uint32_t VEL_MULT_TURBO  = 10;
+constexpr uint32_t VEL_MULT_MAX    = 25;
+}  // namespace
+
 uint32_t RotaryEncoder::getVelocityMultiplier() const {
-    // Returns 1-25 based on rotation speed
-    // Fast rotation (< 30ms between ticks) = high multiplier
-    // Slow rotation (> 200ms between ticks) = multiplier of 1
-    
     uint32_t interval_ms = _tick_interval_us / 1000;
-    
-    if (interval_ms > 200) return 1;      // Very slow: fine adjustment (1x)
-    if (interval_ms > 100) return 2;      // Slow: small steps (2x)
-    if (interval_ms > 60)  return 5;      // Medium: moderate steps (5x)
-    if (interval_ms > 30)  return 10;     // Fast: larger steps (10x)
-    return 25;                             // Very fast: coarse adjustment (25x)
+
+    if (interval_ms > VEL_SLOW_MS)   return VEL_MULT_SLOW;    // Very slow: fine adjustment
+    if (interval_ms > VEL_MEDIUM_MS) return VEL_MULT_MEDIUM;  // Slow: small steps
+    if (interval_ms > VEL_FAST_MS)   return VEL_MULT_FAST;    // Medium: moderate steps
+    if (interval_ms > VEL_TURBO_MS)  return VEL_MULT_TURBO;   // Fast: larger steps
+    return VEL_MULT_MAX;                                      // Very fast: coarse adjustment
 }
 
 void RotaryEncoder::handleISR(uint /*gpio*/, uint32_t /*events*/) {

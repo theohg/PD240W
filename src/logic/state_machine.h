@@ -81,6 +81,15 @@ enum class EncoderEvent {
     LONG_PRESS      // Long press (800ms)
 };
 
+// Result of a shared output-control request (see setLoadSwitch/set17vBuck).
+// Lets the CLI translate a rejection into a protocol error while the front-panel
+// buttons can simply ignore the reason.
+enum class OutputResult {
+    OK,
+    FAULT_ACTIVE,   // load switch cannot be enabled while a fault is latched
+    NOT_AVAILABLE   // 17V buck requires VBUS >= MIN_VBUS_FOR_17V_MV
+};
+
 class StateMachine {
 public:
     StateMachine();
@@ -97,6 +106,13 @@ public:
 
     // Set fault state (called from safety module or interrupts)
     void setFault(FaultType fault);
+
+    // Shared output-control operations used by BOTH the front-panel buttons and
+    // the CLI so the policy (fault gating, INA228 latch clear, tuning recheck,
+    // 17V VBUS interlock) lives in one place and cannot drift between the two
+    // entry points. `set17vBuck` uses the pre-switch ADC VBUS, not INA228.
+    OutputResult setLoadSwitch(bool on);
+    OutputResult set17vBuck(bool on);
 
     // Get current fault type
     FaultType getFaultType() const { return _fault_type; }
@@ -222,6 +238,9 @@ private:
     // Input processing
     EncoderEvent readEncoderEvent();
     void handleOutputButtons();
+
+    // Play the navigation beep if sounds are enabled (shared by the menu handlers).
+    void playNavBeep();
 
     // Menu/Adjust helpers
     void loadPdoList();

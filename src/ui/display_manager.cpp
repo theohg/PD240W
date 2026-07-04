@@ -169,6 +169,9 @@ DisplayManager::DisplayManager()
     , _last_pd_revision_drawn(false)
     , _last_pd_revision{0}
     , _last_epr_badge_drawn(false)
+    , _last_contract_shown(-1)
+    , _last_contract_voltage_mv(0)
+    , _last_contract_current_ma(0)
     , _last_menu_selection(-1)
     , _last_settings_selection(-1)
     , _last_pdo_selection(-1)
@@ -215,6 +218,7 @@ DisplayManager::DisplayManager()
     , _last_eeprom_confirm(false)
     , _last_remote_mode(false)
     , _fault_now_temp_y(0)
+    , _last_fault_temp(-999.0f)
 {
 }
 
@@ -254,6 +258,12 @@ void DisplayManager::init() {
     _last_eeprom_phase = 255;
     _last_eeprom_confirm = false;
     _fault_now_temp_y = 0;
+    _last_fault_temp = -999.0f;
+
+    // Force active-contract line redraw on first render after (warm) reset
+    _last_contract_shown = -1;
+    _last_contract_voltage_mv = 0;
+    _last_contract_current_ma = 0;
 }
 
 // ============================================================================
@@ -336,7 +346,7 @@ void DisplayManager::renderBootScreen() {
 void DisplayManager::renderMainScreen() {
     bool remote_mode = Cli::isRemoteMode();
     if (_needs_full_redraw || remote_mode != _last_remote_mode) {
-        drawHeader("PD240W");
+        drawHeader("PD240W", /*use_logo=*/true);
         _last_remote_mode = remote_mode;
     }
 
@@ -384,7 +394,7 @@ void DisplayManager::renderMenuScreen() {
     y += MENU_ITEM_HEIGHT;
 
     if (_needs_full_redraw || sel_affects(5))
-        drawMenuItemMuted(y, "Back", selected == MenuItem::BACK);
+        drawMenuItem(y, "Back", selected == MenuItem::BACK, true);
 
     _last_menu_selection = sel_idx;
 
@@ -458,12 +468,14 @@ void DisplayManager::renderFaultScreen() {
 // Common UI Elements
 // ============================================================================
 
-void DisplayManager::drawHeader(const char* title) {
+void DisplayManager::drawHeader(const char* title, bool use_logo) {
     // Clear header area
     hw.display.fillRect(0, 0, SCREEN_WIDTH, HEADER_HEIGHT, UIColors::BACKGROUND);
 
-    // Use the product logo on the main screen header while keeping the same header band.
-    if (strcmp(title, Version::PRODUCT_NAME) == 0) {
+    // Use the product logo on the main screen header while keeping the same header
+    // band. Callers pass use_logo explicitly rather than the header matching a
+    // title string against PRODUCT_NAME.
+    if (use_logo) {
         const int logo_h = HEADER_HEIGHT - 6;
         const float aspect_ratio = static_cast<float>(PD240W_WIDTH) / PD240W_HEIGHT;
         const int logo_w = static_cast<int>(logo_h * aspect_ratio);
@@ -589,11 +601,20 @@ void DisplayManager::drawActiveContract() {
     // Use fixed-width format to avoid clearing
     char line1[32];
     if (contract.valid && contract.voltage_mv > 0) {
-        // Always show the actual negotiated contract from the charger
-        snprintf(line1, sizeof(line1), "%5.2fV @ %5.2fA  ",
-                 contract.voltage_mv / 1000.0f,
-                 contract.current_ma / 1000.0f);
-        hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
+        // Always show the actual negotiated contract from the charger. Redraw the
+        // string only when it changes (or on full redraw) — it is static between
+        // negotiations, so this skips it on every idle 100ms tick.
+        if (_needs_full_redraw || _last_contract_shown != 1 ||
+            contract.voltage_mv != _last_contract_voltage_mv ||
+            contract.current_ma != _last_contract_current_ma) {
+            snprintf(line1, sizeof(line1), "%5.2fV @ %5.2fA  ",
+                     contract.voltage_mv / 1000.0f,
+                     contract.current_ma / 1000.0f);
+            hw.display.drawStringAA(MARGIN, y + 16, line1, UIColors::ACCENT, UIColors::BACKGROUND, FONT_MEDIUM);
+            _last_contract_voltage_mv = contract.voltage_mv;
+            _last_contract_current_ma = contract.current_ma;
+            _last_contract_shown = 1;
+        }
 
         // PD revision badge (draw when revision changes or on full redraw)
         const char* pd_rev = pdManager.getPdRevision();
@@ -618,8 +639,9 @@ void DisplayManager::drawActiveContract() {
             int text_y = rev_y + (BADGE_H - FONT_SMALL->lineHeight) / 2;
             hw.display.drawStringAA(text_x, text_y, pd_rev, UIColors::TEXT_PRIMARY, UIColors::MUTED, FONT_SMALL);
             _last_pd_revision_drawn = true;
-            strncpy(_last_pd_revision, pd_rev, sizeof(_last_pd_revision) - 1);
-            _last_pd_revision[sizeof(_last_pd_revision) - 1] = '\0';
+            // snprintf (not strncpy) to copy-with-truncation and always null-terminate
+            // without tripping -Wstringop-truncation in optimized (Release) builds.
+            snprintf(_last_pd_revision, sizeof(_last_pd_revision), "%s", pd_rev);
         } else if (pd_rev[0] == '\0' && (_last_pd_revision_drawn || _last_epr_badge_drawn)) {
             // Clear the whole badge strip (EPR + revision + PPS/AVS). The old rect
             // (SCREEN_WIDTH-120, w=110) missed the EPR badge's leftmost ~15px and the
@@ -716,14 +738,18 @@ void DisplayManager::drawActiveContract() {
             }
         }
     } else {
-        // Non-PD charger or no contract: show USB default
-        hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
-        // Clear the whole badge strip (see the pd_rev-empty branch above).
-        hw.display.fillRect(SCREEN_WIDTH - 142, y - 3, 138, BADGE_H + 4, UIColors::BACKGROUND);
-        _last_pps_state = 0;
-        _last_epr_badge_drawn = false;
-        _last_pd_revision_drawn = false;
-        _last_pd_revision[0] = '\0';
+        // Non-PD charger or no contract: show USB default. Static text + badge
+        // clear only need to run once when entering this state (or on full redraw).
+        if (_needs_full_redraw || _last_contract_shown != 0) {
+            hw.display.drawStringAA(MARGIN, y + 16, "USB 5V (no PD)    ", UIColors::MUTED, UIColors::BACKGROUND, FONT_MEDIUM);
+            // Clear the whole badge strip (see the pd_rev-empty branch above).
+            hw.display.fillRect(SCREEN_WIDTH - 142, y - 3, 138, BADGE_H + 4, UIColors::BACKGROUND);
+            _last_pps_state = 0;
+            _last_epr_badge_drawn = false;
+            _last_pd_revision_drawn = false;
+            _last_pd_revision[0] = '\0';
+            _last_contract_shown = 0;
+        }
     }
 }
 
@@ -752,8 +778,10 @@ void DisplayManager::drawPowerReadings() {
     char buf[32];
 
     // --- Voltage Section ---
-    // Primary: Output Voltage (number and unit rendered separately for stable layout)
-    hw.display.drawStringAA(LABEL_X, y + 8, "Vout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    // Primary: Output Voltage (number and unit rendered separately for stable layout).
+    // The "Vout" label is static text: draw it only on full redraw, not every tick.
+    if (_needs_full_redraw)
+        hw.display.drawStringAA(LABEL_X, y + 8, "Vout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     snprintf(buf, sizeof(buf), "%.3f", state.ina_voltage_v);
     hw.display.drawStringAA(VALUE_X, y, buf, UIColors::TEXT_PRIMARY, UIColors::BACKGROUND, FONT_LARGE);
     int num_w = ST7789::getStringWidthAA(buf, FONT_LARGE);
@@ -767,13 +795,16 @@ void DisplayManager::drawPowerReadings() {
         // Vin always on left at the same position
         const int VIN_VALUE_X = VALUE_X + 30;
         const int VIN_UNIT_X = VALUE_X + 72;
-        hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        // "Vin:" label and its trailing "V" unit are static — only the value changes.
+        if (_needs_full_redraw)
+            hw.display.drawStringAA(VALUE_X, y, "Vin:", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         snprintf(buf, sizeof(buf), "%5.2f", state.vbus_voltage_v);
         hw.display.drawStringAA(VIN_VALUE_X, y, buf, UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         int vin_w = ST7789::getStringWidthAA(buf, FONT_SMALL);
         if (VIN_VALUE_X + vin_w < VIN_UNIT_X)
             hw.display.fillRect(VIN_VALUE_X + vin_w, y, VIN_UNIT_X - VIN_VALUE_X - vin_w, FONT_SMALL->lineHeight, UIColors::BACKGROUND);
-        hw.display.drawStringAA(VIN_UNIT_X, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
+        if (_needs_full_redraw)
+            hw.display.drawStringAA(VIN_UNIT_X, y, "V", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
 
         // Vset on right when PPS or AVS target is known
         uint32_t vset_mv = 0;
@@ -810,7 +841,8 @@ void DisplayManager::drawPowerReadings() {
     }
 
     // Primary: Output Current (number and unit rendered separately)
-    hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    if (_needs_full_redraw)
+        hw.display.drawStringAA(LABEL_X, y + 8, "Iout", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     if (state.current_overflow) {
         snprintf(buf, sizeof(buf), "+%.2f", Board::INA228_MEASUREMENT_MAX_CURRENT);
     } else {
@@ -892,7 +924,8 @@ void DisplayManager::drawPowerReadings() {
     // Primary: Power (number and unit rendered separately)
     // Zero out power when current displays as zero (consistent with current reading)
     float display_power = (display_current == 0.0f) ? 0.0f : state.power_w;
-    hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+    if (_needs_full_redraw)
+        hw.display.drawStringAA(LABEL_X, y + 8, "Pwr", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
     if (display_power >= 100.0f) {
         snprintf(buf, sizeof(buf), "%.2f", display_power);
     } else {
@@ -1078,7 +1111,7 @@ void DisplayManager::drawOutputStatus() {
     const int BADGE_X = SCREEN_WIDTH - MARGIN - BADGE_W;  // Right-aligned badges
 
     bool load_on = hw.loadSwitch.read();
-    bool buck_on = hw.EN_17V.read();
+    bool buck_on = hw.en17v.read();
 
     // Only draw labels on full redraw
     if (_needs_full_redraw) {
@@ -1139,23 +1172,10 @@ void DisplayManager::drawOutputStatus() {
 // Menu Elements
 // ============================================================================
 
-void DisplayManager::drawMenuItem(int y, const char* text, bool selected) {
+void DisplayManager::drawMenuItem(int y, const char* text, bool selected, bool muted) {
     uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
-    uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::TEXT_PRIMARY;
-
-    // Single fill with correct background (avoids flicker from clear+highlight)
-    if (selected)
-        hw.display.fillRoundRect(MARGIN, y + 2, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT - 2, 4, bg);
-    else
-        hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
-
-    hw.display.drawStringAA(MARGIN + 5, y + 5, selected ? ">" : " ", fg, bg, FONT_SMALL);
-    hw.display.drawStringAA(MARGIN + 20, y + 5, text, fg, bg, FONT_SMALL);
-}
-
-void DisplayManager::drawMenuItemMuted(int y, const char* text, bool selected) {
-    uint16_t bg = selected ? UIColors::HIGHLIGHT_BG : UIColors::BACKGROUND;
-    uint16_t fg = selected ? UIColors::HIGHLIGHT_FG : UIColors::MUTED;
+    uint16_t fg = selected ? UIColors::HIGHLIGHT_FG
+                           : (muted ? UIColors::MUTED : UIColors::TEXT_PRIMARY);
 
     // Single fill with correct background (avoids flicker from clear+highlight)
     if (selected)
@@ -1170,20 +1190,20 @@ void DisplayManager::drawMenuItemMuted(int y, const char* text, bool selected) {
 void DisplayManager::drawPdoList() {
     int8_t selected_idx = stateMachine.getSelectedPdoIndex();
 
-    // Get PDO list and active contract for highlighting
-    TPS26750_SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
-    uint8_t count = pdManager.getSourceCapabilities(pdos, AppConfig::MAX_PDO_COUNT);
-    const ActiveContract& active = pdManager.getActiveContract();
+    // Only the count is needed for the count==0 path, layout, and change
+    // detection below. Defer the (larger) PDO-array + active-contract copy until
+    // we know a redraw is actually happening (see below).
+    uint8_t count = pdManager.getPdoCount();
 
-    // No contracts found - show informational message
+    // No contracts found - show informational message. All static text, so only
+    // (re)draw it on a full redraw; nothing here changes tick-to-tick.
     if (count == 0) {
-        int y = CONTENT_Y_START + 10;
-        drawCenteredStringAA(y + 30, "No PD contracts", UIColors::WARNING, FONT_MEDIUM);
-        drawCenteredStringAA(y + 60, "The connected charger may", UIColors::TEXT_SECONDARY, FONT_SMALL);
-        drawCenteredStringAA(y + 78, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, FONT_SMALL);
-        drawCenteredStringAA(y + 105, "Try a USB-C PD charger.", UIColors::MUTED, FONT_SMALL);
-
         if (_needs_full_redraw) {
+            int y = CONTENT_Y_START + 10;
+            drawCenteredStringAA(y + 30, "No PD contracts", UIColors::WARNING, FONT_MEDIUM);
+            drawCenteredStringAA(y + 60, "The connected charger may", UIColors::TEXT_SECONDARY, FONT_SMALL);
+            drawCenteredStringAA(y + 78, "not support USB Power Delivery.", UIColors::TEXT_SECONDARY, FONT_SMALL);
+            drawCenteredStringAA(y + 105, "Try a USB-C PD charger.", UIColors::MUTED, FONT_SMALL);
             hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
                                   "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         }
@@ -1207,10 +1227,15 @@ void DisplayManager::drawPdoList() {
     bool scroll_changed = (start_idx != _last_pdo_scroll_idx);
     bool sel_changed = (selected_idx != _last_pdo_selection);
 
-    // Skip redraw if nothing changed
+    // Skip redraw if nothing changed (no PDO-array copy needed on this tick)
     if (!_needs_full_redraw && !sel_changed && !scroll_changed) {
         return;
     }
+
+    // A redraw is happening: now copy the PDO array + active contract for highlighting.
+    TPS26750_SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
+    pdManager.getSourceCapabilities(pdos, AppConfig::MAX_PDO_COUNT);
+    const ActiveContract& active = pdManager.getActiveContract();
 
     int visible_count = (total_items - start_idx > PDO_VISIBLE_ROWS) ? PDO_VISIBLE_ROWS : (total_items - start_idx);
     int y = PDO_LIST_Y_START;
@@ -1227,7 +1252,7 @@ void DisplayManager::drawPdoList() {
 
             // "Back" item at index == count
             if (i == count) {
-                drawMenuItemMuted(y, "Back", selected);
+                drawMenuItem(y, "Back", selected, true);
             } else {
                 // Check if this PDO is the currently active (negotiated) contract
                 bool is_active = false;
@@ -1727,7 +1752,7 @@ void DisplayManager::drawSettingsMenu() {
 
     // Item 9: Back
     if (_needs_full_redraw || sel_affects(9)) {
-        drawMenuItemMuted(y_for(9), "Back", selected == SettingsItem::BACK);
+        drawMenuItem(y_for(9), "Back", selected == SettingsItem::BACK, true);
     }
 
     // Update all tracking variables
@@ -1874,10 +1899,11 @@ void DisplayManager::drawEepromFlashScreen() {
     int y = CONTENT_Y_START + 20;
 
     switch (stage) {
-        case 0:  // Comparing (initializing)
-            drawCenteredStringAA(y, "Checking EEPROM...", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
-            y += 35;
-            drawCenteredStringAA(y, "Please wait", UIColors::TEXT_SECONDARY, FONT_SMALL);
+        case 0:  // Comparing (initializing) — static text, draw once per (re)entry
+            if (_needs_full_redraw || stage_changed) {
+                drawCenteredStringAA(y, "Checking EEPROM...", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
+                drawCenteredStringAA(y + 35, "Please wait", UIColors::TEXT_SECONDARY, FONT_SMALL);
+            }
             break;
 
         case 1:  // Confirm stage - show result and Yes/No
@@ -1961,34 +1987,36 @@ void DisplayManager::drawEepromFlashScreen() {
             }
             break;
 
-        case 3:  // Done - show result
-            if (result) {
-                drawCenteredStringAA(y, "Success!", UIColors::ACCENT, FONT_MEDIUM);
-                y += 35;
-                drawCenteredStringAA(y, "EEPROM programmed", UIColors::TEXT_PRIMARY, FONT_SMALL);
-                y += 20;
-                drawCenteredStringAA(y, "Power cycle the board", UIColors::CAUTION, FONT_SMALL);
-                y += 18;
-                drawCenteredStringAA(y, "to load new config", UIColors::CAUTION, FONT_SMALL);
-            } else {
-                // Check if it was "already identical"
-                if (message && strstr(message, "identical")) {
-                    drawCenteredStringAA(y, "Already Up-to-Date", UIColors::ACCENT, FONT_MEDIUM);
+        case 3:  // Done - show result (terminal screen: static once entered)
+            if (_needs_full_redraw || stage_changed) {
+                if (result) {
+                    drawCenteredStringAA(y, "Success!", UIColors::ACCENT, FONT_MEDIUM);
                     y += 35;
-                    drawCenteredStringAA(y, "EEPROM config matches", UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    drawCenteredStringAA(y, "EEPROM programmed", UIColors::TEXT_PRIMARY, FONT_SMALL);
+                    y += 20;
+                    drawCenteredStringAA(y, "Power cycle the board", UIColors::CAUTION, FONT_SMALL);
                     y += 18;
-                    drawCenteredStringAA(y, "No flash needed", UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    drawCenteredStringAA(y, "to load new config", UIColors::CAUTION, FONT_SMALL);
                 } else {
-                    drawCenteredStringAA(y, "Failed!", UIColors::ERROR, FONT_MEDIUM);
-                    y += 35;
-                    if (message) {
-                        drawCenteredStringAA(y, message, UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    // Check if it was "already identical"
+                    if (message && strstr(message, "identical")) {
+                        drawCenteredStringAA(y, "Already Up-to-Date", UIColors::ACCENT, FONT_MEDIUM);
+                        y += 35;
+                        drawCenteredStringAA(y, "EEPROM config matches", UIColors::TEXT_SECONDARY, FONT_SMALL);
+                        y += 18;
+                        drawCenteredStringAA(y, "No flash needed", UIColors::TEXT_SECONDARY, FONT_SMALL);
+                    } else {
+                        drawCenteredStringAA(y, "Failed!", UIColors::ERROR, FONT_MEDIUM);
+                        y += 35;
+                        if (message) {
+                            drawCenteredStringAA(y, message, UIColors::TEXT_SECONDARY, FONT_SMALL);
+                        }
                     }
                 }
-            }
 
-            hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
-                                  "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+                hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20,
+                                      "Click: Back", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
+            }
             break;
     }
 }
@@ -2255,8 +2283,17 @@ void DisplayManager::drawFaultLiveTemperature() {
     // Live-update only the temperature value — label, colon, and °C are drawn by drawFaultDetails()
     const int y = _fault_now_temp_y;
 
+    float temp = safety.getState().max_temperature_c;
+    // Skip the redraw when the displayed 0.1°C value has not changed (fault temps
+    // are always positive, so the +0.5 rounding is safe).
+    if (!_needs_full_redraw &&
+        (int)(temp * 10.0f + 0.5f) == (int)(_last_fault_temp * 10.0f + 0.5f)) {
+        return;
+    }
+    _last_fault_temp = temp;
+
     char buf[16];
-    snprintf(buf, sizeof(buf), "%5.1f", safety.getState().max_temperature_c);
+    snprintf(buf, sizeof(buf), "%5.1f", temp);
     hw.display.drawStringAA(OT_VALUE_X, y, buf, UIColors::WARNING, UIColors::BACKGROUND, FONT_SMALL);
 
     // Gap-fill between value and °C unit

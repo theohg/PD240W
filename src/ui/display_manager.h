@@ -52,6 +52,11 @@ private:
     bool _last_pd_revision_drawn;  // True if PD revision badge was drawn
     char _last_pd_revision[8];     // Last drawn PD revision string
     bool _last_epr_badge_drawn;    // True if EPR badge was drawn
+    // Active-contract line change tracking (avoids redrawing the static string
+    // every 100ms tick). _last_contract_shown: -1=unknown, 0=no-PD, 1=valid.
+    int8_t _last_contract_shown;
+    uint32_t _last_contract_voltage_mv;
+    uint32_t _last_contract_current_ma;
 
     // Screen renderers
     void renderBootScreen();
@@ -61,7 +66,8 @@ private:
     void renderFaultScreen();
 
     // Common UI elements
-    void drawHeader(const char* title);
+    // use_logo=true replaces the title text with the product logo (main screen).
+    void drawHeader(const char* title, bool use_logo = false);
     void drawProgressBar(int x, int y, int width, int height, uint8_t percent,
                          uint16_t start_color, uint16_t end_color = 0);
 
@@ -76,8 +82,9 @@ private:
     void drawOutputStatus();
 
     // Menu elements
-    void drawMenuItem(int y, const char* text, bool selected);
-    void drawMenuItemMuted(int y, const char* text, bool selected);
+    // muted=true renders the label in the muted color when not selected (used for
+    // "Back" rows). Selected rows look identical regardless of muted.
+    void drawMenuItem(int y, const char* text, bool selected, bool muted = false);
     void drawPdoList();
     void drawCurrentLimitAdjust();
     void drawPpsVoltageAdjust();
@@ -166,6 +173,8 @@ private:
 
     // Overtemperature fault screen: Y position of "Now" row (set by drawFaultDetails)
     int16_t _fault_now_temp_y;
+    // Last drawn live fault temperature (0.1°C-quantized) — skips redundant redraws
+    float _last_fault_temp;
 };
 
 // Global instance

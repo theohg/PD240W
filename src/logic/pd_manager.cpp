@@ -21,6 +21,12 @@ constexpr uint16_t USB_VID_APPLE     = 0x05AC;
 constexpr uint16_t USB_VID_SAMSUNG   = 0x04E8;
 constexpr uint16_t USB_VID_LENOVO    = 0x17EF;
 
+// Absolute difference within tolerance (unsigned-safe). Shared by the PPS/AVS
+// tracking checks below.
+inline bool withinTolerance(uint32_t lhs, uint32_t rhs, uint32_t tolerance_mv) {
+    return (lhs > rhs) ? (lhs - rhs <= tolerance_mv) : (rhs - lhs <= tolerance_mv);
+}
+
 void copyStringTruncated(char* dest, size_t dest_len, const char* src) {
     if (!dest || dest_len == 0) {
         return;
@@ -819,16 +825,21 @@ void PdManager::update() {
 // PDO Access
 // ============================================================================
 
-uint8_t PdManager::getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps) {
+uint8_t PdManager::getPdoCount() {
     // Refresh cache if needed
     if (!_pdos_valid) {
         _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
         _pdos_valid = (_pdo_count > 0);
         if (_pdos_valid) detectPdRevision();
     }
+    return _pdo_count;
+}
+
+uint8_t PdManager::getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps) {
+    uint8_t available = getPdoCount();  // refresh cache + get count
 
     // Copy from cache
-    uint8_t count = (_pdo_count < max_caps) ? _pdo_count : max_caps;
+    uint8_t count = (available < max_caps) ? available : max_caps;
     for (uint8_t i = 0; i < count; i++) {
         caps[i] = _pdo_cache[i];
     }
@@ -1373,9 +1384,6 @@ void PdManager::setCcKeepAliveVoltage(uint32_t voltage_mv) {
 
 bool PdManager::refreshActiveContract() {
     uint32_t voltage_mv, current_ma;
-    auto within_tolerance = [](uint32_t lhs, uint32_t rhs, uint32_t tolerance_mv) {
-        return (lhs > rhs) ? (lhs - rhs <= tolerance_mv) : (rhs - lhs <= tolerance_mv);
-    };
 
     if (hw.pdController.getActiveContract(voltage_mv, current_ma)) {
         _active_contract.voltage_mv = voltage_mv;
@@ -1399,13 +1407,13 @@ bool PdManager::refreshActiveContract() {
         // Only drop it once the live contract has actually snapped back to a fixed rail.
         if (_pps_active && (_pps_voltage_mv == 0 ||
             (!waiting_for_programmable_request &&
-             !within_tolerance(voltage_mv, _pps_voltage_mv, PPS_TRACKING_TOLERANCE_MV) &&
+             !withinTolerance(voltage_mv, _pps_voltage_mv, PPS_TRACKING_TOLERANCE_MV) &&
              matches_fixed_pdo))) {
             clearPpsTracking();
         }
         if (_avs_active && (_avs_voltage_mv == 0 ||
             (!waiting_for_programmable_request &&
-             !within_tolerance(voltage_mv, _avs_voltage_mv, AVS_TRACKING_TOLERANCE_MV) &&
+             !withinTolerance(voltage_mv, _avs_voltage_mv, AVS_TRACKING_TOLERANCE_MV) &&
              matches_fixed_pdo))) {
             clearAvsTracking();
         }
@@ -1682,19 +1690,15 @@ bool PdManager::isRequestedContractReached() const {
         return false;
     }
 
-    auto within_tolerance = [](uint32_t lhs, uint32_t rhs, uint32_t tolerance_mv) {
-        return (lhs > rhs) ? (lhs - rhs <= tolerance_mv) : (rhs - lhs <= tolerance_mv);
-    };
-
     switch (_requested_contract_type) {
         case RequestedContractType::FIXED:
             return !_active_contract.is_pps && !_active_contract.is_avs &&
-                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                   withinTolerance(_active_contract.voltage_mv, _requested_voltage_mv,
                                     FIXED_MATCH_TOLERANCE_MV);
 
         case RequestedContractType::PPS:
             return _active_contract.is_pps &&
-                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                   withinTolerance(_active_contract.voltage_mv, _requested_voltage_mv,
                                     PPS_MATCH_TOLERANCE_MV);
 
         case RequestedContractType::AVS:
@@ -1703,11 +1707,11 @@ bool PdManager::isRequestedContractReached() const {
             // for. That is still sufficient for the next exit step because VBUS is
             // already back in the safe SPR range.
             if (_epr_exit_state == EprExitState::STEPPING_DOWN) {
-                return within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                return withinTolerance(_active_contract.voltage_mv, _requested_voltage_mv,
                                         AVS_MATCH_TOLERANCE_MV);
             }
             return _active_contract.is_avs &&
-                   within_tolerance(_active_contract.voltage_mv, _requested_voltage_mv,
+                   withinTolerance(_active_contract.voltage_mv, _requested_voltage_mv,
                                     AVS_MATCH_TOLERANCE_MV);
 
         case RequestedContractType::NONE:

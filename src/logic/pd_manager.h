@@ -70,6 +70,11 @@ public:
     // Get available PDOs from charger
     uint8_t getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps);
 
+    // Number of cached PDOs (refreshes the cache if needed). Cheap alternative to
+    // getSourceCapabilities() when only the count is needed for change detection —
+    // avoids copying the whole PDO array on every render tick.
+    uint8_t getPdoCount();
+
     // Request a specific contract (non-blocking)
     bool requestContract(const TPS26750_SourceCapability& pdo);
     bool requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma);

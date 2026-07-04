@@ -90,29 +90,10 @@ const char* savedStartupContractTypeName(SavedStartupContractType type) {
     return "unknown";
 }
 
-CurrentLimitMode normalizeCurrentLimitMode(uint8_t raw_mode) {
-    switch (static_cast<CurrentLimitMode>(raw_mode)) {
-        case CurrentLimitMode::OFF:
-        case CurrentLimitMode::OCP:
-        case CurrentLimitMode::CC:
-            return static_cast<CurrentLimitMode>(raw_mode);
-    }
-
-    return CurrentLimitMode::OCP;
-}
+// currentLimitModeName / normalizeCurrentLimitMode now live in settings.h (shared).
 
 CurrentLimitMode legacyCurrentLimitMode(bool cc_mode_enabled) {
     return cc_mode_enabled ? CurrentLimitMode::CC : CurrentLimitMode::OCP;
-}
-
-const char* currentLimitModeName(CurrentLimitMode mode) {
-    switch (mode) {
-        case CurrentLimitMode::OFF: return "OFF";
-        case CurrentLimitMode::OCP: return "OCP";
-        case CurrentLimitMode::CC: return "CC";
-    }
-
-    return "OCP";
 }
 
 }  // namespace

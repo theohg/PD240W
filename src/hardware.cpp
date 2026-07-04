@@ -15,7 +15,7 @@ Hardware::Hardware() :
     encoder(Board::PIN_ENC_A, Board::PIN_ENC_B),
     buzzer(Board::PIN_BUZZER),
     rgbLed(Board::PIN_RGB_LED, pio0, Board::LED_IS_RGBW),
-    EN_17V(Board::PIN_17V_EN, IOMode::OUTPUT),
+    en17v(Board::PIN_17V_EN, IOMode::OUTPUT),
     loadSwitch(Board::PIN_SWITCH_EN, IOMode::OUTPUT),
     pdController(i2c0, Board::I2C_ADDR_TPS26750),
     powerMonitor(i2c0, Board::I2C_ADDR_INA228, Board::INA228_SHUNT_RESISTOR, Board::INA228_MEASUREMENT_MAX_CURRENT, Board::INA228_SHUNT_TEMPCO_PPM),

@@ -25,26 +25,7 @@ static int32_t _last_requested_mv = 0;
 
 namespace {
 
-const char* currentLimitModeName(CurrentLimitMode mode) {
-    switch (mode) {
-        case CurrentLimitMode::OFF: return "OFF";
-        case CurrentLimitMode::OCP: return "OCP";
-        case CurrentLimitMode::CC: return "CC";
-    }
-
-    return "OCP";
-}
-
-CurrentLimitMode normalizeCurrentLimitMode(CurrentLimitMode mode) {
-    switch (mode) {
-        case CurrentLimitMode::OFF:
-        case CurrentLimitMode::OCP:
-        case CurrentLimitMode::CC:
-            return mode;
-    }
-
-    return CurrentLimitMode::OCP;
-}
+// currentLimitModeName / normalizeCurrentLimitMode now live in settings.h (shared).
 
 void resetRegulationState() {
     _regulating = false;

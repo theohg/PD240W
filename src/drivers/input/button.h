@@ -1,8 +1,9 @@
 #pragma once
 #include "pico/stdlib.h" 
 
-// Enum to make pull-up/down configuration readable
-enum ButtonPull {
+// Enum to make pull-up/down configuration readable. Scoped (enum class) so the
+// PULL_* names can't collide with SDK/toolchain macros.
+enum class ButtonPull {
     PULL_UP,
     PULL_DOWN,
     PULL_NONE
@@ -24,7 +25,7 @@ public:
      * @param debounce_ms: Time in ms to wait for signal stability (default 50ms)
      * @param active_low: True if button connects to GND (default), False if to VCC
      */
-    Button(uint p, ButtonPull pull_config = PULL_UP, uint32_t debounce_ms = 50, bool active_low = true);
+    Button(uint p, ButtonPull pull_config = ButtonPull::PULL_UP, uint32_t debounce_ms = 50, bool active_low = true);
 
     // Returns true if the button is currently held down (stable)
     bool isPressed();

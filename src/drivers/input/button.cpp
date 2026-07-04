@@ -9,9 +9,9 @@ Button::Button(uint p, ButtonPull pull_config, uint32_t debounce_ms, bool active
     gpio_set_dir(pin, GPIO_IN);
 
     // Configure Internal Resistors
-    if (pull_config == PULL_UP) {
+    if (pull_config == ButtonPull::PULL_UP) {
         gpio_pull_up(pin);
-    } else if (pull_config == PULL_DOWN) {
+    } else if (pull_config == ButtonPull::PULL_DOWN) {
         gpio_pull_down(pin);
     } else {
         gpio_disable_pulls(pin);

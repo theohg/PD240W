@@ -1,8 +1,9 @@
 #pragma once
 #include "pico/stdlib.h"
 
-// Enum to make IO mode configuration readable
-enum IOMode {
+// Enum to make IO mode configuration readable. Scoped (enum class) so the
+// INPUT/OUTPUT names can't collide with common SDK/toolchain macros.
+enum class IOMode {
     INPUT,
     OUTPUT,
 };

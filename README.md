@@ -3,7 +3,7 @@
 [![Latest Firmware](https://img.shields.io/github/v/release/theohg/PD240W?label=Latest%20Firmware&style=flat-square&color=orange)](https://github.com/theohg/PD240W/releases/latest)
 ![CI](https://github.com/theohg/PD240W/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/github/license/theohg/PD240W)
-![Pico SDK](https://img.shields.io/badge/Pico_SDK-2.2.0-blue)
+![Pico SDK](https://img.shields.io/badge/Pico_SDK-2.3.0-blue)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/Platform-RP2040-green)
 
@@ -84,7 +84,7 @@ USB data lines (D+/D-) are reversed in the current PCB revision, preventing nati
 
 ### Build from Source
 
-Requires: [Pico SDK 2.2.0](https://github.com/raspberrypi/pico-sdk), ARM GCC toolchain, CMake, Ninja
+Requires: [Pico SDK 2.3.0](https://github.com/raspberrypi/pico-sdk), ARM GCC toolchain, CMake, Ninja
 
 ```bash
 git clone --recurse-submodules https://github.com/theohg/PD240W.git

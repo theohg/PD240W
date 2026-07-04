@@ -49,24 +49,23 @@ uint32_t getInitialProgrammableTargetMv(bool resume_current_target,
     return target_mv;
 }
 
-CurrentLimitMode nextCurrentLimitMode(CurrentLimitMode mode) {
-    switch (mode) {
-        case CurrentLimitMode::OCP: return CurrentLimitMode::CC;
-        case CurrentLimitMode::CC: return CurrentLimitMode::OFF;
-        case CurrentLimitMode::OFF: return CurrentLimitMode::OCP;
-    }
+// currentLimitModeName / nextCurrentLimitMode now live in settings.h (shared).
 
-    return CurrentLimitMode::OCP;
-}
-
-const char* currentLimitModeName(CurrentLimitMode mode) {
-    switch (mode) {
-        case CurrentLimitMode::OFF: return "OFF";
-        case CurrentLimitMode::OCP: return "OCP";
-        case CurrentLimitMode::CC: return "CC";
-    }
-
-    return "OCP";
+// Snap a stored brightness percentage to the adjustment grid (STEP multiples
+// anchored at MIN, clamped to [MIN, MAX]). Applied when loading the value into
+// the adjuster so encoder steps stay on-grid — otherwise an off-grid stored
+// value (e.g. from a CLI SETT:BRIGHT) makes the first CCW step underflow MIN and
+// the first CW step land off-grid.
+uint8_t alignBrightnessToGrid(uint8_t value) {
+    if (value < AppConfig::LCD_BRIGHTNESS_MIN) return AppConfig::LCD_BRIGHTNESS_MIN;
+    if (value > AppConfig::LCD_BRIGHTNESS_MAX) return AppConfig::LCD_BRIGHTNESS_MAX;
+    uint8_t off = (value - AppConfig::LCD_BRIGHTNESS_MIN) % AppConfig::LCD_BRIGHTNESS_STEP;
+    if (off == 0) return value;
+    uint8_t aligned = (off * 2 >= AppConfig::LCD_BRIGHTNESS_STEP)
+                          ? value + (AppConfig::LCD_BRIGHTNESS_STEP - off)
+                          : value - off;
+    if (aligned > AppConfig::LCD_BRIGHTNESS_MAX) aligned = AppConfig::LCD_BRIGHTNESS_MAX;
+    return aligned;
 }
 
 }  // namespace
@@ -633,13 +632,6 @@ void StateMachine::handleMenuState(EncoderEvent event) {
         return;
     }
 
-    // Helper to play navigation beep (respects sound setting)
-    auto playNavBeep = [this]() {
-        if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
-        }
-    };
-
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             // Move down in menu (with wrap-around)
@@ -693,7 +685,7 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 
                 case MenuItem::SETTINGS:
                     _selected_settings_item = SettingsItem::FLASH_EEPROM;
-                    _brightness_value = settings.getLcdBrightness();
+                    _brightness_value = alignBrightnessToGrid(settings.getLcdBrightness());
                     _brightness_adjusting = false;
                     _dim_timeout_value = settings.getAutoDimMinutes();
                     _dim_timeout_adjusting = false;
@@ -1148,6 +1140,12 @@ EncoderEvent StateMachine::readEncoderEvent() {
     return event;
 }
 
+void StateMachine::playNavBeep() {
+    if (settings.isSoundsEnabled()) {
+        hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
+    }
+}
+
 void StateMachine::handleOutputButtons() {
     // In REMOTE mode, drain button ISR flags but don't act on them
     if (Cli::isRemoteMode()) {
@@ -1169,21 +1167,9 @@ void StateMachine::handleOutputButtons() {
         LOG_INFO("Screen woken from dim (button press)");
     }
 
-    // BTN1: Toggle load switch
+    // BTN1: Toggle load switch (shared policy: fault gate, INA latch clear, tuning recheck)
     if (btn1_clicked) {
-        // Clear INA228 fault latch before enabling
-        hw.powerMonitor.getDiagnoseAlert();
-
-        bool current_state = hw.loadSwitch.read();
-        if (current_state) {
-            hw.loadSwitch.off();
-            LOG_INFO("Load switch DISABLED (BTN1)");
-        } else {
-            hw.loadSwitch.on();
-            LOG_INFO("Load switch ENABLED (BTN1)");
-        }
-        // Recheck tuning convergence immediately (measurement source changed)
-        pdManager.checkTuningConvergenceImmediate();
+        setLoadSwitch(!hw.loadSwitch.read());
     }
 
     // BTN2: Context-dependent action
@@ -1196,20 +1182,10 @@ void StateMachine::handleOutputButtons() {
             }
             LOG_INFO("Current limit mode toggled to %s (BTN2)", currentLimitModeName(next_mode));
         } else if (_state == AppState::MAIN) {
-            // Toggle 17V buck (only if VBUS > 18V, only from MAIN screen)
-            float vbus_mv = hw.powerMonitor.getBusVoltage() * 1000.0f;
-
-            if (vbus_mv >= AppConfig::MIN_VBUS_FOR_17V_MV) {
-                bool current_state = hw.EN_17V.read();
-                if (current_state) {
-                    hw.EN_17V.off();
-                    LOG_INFO("17V buck DISABLED (BTN2)");
-                } else {
-                    hw.EN_17V.on();
-                    LOG_INFO("17V buck ENABLED (BTN2)");
-                }
-            } else {
-                LOG_WARN("Cannot enable 17V buck: VBUS=%.1fV < 18V", vbus_mv / 1000.0f);
+            // Toggle 17V buck (shared policy enforces the VBUS >= 18V interlock)
+            if (set17vBuck(!hw.en17v.read()) == OutputResult::NOT_AVAILABLE) {
+                LOG_WARN("Cannot enable 17V buck: VBUS below %lumV",
+                         (unsigned long)AppConfig::MIN_VBUS_FOR_17V_MV);
                 hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION / 2);
             }
         }
@@ -1255,6 +1231,52 @@ void StateMachine::setFault(FaultType fault) {
     hw.loadSwitch.off();
 
     transitionTo(AppState::FAULT);
+}
+
+// ============================================================================
+// Shared Output Control (single owner of the load-switch / 17V-buck policy)
+// ============================================================================
+// Both the front-panel buttons (handleOutputButtons) and the CLI (OUTP:SW /
+// OUTP:BUCK) route through these so fault gating, the INA228 latch clear, the
+// tuning-convergence recheck, and the 17V VBUS interlock stay identical.
+
+OutputResult StateMachine::setLoadSwitch(bool on) {
+    if (on) {
+        // Never enable output while a fault is latched.
+        if (_state == AppState::FAULT) {
+            return OutputResult::FAULT_ACTIVE;
+        }
+        // Clear the INA228 fault latch before enabling so a stale ALERT does not
+        // immediately re-trip the overcurrent ISR.
+        hw.powerMonitor.getDiagnoseAlert();
+        hw.loadSwitch.on();
+        LOG_INFO("Load switch ENABLED");
+    } else {
+        hw.loadSwitch.off();
+        LOG_INFO("Load switch DISABLED");
+    }
+    // Measurement source changed (INA228 reads 0 when the switch is off), so the
+    // tuning badge must be re-evaluated immediately.
+    pdManager.checkTuningConvergenceImmediate();
+    return OutputResult::OK;
+}
+
+OutputResult StateMachine::set17vBuck(bool on) {
+    if (on) {
+        // Interlock: only enable the 17V buck when the input rail is high enough.
+        // Use the pre-switch ADC VBUS (INA228 post-switch reads 0V when the load
+        // switch is off, which would spuriously block the buck).
+        float vbus_mv = hw.adc.getVBUS() * 1000.0f;
+        if (vbus_mv < AppConfig::MIN_VBUS_FOR_17V_MV) {
+            return OutputResult::NOT_AVAILABLE;
+        }
+        hw.en17v.on();
+        LOG_INFO("17V buck ENABLED");
+    } else {
+        hw.en17v.off();
+        LOG_INFO("17V buck DISABLED");
+    }
+    return OutputResult::OK;
 }
 
 // ============================================================================
@@ -1518,13 +1540,6 @@ void StateMachine::applyAvsVoltage() {
 // ============================================================================
 
 void StateMachine::handleSettingsMenuState(EncoderEvent event) {
-    // Helper to play navigation beep (respects sound setting)
-    auto playNavBeep = [this]() {
-        if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
-        }
-    };
-
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             // Check if any adjustable item is in adjust mode
