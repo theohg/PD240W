@@ -5,7 +5,7 @@
 // ============================================================================
 
 namespace Version {
-    constexpr const char* FIRMWARE_VERSION = "v2.0.2";
+    constexpr const char* FIRMWARE_VERSION = "v2.0.3";
     constexpr const char* HARDWARE_VERSION = "A.1";
     #ifndef INA228_FW_VERSION
         #define INA228_FW_VERSION "unknown"

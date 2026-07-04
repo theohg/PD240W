@@ -124,7 +124,7 @@ set(PD240W_SOURCES
 add_executable(PD240W ${PD240W_SOURCES})
 
 pico_set_program_name(PD240W "PD240W")
-pico_set_program_version(PD240W "2.0.2")
+pico_set_program_version(PD240W "2.0.3")
 
 # Enable warnings on our own sources only. Scoped via set_source_files_properties
 # rather than target_compile_options so the Pico SDK's own sources (compiled into

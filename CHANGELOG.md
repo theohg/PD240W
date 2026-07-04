@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.3] - 2026-07-04
+
+### Features
+
+- PPS voltage range now goes as low as 3.3V, matching the full USB-PD PPS spec.
+
+### Improvements
+
+- TPS26750 PD configuration is now pushed over I2C at boot instead of requiring an EEPROM flash, and flash size is configurable instead of hardcoded to 2MB.
+- Bumped the shared TPS26750 driver, fixing Max Power showing 0W for non-PD chargers and other small bugs (brightness CLI, buzzer melody latch).
+- Lowered the PD disconnect VBUS threshold to 3.3V.
+
+### Internal
+
+- Code-review cleanup pass (warnings, dead code, deduplication) and SDK bump to 2.3.0.
+
 ## [2.0.2] - 2026-06-25
 
 ### Internal
