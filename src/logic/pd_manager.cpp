@@ -31,8 +31,10 @@ void copyStringTruncated(char* dest, size_t dest_len, const char* src) {
         return;
     }
 
-    strncpy(dest, src, dest_len - 1);
-    dest[dest_len - 1] = '\0';
+    // snprintf truncates and always null-terminates (the safe copy this helper
+    // wants), and avoids the -Wstringop-truncation false positive that the
+    // strncpy + manual terminator idiom trips.
+    snprintf(dest, dest_len, "%s", src);
 }
 
 std::array<uint8_t, TPS_INTERRUPT_REGISTER_BYTES> makeInterruptClearMask(uint8_t bit_index) {
@@ -172,7 +174,7 @@ void describeSavedStartupContract(const SavedStartupContractSnapshot& snapshot,
     }
 
     if (snapshot.range_min_voltage_mv > 0 || snapshot.range_max_voltage_mv > 0) {
-        snprintf(buffer, buffer_size, "%s target=%umV range=%u-%umV hint=PDO[%d]",
+        snprintf(buffer, buffer_size, "%s target=%lumV range=%lu-%lumV hint=PDO[%d]",
                  savedStartupContractTypeName(snapshot.type),
                  snapshot.requested_voltage_mv,
                  snapshot.range_min_voltage_mv,
@@ -181,7 +183,7 @@ void describeSavedStartupContract(const SavedStartupContractSnapshot& snapshot,
         return;
     }
 
-    snprintf(buffer, buffer_size, "%s target=%umV hint=PDO[%d]",
+    snprintf(buffer, buffer_size, "%s target=%lumV hint=PDO[%d]",
              savedStartupContractTypeName(snapshot.type),
              snapshot.requested_voltage_mv,
              snapshot.pdo_index_hint);
@@ -191,7 +193,7 @@ void describeSourceCapability(const TPS26750_SourceCapability& pdo,
                               char* buffer,
                               size_t buffer_size) {
     if (pdo.is_pps || pdo.is_avs) {
-        snprintf(buffer, buffer_size, "%s %u-%umV @ %umA",
+        snprintf(buffer, buffer_size, "%s %lu-%lumV @ %lumA",
                  sourceCapabilityTypeName(pdo),
                  pdo.min_voltage_mv,
                  pdo.voltage_mv,
@@ -199,7 +201,7 @@ void describeSourceCapability(const TPS26750_SourceCapability& pdo,
         return;
     }
 
-    snprintf(buffer, buffer_size, "%s %umV @ %umA",
+    snprintf(buffer, buffer_size, "%s %lumV @ %lumA",
              sourceCapabilityTypeName(pdo),
              pdo.voltage_mv,
              pdo.max_current_ma);
@@ -432,14 +434,19 @@ PdManager::PdManager()
     , _requested_contract_type(RequestedContractType::NONE)
     , _requested_voltage_mv(0)
     , _requested_current_ma(0)
+    , _active_pdo_index(-1)
+    , _startup_restore_waiting_for_epr(false)
+    , _next_pdo_retry(nil_time)
+    , _next_pps_convergence_check(nil_time)
+    , _next_avs_convergence_check(nil_time)
+    , _next_contract_refresh(nil_time)
+    , _wait_pdos_start(nil_time)
     , _epr_exit_state(EprExitState::NONE)
     , _epr_deferred_voltage_mv(0)
     , _epr_deferred_current_ma(0)
     , _epr_deferred_contract_type(RequestedContractType::NONE)
     , _epr_deferred_pdo_index(-1)
     , _epr_exit_start(nil_time)
-    , _active_pdo_index(-1)
-    , _startup_restore_waiting_for_epr(false)
 {
     _active_contract.voltage_mv = 0;
     _active_contract.current_ma = 0;
@@ -509,7 +516,7 @@ void PdManager::update() {
                 // requested target. Repeated polls of the same settled intermediate
                 // state (for example 5V while waiting for EPR discovery) are noise.
                 if (contract_changed_from_pre_request && contract_changed_from_cached) {
-                    LOG_INFO("Contract change detected via polling: %umV @ %umA",
+                    LOG_INFO("Contract change detected via polling: %lumV @ %lumA",
                              current_voltage_mv, current_current_ma);
                 }
 
@@ -518,7 +525,7 @@ void PdManager::update() {
                 if (isRequestedContractReached()) {
                     _negotiation_state = NegotiationState::SUCCESS;
                 } else if (contract_changed_from_pre_request && contract_changed_from_cached) {
-                    LOG_INFO("Startup request still pending: holding %umV @ %umA while waiting for requested %umV",
+                    LOG_INFO("Startup request still pending: holding %lumV @ %lumA while waiting for requested %lumV",
                              current_voltage_mv,
                              current_current_ma,
                              _requested_voltage_mv);
@@ -538,7 +545,7 @@ void PdManager::update() {
         // Global timeout for entire EPR exit sequence
         uint32_t epr_elapsed = absolute_time_diff_us(_epr_exit_start, get_absolute_time()) / 1000;
         if (epr_elapsed >= EPR_EXIT_TIMEOUT_MS) {
-            LOG_ERROR("EPR exit sequence timed out after %ums -- aborting", epr_elapsed);
+            LOG_ERROR("EPR exit sequence timed out after %lums -- aborting", epr_elapsed);
             _epr_exit_state = EprExitState::NONE;
         }
         // Step failed or timed out at negotiation level
@@ -552,7 +559,7 @@ void PdManager::update() {
         else if (_epr_exit_state == EprExitState::STEPPING_DOWN &&
                  _negotiation_state == NegotiationState::SUCCESS) {
             refreshActiveContract();
-            LOG_INFO("EPR step 1/3 complete: AVS at %umV. Requesting 5V Fixed to exit EPR",
+            LOG_INFO("EPR step 1/3 complete: AVS at %lumV. Requesting 5V Fixed to exit EPR",
                      _active_contract.voltage_mv);
             _epr_exit_state = EprExitState::REQUESTING_5V;
             // Request 5V Fixed -- bypass EPR interception by setting state first
@@ -586,7 +593,7 @@ void PdManager::update() {
             const char* type_str = "Fixed";
             if (_epr_deferred_contract_type == RequestedContractType::PPS) type_str = "PPS";
             else if (_epr_deferred_contract_type == RequestedContractType::AVS) type_str = "AVS";
-            LOG_INFO("EPR step 2/3 complete: at %umV (SPR). Requesting target: %s %umV @ %umA",
+            LOG_INFO("EPR step 2/3 complete: at %lumV (SPR). Requesting target: %s %lumV @ %lumA",
                      _active_contract.voltage_mv,
                      type_str,
                      _epr_deferred_voltage_mv, _epr_deferred_current_ma);
@@ -604,7 +611,7 @@ void PdManager::update() {
         else if (_epr_exit_state == EprExitState::REQUESTING_TARGET &&
                  _negotiation_state == NegotiationState::SUCCESS) {
             refreshActiveContract();
-            LOG_INFO("EPR step 3/3 complete: safely transitioned to %umV @ %umA",
+            LOG_INFO("EPR step 3/3 complete: safely transitioned to %lumV @ %lumA",
                      _active_contract.voltage_mv, _active_contract.current_ma);
             _epr_exit_state = EprExitState::NONE;
         }
@@ -614,9 +621,8 @@ void PdManager::update() {
     // before RP2040 GPIO interrupts were set up (missed edge at cold boot).
     // Retry every 500ms until PDOs are found.
     if (_pd_revision[0] == '\0' && _charger_connected) {
-        static absolute_time_t next_pdo_retry = {0};
-        if (absolute_time_diff_us(next_pdo_retry, get_absolute_time()) >= 0) {
-            next_pdo_retry = make_timeout_time_ms(PDO_RETRY_INTERVAL_MS);
+        if (absolute_time_diff_us(_next_pdo_retry, get_absolute_time()) >= 0) {
+            _next_pdo_retry = make_timeout_time_ms(PDO_RETRY_INTERVAL_MS);
             _pdo_count = hw.pdController.getSourceCapabilities(_pdo_cache, AppConfig::MAX_PDO_COUNT);
             _pdos_valid = (_pdo_count > 0);
             if (_pdos_valid) {
@@ -666,7 +672,7 @@ void PdManager::update() {
                             _pps_correction_mv = -PPS_TUNE_MAX_CORRECTION_MV;
 
                         _pps_tuning_converged = false;
-                        LOG_DEBUG("PPS tune: target=%umV measured=%umV error=%dmV correction=%dmV",
+                        LOG_DEBUG("PPS tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
                                   _pps_user_target_mv, measured_mv, error, _pps_correction_mv);
                     } else {
                         _pps_tuning_converged = true;
@@ -689,7 +695,7 @@ void PdManager::update() {
                 request_mv = (uint32_t)adjusted;
             }
 
-            LOG_DEBUG("PPS keep-alive: requesting %umV @ %umA", request_mv, _pps_current_ma);
+            LOG_DEBUG("PPS keep-alive: requesting %lumV @ %lumA", request_mv, _pps_current_ma);
 
             if (hw.pdController.requestPPSProfile(request_mv, _pps_current_ma,
                                                     _pps_range_min_mv, _pps_range_max_mv)) {
@@ -704,9 +710,8 @@ void PdManager::update() {
     // Fast convergence check: when PPS tuning is active,
     // check frequently (every 500ms) to detect drift in either direction
     if (_pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0) {
-        static absolute_time_t next_pps_convergence_check = {0};
-        if (absolute_time_diff_us(next_pps_convergence_check, get_absolute_time()) >= 0) {
-            next_pps_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
+        if (absolute_time_diff_us(_next_pps_convergence_check, get_absolute_time()) >= 0) {
+            _next_pps_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
             checkTuningConvergenceImmediate();
         }
     }
@@ -750,7 +755,7 @@ void PdManager::update() {
                             _avs_correction_mv = -AVS_TUNE_MAX_CORRECTION_MV;
 
                         _avs_tuning_converged = false;
-                        LOG_DEBUG("AVS tune: target=%umV measured=%umV error=%dmV correction=%dmV",
+                        LOG_DEBUG("AVS tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
                                   _avs_user_target_mv, measured_mv, error, _avs_correction_mv);
                     } else {
                         _avs_tuning_converged = true;
@@ -773,7 +778,7 @@ void PdManager::update() {
                 request_mv = (uint32_t)adjusted;
             }
 
-            LOG_DEBUG("AVS keep-alive: requesting %umV @ %umA", request_mv, _avs_current_ma);
+            LOG_DEBUG("AVS keep-alive: requesting %lumV @ %lumA", request_mv, _avs_current_ma);
 
             if (hw.pdController.requestAVSProfile(request_mv, _avs_current_ma,
                                                     _avs_range_min_mv, _avs_range_max_mv)) {
@@ -788,25 +793,23 @@ void PdManager::update() {
     // Fast convergence check: when AVS tuning is active,
     // check frequently (every 500ms) to detect drift in either direction
     if (_avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0) {
-        static absolute_time_t next_avs_convergence_check = {0};
-        if (absolute_time_diff_us(next_avs_convergence_check, get_absolute_time()) >= 0) {
-            next_avs_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
+        if (absolute_time_diff_us(_next_avs_convergence_check, get_absolute_time()) >= 0) {
+            _next_avs_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
             checkTuningConvergenceImmediate();
         }
     }
 
     // Periodic contract refresh for display sync (every 1 second)
     // Ensures displayed contract matches actual state after EPR transitions
-    static absolute_time_t next_contract_refresh = {0};
-    if (absolute_time_diff_us(next_contract_refresh, get_absolute_time()) >= 0) {
-        next_contract_refresh = make_timeout_time_ms(CONTRACT_REFRESH_INTERVAL_MS);
+    if (absolute_time_diff_us(_next_contract_refresh, get_absolute_time()) >= 0) {
+        _next_contract_refresh = make_timeout_time_ms(CONTRACT_REFRESH_INTERVAL_MS);
 
         uint32_t old_voltage = _active_contract.voltage_mv;
         refreshActiveContract();
 
         // If voltage changed significantly, log it (display updates naturally via overwrite rendering)
         if (_active_contract.voltage_mv != old_voltage) {
-            LOG_INFO("Contract voltage changed: %umV -> %umV",
+            LOG_INFO("Contract voltage changed: %lumV -> %lumV",
                      old_voltage, _active_contract.voltage_mv);
         }
     }
@@ -940,8 +943,13 @@ bool PdManager::refreshChargerIdentity() {
     uint16_t charger_vendor_id = 0;
     uint16_t charger_product_id = 0;
     char charger_name[32] = {0};
+    // Clamp the controller-reported length to the actual buffer size so a bogus
+    // length can't drive an out-of-bounds read inside the decoder.
+    uint8_t response_len = static_cast<uint8_t>(
+        charger_response_len > GPPI_RESPONSE_READ_BYTES ? GPPI_RESPONSE_READ_BYTES
+                                                        : charger_response_len);
     if (!decodeManufacturerInfoResponse(charger_response,
-                                        static_cast<uint8_t>(charger_response_len),
+                                        response_len,
                                         charger_vendor_id,
                                         charger_product_id,
                                         charger_name,
@@ -1083,31 +1091,31 @@ bool PdManager::primeStartupContract() {
     }
 
     if (snapshot.type == SavedStartupContractType::FIXED) {
-        LOG_INFO("Startup pre-boot request: blindly requesting saved fixed contract %umV before PDO discovery",
+        LOG_INFO("Startup pre-boot request: blindly requesting saved fixed contract %lumV before PDO discovery",
                  saved_target_mv);
         return requestFixedVoltage(saved_target_mv, startup_current_ma);
     }
 
     if (saved_target_mv > AppConfig::EPR_SPR_MAX_MV) {
-        LOG_INFO("Startup pre-boot request: blindly requesting saved EPR target %umV before PDO discovery",
+        LOG_INFO("Startup pre-boot request: blindly requesting saved EPR target %lumV before PDO discovery",
                  saved_target_mv);
         return requestAvsVoltage(saved_target_mv, startup_current_ma);
     }
 
     if (snapshot.type == SavedStartupContractType::PPS && saved_target_mv < 5000) {
-        LOG_INFO("Startup pre-boot request: blindly requesting saved low-PPS target %umV before PDO discovery",
+        LOG_INFO("Startup pre-boot request: blindly requesting saved low-PPS target %lumV before PDO discovery",
                  saved_target_mv);
         return requestPpsVoltage(saved_target_mv, startup_current_ma);
     }
 
     if (snapshot.type == SavedStartupContractType::AVS) {
-        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore AVS target %umV",
+        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore AVS target %lumV",
                  saved_target_mv);
     } else if (snapshot.type == SavedStartupContractType::PPS) {
-        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore PPS target %umV",
+        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore PPS target %lumV",
                  saved_target_mv);
     } else {
-        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore programmable target %umV",
+        LOG_INFO("Startup pre-boot request: clamping to 5V until PDO discovery can restore programmable target %lumV",
                  saved_target_mv);
     }
 
@@ -1127,14 +1135,14 @@ bool PdManager::requestContract(const TPS26750_SourceCapability& pdo) {
 }
 
 bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
-    LOG_INFO("Requesting Fixed: %umV @ %umA", voltage_mv, current_ma);
+    LOG_INFO("Requesting Fixed: %lumV @ %lumA", voltage_mv, current_ma);
 
     // EPR safe exit: if currently in EPR and target is SPR, initiate 3-step exit
     if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, false)) {
         uint32_t avs_v, avs_i;
         int8_t avs_idx = -1;
         if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
-            LOG_INFO("EPR exit: 3-step sequence for Fixed %umV (AVS %umV -> 5V -> %umV)",
+            LOG_INFO("EPR exit: 3-step sequence for Fixed %lumV (AVS %lumV -> 5V -> %lumV)",
                      voltage_mv, avs_v, voltage_mv);
             _epr_deferred_voltage_mv    = voltage_mv;
             _epr_deferred_current_ma    = current_ma;
@@ -1174,14 +1182,14 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
 }
 
 bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
-    LOG_INFO("Requesting PPS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
+    LOG_INFO("Requesting PPS: %lumV @ %lumA (PDO index %d)", voltage_mv, current_ma, pdo_index);
 
     // EPR safe exit: if currently in EPR and target is PPS (SPR), initiate 3-step exit
     if (_epr_exit_state == EprExitState::NONE && needsEprExit(voltage_mv, true)) {
         uint32_t avs_v, avs_i;
         int8_t avs_idx = -1;
         if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
-            LOG_INFO("EPR exit: 3-step sequence for PPS %umV (AVS %umV -> 5V -> PPS %umV)",
+            LOG_INFO("EPR exit: 3-step sequence for PPS %lumV (AVS %lumV -> 5V -> PPS %lumV)",
                      voltage_mv, avs_v, voltage_mv);
             _epr_deferred_voltage_mv    = voltage_mv;
             _epr_deferred_current_ma    = current_ma;
@@ -1261,7 +1269,7 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
 }
 
 bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
-    LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)", voltage_mv, current_ma, pdo_index);
+    LOG_INFO("Requesting AVS: %lumV @ %lumA (PDO index %d)", voltage_mv, current_ma, pdo_index);
 
     // Mirror the fixed-request EPR exit guard here as well. A direct EPR->SPR
     // AVS transition can hard-reset the charger, so route it through the staged
@@ -1270,7 +1278,7 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
         uint32_t avs_v, avs_i;
         int8_t avs_idx = -1;
         if (findAvsSafeVoltage(avs_v, avs_i, avs_idx)) {
-            LOG_INFO("EPR exit: 3-step sequence for AVS %umV (AVS %umV -> 5V -> AVS %umV)",
+            LOG_INFO("EPR exit: 3-step sequence for AVS %lumV (AVS %lumV -> 5V -> AVS %lumV)",
                      voltage_mv, avs_v, voltage_mv);
             _epr_deferred_voltage_mv    = voltage_mv;
             _epr_deferred_current_ma    = current_ma;
@@ -1433,7 +1441,7 @@ bool PdManager::refreshActiveContract() {
                         _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
                         _pps_range_max_mv = _pdo_cache[i].voltage_mv;
                         _active_pdo_index = (int8_t)i;
-                        LOG_INFO("Detected active PPS contract on warm reset: %umV", voltage_mv);
+                        LOG_INFO("Detected active PPS contract on warm reset: %lumV", voltage_mv);
                         break;
                     }
                     if (_pdo_cache[i].is_avs &&
@@ -1447,7 +1455,7 @@ bool PdManager::refreshActiveContract() {
                         _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
                         _avs_range_max_mv = _pdo_cache[i].voltage_mv;
                         _active_pdo_index = (int8_t)i;
-                        LOG_INFO("Detected active AVS contract on warm reset: %umV", voltage_mv);
+                        LOG_INFO("Detected active AVS contract on warm reset: %lumV", voltage_mv);
                         break;
                     }
                 }
@@ -1752,13 +1760,11 @@ void PdManager::checkTuningConvergenceImmediate() {
 // ============================================================================
 
 bool PdManager::waitForPdos(uint32_t timeout_ms) {
-    static absolute_time_t wait_start = nil_time;
-
-    if (is_nil_time(wait_start)) {
-        wait_start = get_absolute_time();
+    if (is_nil_time(_wait_pdos_start)) {
+        _wait_pdos_start = get_absolute_time();
     }
 
-    uint32_t elapsed_ms = absolute_time_diff_us(wait_start, get_absolute_time()) / 1000;
+    uint32_t elapsed_ms = absolute_time_diff_us(_wait_pdos_start, get_absolute_time()) / 1000;
 
     // Check if PDOs are already available
     if (!_pdos_valid) {
@@ -1769,20 +1775,20 @@ bool PdManager::waitForPdos(uint32_t timeout_ms) {
             detectPdRevision();
             refreshActiveContract();
             LOG_INFO("Initial PDO discovery: %d PDOs found", _pdo_count);
-            wait_start = nil_time;
+            _wait_pdos_start = nil_time;
             return true; // We found PDOs! Done!
         }
     }
 
     // Check timeout
     if (elapsed_ms >= timeout_ms) {
-        LOG_WARN("PDO discovery timed out after %ums", elapsed_ms);
+        LOG_WARN("PDO discovery timed out after %lums", elapsed_ms);
         clearPpsTracking();
         clearAvsTracking();
         clearRequestedContract();
         _pd_revision[0] = '\0';
         refreshActiveContract();
-        wait_start = nil_time;
+        _wait_pdos_start = nil_time;
         return true;  // Return true to stop waiting
     }
 
@@ -1825,10 +1831,14 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
     uint32_t target_request_voltage_mv = 0;
 
     switch (mode) {
+        case StartupContractMode::HIGHEST_VOLTAGE:
+            // Handled by the early return above; listed so -Wswitch stays clean.
+            break;
+
         case StartupContractMode::LOWEST_VOLTAGE:
             target_idx = lowest_idx;
             if (target_idx >= 0) {
-                LOG_INFO("Startup negotiation: Lowest voltage - %umV (PDO[%d])",
+                LOG_INFO("Startup negotiation: Lowest voltage - %lumV (PDO[%d])",
                          lowest_voltage, target_idx);
             }
             break;
@@ -1872,7 +1882,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                             target_request_voltage_mv = hinted_pdo.is_pps ?
                                 PdVoltage::alignDown(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
                                 PdVoltage::alignDown(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
-                            LOG_INFO("Startup negotiation: using legacy snapshot hint PDO[%d] to restore %s at %umV",
+                            LOG_INFO("Startup negotiation: using legacy snapshot hint PDO[%d] to restore %s at %lumV",
                                      snapshot.pdo_index_hint,
                                      sourceCapabilityTypeName(hinted_pdo),
                                      target_request_voltage_mv);
@@ -1895,14 +1905,14 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                             target_request_voltage_mv = hinted_pdo.is_pps ?
                                 PdVoltage::alignDown(target_voltage_mv, AppConfig::PPS_VOLTAGE_STEP_MV) :
                                 PdVoltage::alignDown(target_voltage_mv, AppConfig::AVS_VOLTAGE_STEP_MV);
-                            LOG_INFO("Startup negotiation: exact %s restore match on PDO[%d], target %umV within %u-%umV",
+                            LOG_INFO("Startup negotiation: exact %s restore match on PDO[%d], target %lumV within %lu-%lumV",
                                      savedStartupContractTypeName(snapshot.type),
                                      snapshot.pdo_index_hint,
                                      target_request_voltage_mv,
                                      hinted_pdo.min_voltage_mv,
                                      hinted_pdo.voltage_mv);
                         } else {
-                            LOG_INFO("Startup negotiation: saved %s target %umV is outside charger PDO[%d] range %u-%umV",
+                            LOG_INFO("Startup negotiation: saved %s target %lumV is outside charger PDO[%d] range %lu-%lumV",
                                      savedStartupContractTypeName(snapshot.type),
                                      target_voltage_mv,
                                      snapshot.pdo_index_hint,
@@ -1912,11 +1922,11 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                     } else if (hinted_pdo.voltage_mv == target_voltage_mv) {
                         target_idx = snapshot.pdo_index_hint;
                         target_request_voltage_mv = hinted_pdo.voltage_mv;
-                        LOG_INFO("Startup negotiation: exact fixed restore match on PDO[%d] at %umV",
+                        LOG_INFO("Startup negotiation: exact fixed restore match on PDO[%d] at %lumV",
                                  snapshot.pdo_index_hint,
                                  hinted_pdo.voltage_mv);
                     } else {
-                        LOG_INFO("Startup negotiation: saved fixed target %umV does not match charger PDO[%d] at %umV",
+                        LOG_INFO("Startup negotiation: saved fixed target %lumV does not match charger PDO[%d] at %lumV",
                                  target_voltage_mv,
                                  snapshot.pdo_index_hint,
                                  hinted_pdo.voltage_mv);
@@ -1927,7 +1937,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
             if (target_idx < 0) {
                 if (allow_epr_wait && target_prefers_epr_retry && !epr_visible) {
                     _startup_restore_waiting_for_epr = true;
-                    LOG_INFO("Startup negotiation: saved %s target %umV may require EPR PDOs, waiting for EPR discovery before fallback",
+                    LOG_INFO("Startup negotiation: saved %s target %lumV may require EPR PDOs, waiting for EPR discovery before fallback",
                              savedStartupContractTypeName(snapshot.type),
                              target_voltage_mv);
                     return false;
@@ -1946,7 +1956,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                     target_idx = same_type_match.pdo_index;
                     target_request_voltage_mv = same_type_match.requested_voltage_mv;
                     const TPS26750_SourceCapability& candidate = _pdo_cache[target_idx];
-                    LOG_INFO("Startup negotiation: same-type fallback selected %s PDO[%d] at %umV (delta %umV from saved target %umV)",
+                    LOG_INFO("Startup negotiation: same-type fallback selected %s PDO[%d] at %lumV (delta %lumV from saved target %lumV)",
                              sourceCapabilityTypeName(candidate),
                              target_idx,
                              target_request_voltage_mv,
@@ -1954,14 +1964,14 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                              target_voltage_mv);
                 } else {
                     if (snapshot.type != SavedStartupContractType::UNKNOWN) {
-                        LOG_INFO("Startup negotiation: no %s candidates available for saved target %umV",
+                        LOG_INFO("Startup negotiation: no %s candidates available for saved target %lumV",
                                  savedStartupContractTypeName(snapshot.type),
                                  target_voltage_mv);
                     }
 
                     if (allow_epr_wait && target_prefers_epr_retry && !epr_visible) {
                             _startup_restore_waiting_for_epr = true;
-                            LOG_INFO("Startup negotiation: saved %s target %umV may require EPR PDOs, waiting for EPR discovery before cross-type fallback",
+                            LOG_INFO("Startup negotiation: saved %s target %lumV may require EPR PDOs, waiting for EPR discovery before cross-type fallback",
                                      savedStartupContractTypeName(snapshot.type),
                                      target_voltage_mv);
                             return false;
@@ -1973,7 +1983,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                                                                             target_voltage_mv,
                                                                             false);
                     if (!fallback_match.valid) {
-                        LOG_WARN("Startup negotiation: no fallback candidate found for saved target %umV, keeping default",
+                        LOG_WARN("Startup negotiation: no fallback candidate found for saved target %lumV, keeping default",
                                  target_voltage_mv);
                         return false;
                     }
@@ -1981,7 +1991,7 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
                     target_idx = fallback_match.pdo_index;
                     target_request_voltage_mv = fallback_match.requested_voltage_mv;
                     const TPS26750_SourceCapability& candidate = _pdo_cache[target_idx];
-                    LOG_INFO("Startup negotiation: cross-type fallback selected %s PDO[%d] at %umV (delta %umV from saved target %umV)",
+                    LOG_INFO("Startup negotiation: cross-type fallback selected %s PDO[%d] at %lumV (delta %lumV from saved target %lumV)",
                              sourceCapabilityTypeName(candidate),
                              target_idx,
                              target_request_voltage_mv,
@@ -1998,17 +2008,17 @@ bool PdManager::negotiateStartupContract(bool allow_epr_wait) {
         const TPS26750_SourceCapability& pdo = _pdo_cache[target_idx];
 
         if (pdo.is_pps && target_request_voltage_mv > 0) {
-            LOG_INFO("Startup negotiation: requesting PPS %umV using PDO[%d]",
+            LOG_INFO("Startup negotiation: requesting PPS %lumV using PDO[%d]",
                      target_request_voltage_mv, target_idx);
             return requestPpsVoltage(target_request_voltage_mv, pdo.max_current_ma, target_idx);
         } else if (pdo.is_avs && target_request_voltage_mv > 0) {
-            LOG_INFO("Startup negotiation: requesting AVS %umV using PDO[%d]",
+            LOG_INFO("Startup negotiation: requesting AVS %lumV using PDO[%d]",
                      target_request_voltage_mv, target_idx);
             return requestAvsVoltage(target_request_voltage_mv, pdo.max_current_ma, target_idx);
         } else {
             if (_active_contract.valid && !_active_contract.is_pps && !_active_contract.is_avs &&
                 _active_contract.voltage_mv == pdo.voltage_mv) {
-                LOG_INFO("Startup negotiation: fixed target %umV is already active from the pre-boot request; refreshing with PDO[%d] current data",
+                LOG_INFO("Startup negotiation: fixed target %lumV is already active from the pre-boot request; refreshing with PDO[%d] current data",
                          pdo.voltage_mv, target_idx);
             }
             return requestContract(pdo);

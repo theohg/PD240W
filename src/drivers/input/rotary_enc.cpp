@@ -73,7 +73,7 @@ uint32_t RotaryEncoder::getVelocityMultiplier() const {
     return 25;                             // Very fast: coarse adjustment (25x)
 }
 
-void RotaryEncoder::handleISR(uint gpio, uint32_t events) {
+void RotaryEncoder::handleISR(uint /*gpio*/, uint32_t /*events*/) {
     uint64_t current_time_us = time_us_64();
 
     // Read current state of both pins

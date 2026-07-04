@@ -25,6 +25,15 @@ endif()
 # ====================================================================================
 set(PICO_BOARD pico CACHE STRING "Board type")
 
+# Default to a Debug build when none is specified (e.g. a bare `cmake -G Ninja ..`).
+# The build type now matters: it drives DEBUG_BUILD (see target_compile_definitions
+# below), so an unspecified/Release configure would silently drop LOG_DEBUG. The
+# VS Code CMake Tools extension passes -DCMAKE_BUILD_TYPE explicitly, so this only
+# affects command-line configures and never overrides an explicit choice.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
@@ -69,7 +78,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(PD240W
+# Project sources (our code + the two external driver submodules). Kept in a
+# variable so warning flags can be scoped to exactly these, leaving the Pico
+# SDK's own sources untouched.
+set(PD240W_SOURCES
         # Core
         src/main.cpp
         src/hardware.cpp
@@ -109,8 +121,17 @@ add_executable(PD240W
         src/ui/display_manager.cpp
 )
 
+add_executable(PD240W ${PD240W_SOURCES})
+
 pico_set_program_name(PD240W "PD240W")
 pico_set_program_version(PD240W "2.0.2")
+
+# Enable warnings on our own sources only. Scoped via set_source_files_properties
+# rather than target_compile_options so the Pico SDK's own sources (compiled into
+# this same target) are not flagged. Enforces format-string (%lu/%ld) and
+# init-order cleanliness. Append -Werror here once the tree stays clean.
+set(PD240W_WARN_FLAGS -Wall -Wextra)
+set_source_files_properties(${PD240W_SOURCES} PROPERTIES COMPILE_OPTIONS "${PD240W_WARN_FLAGS}")
 
 # =============================================================================
 # STDIO Configuration - Choose ONE output method
@@ -141,6 +162,10 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   BUILD_DATE="${BUILD_TIMESTAMP}"
     INA228_FW_VERSION="${INA228_FIRMWARE_VERSION}"
     TPS26750_FW_VERSION="${TPS26750_FIRMWARE_VERSION}"
+  # Debug logging: enabled only for Debug builds. Release / MinSizeRel /
+  # RelWithDebInfo compile LOG_DEBUG out (see src/utils/logging.h). Overrides the
+  # header's fallback default of 1.
+  DEBUG_BUILD=$<IF:$<CONFIG:Debug>,1,0>
 )
 
 # Add the standard library to the build

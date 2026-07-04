@@ -73,7 +73,7 @@ void Buzzer::stop() {
 }
 
 // The static function that the Timer calls
-int64_t Buzzer::stopToneCallback(alarm_id_t id, void *user_data) {
+int64_t Buzzer::stopToneCallback(alarm_id_t /*id*/, void *user_data) {
     // Cast the generic pointer back to our specific Buzzer object
     Buzzer *buzzer = static_cast<Buzzer*>(user_data);
     
@@ -132,14 +132,6 @@ const Note MARIO_POWERUP[] = {
     {2349, 70},  // D7
     {3136, 70}   // G7
 };
-// const Note MARIO_ONEUP[] = {
-//     {659, 75},   // E5
-//     {784, 75},   // G5
-//     {1319, 75},  // E6 (Jumps up high)
-//     {1047, 75},  // C6
-//     {1175, 75},  // D6
-//     {1568, 75}   // G6 (Highest note)
-// };
 
 const uint8_t MARIO_POWERUP_LENGTH = sizeof(MARIO_POWERUP) / sizeof(Note);
 
@@ -204,7 +196,7 @@ const Note CRITICAL_WARNING_ALARM[] = {
 const uint8_t CRITICAL_WARNING_ALARM_LENGTH = sizeof(CRITICAL_WARNING_ALARM) / sizeof(Note);
 
 // Callback for playing next note in melody
-int64_t Buzzer::playNextNoteCallback(alarm_id_t id, void *user_data) {
+int64_t Buzzer::playNextNoteCallback(alarm_id_t /*id*/, void *user_data) {
     Buzzer *buzzer = static_cast<Buzzer*>(user_data);
 
     // Check if we've finished the melody

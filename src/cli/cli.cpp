@@ -134,17 +134,21 @@ static constexpr int NUM_COMMANDS = sizeof(commands) / sizeof(commands[0]);
 // Internal helpers
 // -------------------------------------------------------------------------
 
-// Uppercase a string in-place
-static void toUpper(char* s) {
-    for (; *s; ++s) {
+// Uppercase only the command token (up to the first space) in-place. Command
+// matching stays case-insensitive while any argument after the space keeps its
+// original case, so a future case-sensitive argument is not corrupted.
+// (Case-insensitive keyword args like ON/OFF are handled by the parsers.)
+static void toUpperCommandToken(char* s) {
+    for (; *s && *s != ' ' && *s != '\t'; ++s) {
         if (*s >= 'a' && *s <= 'z') *s -= 32;
     }
 }
 
 // Process a complete command line
 static void processCommand(char* line) {
-    // Uppercase the line for case-insensitive matching
-    toUpper(line);
+    // Case-insensitive command matching: uppercase the command token only,
+    // leaving the argument (if any) untouched.
+    toUpperCommandToken(line);
 
     // Strip trailing whitespace
     int len = strlen(line);
@@ -302,7 +306,7 @@ static void cmd_sett_save(const char* arg)    { CliCmd::settSave(arg); }
 static void cmd_sett_reset(const char* arg)   { CliCmd::settReset(arg); }
 static void cmd_tps_mode(const char* arg)     { CliCmd::tpsMode(arg); }
 static void cmd_tps_garbage(const char* arg)  { CliCmd::tpsGarbage(arg); }
-static void cmd_log_on(const char* arg)       { g_cli_log_enabled = true; respond("OK"); }
-static void cmd_log_off(const char* arg)      { g_cli_log_enabled = false; respond("OK"); }
+static void cmd_log_on(const char* /*arg*/)       { g_cli_log_enabled = true; respond("OK"); }
+static void cmd_log_off(const char* /*arg*/)      { g_cli_log_enabled = false; respond("OK"); }
 
 }  // namespace Cli

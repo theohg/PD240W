@@ -33,7 +33,6 @@ public:
 
     // Input methods
     bool read() const;       // Read current pin state
-    bool get() const;        // Alias for read() for consistency
 
     // Non-blocking blink (output only)
     /**
@@ -48,9 +47,6 @@ public:
 
     /** Must be called in main loop to handle blinking */
     void update();
-
-    /** Check if currently blinking */
-    bool isBlinking() const { return _is_blinking; }
 
     // Utility
     bool isInput() const { return is_input; }

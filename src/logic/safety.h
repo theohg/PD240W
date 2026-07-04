@@ -39,7 +39,6 @@ struct SafetyState {
     // Current
     float current_a;
     bool current_overflow;
-    bool overcurrent_latched;
 
     // Power
     float power_w;
@@ -63,17 +62,9 @@ public:
     bool isOvertemperature() const;
     bool isOvertemperatureWarning() const;
     bool isPdConnected() const;
-    bool isOvercurrentLatched() const;
-
-    // Clear overcurrent latch (requires user action)
-    void clearOvercurrentLatch();
-
-    // Set current limit for software monitoring
-    void setCurrentLimit(float limit_a);
 
 private:
     SafetyState _state;
-    float _current_limit_a;
 
     // Timing for periodic checks
     absolute_time_t _last_temp_check;

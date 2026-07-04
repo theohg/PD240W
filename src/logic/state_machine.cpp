@@ -94,12 +94,15 @@ static TPS26750_SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
 // ============================================================================
 
 StateMachine::StateMachine()
+    // NOTE: keep this list in member-declaration order (see state_machine.h)
+    // so -Wreorder stays clean.
     : _state(AppState::BOOT)
     , _previous_state(AppState::BOOT)
     , _state_enter_time(nil_time)
     , _last_activity_time(nil_time)
     , _encoder_press_start(nil_time)
     , _encoder_button_held(false)
+    , _screen_dimmed(false)
     , _boot_stage(0)
     , _boot_pdos_found(false)
     , _boot_contract_requested(false)
@@ -110,13 +113,17 @@ StateMachine::StateMachine()
     , _boot_last_epr_poll_ms(0)
     , _boot_epr_pdos_found(false)
     , _boot_ready_time(nil_time)
+    , _boot_neg_start(nil_time)
+    , _boot_patch_session{}
+    , _boot_patch_active(false)
+    , _boot_patch_done(false)
+    , _boot_patch_progress(0)
     , _selected_menu_item(MenuItem::SELECT_VOLTAGE)
     , _selected_settings_item(SettingsItem::FLASH_EEPROM)
     , _selected_pdo_index(0)
     , _num_pdos(0)
     , _adjust_mode(AdjustMode::NONE)
     , _current_limit_ma(AppConfig::CURRENT_LIMIT_DEFAULT_MA)
-    , _adjust_original_value(0)
     , _epr_probe_pending(false)
     , _epr_probe_start(nil_time)
     , _epr_probe_target(AdjustMode::NONE)
@@ -137,7 +144,6 @@ StateMachine::StateMachine()
     , _avs_pdo_index(0)
     , _brightness_value(100)
     , _brightness_adjusting(false)
-    , _screen_dimmed(false)
     , _dim_timeout_value(1)
     , _dim_timeout_adjusting(false)
     , _melody_value(1)
@@ -145,11 +151,6 @@ StateMachine::StateMachine()
     , _contract_mode_value(2)
     , _contract_mode_adjusting(false)
     , _energy_display_mwh(false)
-    , _boot_neg_start(nil_time)
-    , _boot_patch_session{}
-    , _boot_patch_active(false)
-    , _boot_patch_done(false)
-    , _boot_patch_progress(0)
 {}
 
 // ============================================================================
@@ -365,7 +366,7 @@ void StateMachine::handleBootState() {
             LOG_INFO("Boot: Contract negotiation complete (state=%d)", static_cast<int>(neg_state));
             const ActiveContract& contract = pdManager.getActiveContract();
             if (contract.valid) {
-                LOG_INFO("Boot: Active contract after negotiation = %umV @ %umA (%s)",
+                LOG_INFO("Boot: Active contract after negotiation = %lumV @ %lumA (%s)",
                          contract.voltage_mv,
                          contract.current_ma,
                          contract.is_avs ? "AVS" : (contract.is_pps ? "PPS" : "FIXED"));
@@ -383,7 +384,7 @@ void StateMachine::handleBootState() {
             LOG_WARN("Boot: Contract negotiation timeout");
             const ActiveContract& contract = pdManager.getActiveContract();
             if (contract.valid) {
-                LOG_WARN("Boot: Active contract at timeout = %umV @ %umA (%s)",
+                LOG_WARN("Boot: Active contract at timeout = %lumV @ %lumA (%s)",
                          contract.voltage_mv,
                          contract.current_ma,
                          contract.is_avs ? "AVS" : (contract.is_pps ? "PPS" : "FIXED"));
@@ -417,7 +418,7 @@ void StateMachine::handleBootState() {
                 for (uint8_t i = 0; i < _num_pdos; i++) {
                     if (s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                         _boot_epr_pdos_found = true;
-                        LOG_INFO("Boot: EPR PDOs found after %ums: %d PDOs", epr_elapsed, _num_pdos);
+                        LOG_INFO("Boot: EPR PDOs found after %lums: %d PDOs", epr_elapsed, _num_pdos);
                         break;
                     }
                 }
@@ -450,7 +451,7 @@ void StateMachine::handleBootState() {
             pdManager.refreshActiveContract();
             const auto& contract = pdManager.getActiveContract();
             if (contract.valid && contract.voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
-                LOG_INFO("Boot: Contract settled at %umV after %ums", contract.voltage_mv, epr_elapsed);
+                LOG_INFO("Boot: Contract settled at %lumV after %lums", contract.voltage_mv, epr_elapsed);
                 _boot_last_epr_poll_ms = 0;
                 _boot_epr_pdos_found = false;
                 _boot_stage = 3;
@@ -556,7 +557,7 @@ void StateMachine::handleMainState(EncoderEvent event) {
                     AppConfig::PPS_VOLTAGE_STEP_MV);
                 _adjust_mode = AdjustMode::PPS_VOLTAGE;
                 transitionTo(AppState::ADJUST);
-                LOG_INFO("Quick PPS voltage adjust: %u-%umV (current %umV)",
+                LOG_INFO("Quick PPS voltage adjust: %lu-%lumV (current %lumV)",
                          _pps_min_voltage_mv, _pps_max_voltage_mv, _pps_target_voltage_mv);
             }
         } else if (contract.valid && contract.is_avs && pdManager.isAvsActive()) {
@@ -594,7 +595,7 @@ void StateMachine::handleMainState(EncoderEvent event) {
                     AppConfig::AVS_VOLTAGE_STEP_MV);
                 _adjust_mode = AdjustMode::AVS_VOLTAGE;
                 transitionTo(AppState::ADJUST);
-                LOG_INFO("Quick AVS voltage adjust: %u-%umV (current %umV)",
+                LOG_INFO("Quick AVS voltage adjust: %lu-%lumV (current %lumV)",
                          _avs_min_voltage_mv, _avs_max_voltage_mv, _avs_target_voltage_mv);
             }
         } else {
@@ -679,7 +680,6 @@ void StateMachine::handleMenuState(EncoderEvent event) {
                     break;
 
                 case MenuItem::CURRENT_LIMIT:
-                    _adjust_original_value = _current_limit_ma;
                     // Clamp current value to effective max (contract may have changed)
                     {
                         uint32_t max_ma = getEffectiveMaxCurrentMa();
@@ -738,25 +738,6 @@ void StateMachine::handleMenuState(EncoderEvent event) {
 }
 
 void StateMachine::handleAdjustState(EncoderEvent event) {
-    // Helper to play navigation beep (respects sound setting)
-    auto playNavBeep = [this]() {
-        if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(AppConfig::BEEP_NAV_FREQ, AppConfig::BEEP_NAV_DURATION);
-        }
-    };
-    
-    auto playSelectBeep = [this]() {
-        if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(AppConfig::BEEP_SELECT_FREQ, AppConfig::BEEP_SELECT_DURATION);
-        }
-    };
-    
-    auto playExitBeep = [this]() {
-        if (settings.isSoundsEnabled()) {
-            hw.buzzer.playTone(AppConfig::BEEP_EXIT_FREQ, AppConfig::BEEP_EXIT_DURATION);
-        }
-    };
-
     // About screens: click returns to menu
     if (_adjust_mode == AdjustMode::ABOUT || _adjust_mode == AdjustMode::ABOUT_CHARGER) {
         if (event != EncoderEvent::NONE) {
@@ -929,7 +910,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                             _pps_max_voltage_mv,
                             AppConfig::PPS_VOLTAGE_STEP_MV);
                         _adjust_mode = AdjustMode::PPS_VOLTAGE;
-                        LOG_INFO("Entering PPS voltage adjustment: %u-%umV", _pps_min_voltage_mv, _pps_max_voltage_mv);
+                        LOG_INFO("Entering PPS voltage adjustment: %lu-%lumV", _pps_min_voltage_mv, _pps_max_voltage_mv);
                         // Force display redraw since we changed mode within same state
                         displayManager.invalidate();
                     } else if (pdo.is_avs) {
@@ -951,7 +932,7 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                             _avs_max_voltage_mv,
                             AppConfig::AVS_VOLTAGE_STEP_MV);
                         _adjust_mode = AdjustMode::AVS_VOLTAGE;
-                        LOG_INFO("Entering AVS voltage adjustment: %u-%umV", _avs_min_voltage_mv, _avs_max_voltage_mv);
+                        LOG_INFO("Entering AVS voltage adjustment: %lu-%lumV", _avs_min_voltage_mv, _avs_max_voltage_mv);
                         displayManager.invalidate();
                     } else {
                         // Fixed or AVS - request immediately
@@ -1373,7 +1354,7 @@ void StateMachine::requestSelectedPdo() {
 
     TPS26750_SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
 
-    LOG_INFO("Requesting PDO[%d]: %umV @ %umA (PPS=%d, AVS=%d)",
+    LOG_INFO("Requesting PDO[%d]: %lumV @ %lumA (PPS=%d, AVS=%d)",
              _selected_pdo_index, pdo.voltage_mv, pdo.max_current_ma,
              pdo.is_pps, pdo.is_avs);
 
@@ -1467,7 +1448,7 @@ void StateMachine::setCurrentLimitMa(uint32_t limit_ma) {
 }
 
 void StateMachine::applyCurrentLimit() {
-    LOG_INFO("Current limit set to %u mA (%s)",
+    LOG_INFO("Current limit set to %lu mA (%s)",
              _current_limit_ma,
              currentLimitModeName(CcController::getMode()));
 
@@ -1484,7 +1465,7 @@ void StateMachine::applyCurrentLimit() {
 }
 
 void StateMachine::applyPpsVoltage() {
-    LOG_INFO("Requesting PPS: %umV @ %umA (PDO index %d)",
+    LOG_INFO("Requesting PPS: %lumV @ %lumA (PDO index %d)",
              _pps_target_voltage_mv, _pps_max_current_ma, _pps_pdo_index);
 
     // Request PPS contract with the selected voltage and explicit PDO index so the
@@ -1510,7 +1491,7 @@ void StateMachine::applyPpsVoltage() {
 }
 
 void StateMachine::applyAvsVoltage() {
-    LOG_INFO("Requesting AVS: %umV @ %umA (PDO index %d)",
+    LOG_INFO("Requesting AVS: %lumV @ %lumA (PDO index %d)",
              _avs_target_voltage_mv, _avs_max_current_ma, _avs_pdo_index);
 
     bool success = pdManager.requestAvsVoltage(_avs_target_voltage_mv, _avs_max_current_ma,

@@ -2,6 +2,7 @@
 #include "cli.h"
 #include <cstdio>
 #include <cstring>
+#include <strings.h>  // strcasecmp (case-insensitive ON/OFF parsing)
 #include <cstdlib>
 #include "pico/stdlib.h"
 #include "pico/bootrom.h"
@@ -22,11 +23,13 @@
 
 namespace CliCmd {
 
-// Helper: parse ON/OFF argument, returns 1=ON, 0=OFF, -1=invalid
+// Helper: parse ON/OFF argument, returns 1=ON, 0=OFF, -1=invalid.
+// Case-insensitive: the CLI no longer force-uppercases arguments, so accept any
+// casing (on/On/ON) here.
 static int parseOnOff(const char* arg) {
     if (!arg) return -1;
-    if (strcmp(arg, "ON") == 0 || strcmp(arg, "1") == 0) return 1;
-    if (strcmp(arg, "OFF") == 0 || strcmp(arg, "0") == 0) return 0;
+    if (strcasecmp(arg, "ON") == 0 || strcmp(arg, "1") == 0) return 1;
+    if (strcasecmp(arg, "OFF") == 0 || strcmp(arg, "0") == 0) return 0;
     return -1;
 }
 
@@ -43,14 +46,14 @@ static unsigned toMilliUnsigned(float value) {
 // Identity & System
 // -------------------------------------------------------------------------
 
-void idn(const char* arg) {
+void idn(const char* /*arg*/) {
     char buf[64];
     snprintf(buf, sizeof(buf), "%s,HW%s,FW%s",
              Version::PRODUCT_NAME, Version::HARDWARE_VERSION, Version::FIRMWARE_VERSION);
     Cli::respond(buf);
 }
 
-void systStat(const char* arg) {
+void systStat(const char* /*arg*/) {
     AppState state = stateMachine.getState();
     const char* state_str;
     switch (state) {
@@ -73,26 +76,26 @@ void systStat(const char* arg) {
     Cli::respond(state_str);
 }
 
-void systUptime(const char* arg) {
+void systUptime(const char* /*arg*/) {
     uint32_t uptime_s = to_ms_since_boot(get_absolute_time()) / 1000;
     char buf[16];
-    snprintf(buf, sizeof(buf), "%u", uptime_s);
+    snprintf(buf, sizeof(buf), "%lu", uptime_s);
     Cli::respond(buf);
 }
 
-void systReboot(const char* arg) {
+void systReboot(const char* /*arg*/) {
     Cli::respond("OK");
     sleep_ms(10);  // Allow response to transmit
     watchdog_reboot(0, 0, 0);
 }
 
-void systBootsel(const char* arg) {
+void systBootsel(const char* /*arg*/) {
     Cli::respond("OK");
     sleep_ms(10);  // Allow response to transmit
     reset_usb_boot(0, 0);
 }
 
-void systLoc(const char* arg) {
+void systLoc(const char* /*arg*/) {
     Cli::exitRemoteMode();
     Cli::respond("OK");
 }
@@ -146,42 +149,42 @@ void outpBuck(const char* arg) {
 // Measurements
 // -------------------------------------------------------------------------
 
-void measVolt(const char* arg) {
+void measVolt(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.ina_voltage_v));
     Cli::respond(buf);
 }
 
-void measCurr(const char* arg) {
+void measCurr(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.current_a));
     Cli::respond(buf);
 }
 
-void measPow(const char* arg) {
+void measPow(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(s.power_w));
     Cli::respond(buf);
 }
 
-void measTemp(const char* arg) {
+void measTemp(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     char buf[16];
     snprintf(buf, sizeof(buf), "%d", (int)(s.temperature_c * 10.0f));
     Cli::respond(buf);
 }
 
-void measItemp(const char* arg) {
+void measItemp(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     char buf[16];
     snprintf(buf, sizeof(buf), "%d", (int)(s.ina_temperature_c * 10.0f));
     Cli::respond(buf);
 }
 
-void measEnergy(const char* arg) {
+void measEnergy(const char* /*arg*/) {
     double charge_c = hw.powerMonitor.getCharge();
     double mah = charge_c * 1000.0 / 3.6;
     if (mah < 0.0) mah = 0.0;
@@ -190,14 +193,14 @@ void measEnergy(const char* arg) {
     Cli::respond(buf);
 }
 
-void measVbus(const char* arg) {
+void measVbus(const char* /*arg*/) {
     float vbus_v = hw.adc.getVBUS();
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", toMilliUnsigned(vbus_v));
     Cli::respond(buf);
 }
 
-void measAll(const char* arg) {
+void measAll(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
     double charge_c = hw.powerMonitor.getCharge();
     double mah = charge_c * 1000.0 / 3.6;
@@ -218,7 +221,7 @@ void measAll(const char* arg) {
 // PD Contract Management
 // -------------------------------------------------------------------------
 
-void pdList(const char* arg) {
+void pdList(const char* /*arg*/) {
     TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
     uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
 
@@ -235,13 +238,13 @@ void pdList(const char* arg) {
         if (i > 0) buf[pos++] = ',';
 
         if (caps[i].is_pps) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:PPS/%u-%u/%u",
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:PPS/%lu-%lu/%lu",
                            i, caps[i].min_voltage_mv, caps[i].voltage_mv, caps[i].max_current_ma);
         } else if (caps[i].is_avs) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:AVS/%u-%u/%u",
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:AVS/%lu-%lu/%lu",
                            i, caps[i].min_voltage_mv, caps[i].voltage_mv, caps[i].max_current_ma);
         } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:%u/%u",
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:%lu/%lu",
                            i, caps[i].voltage_mv, caps[i].max_current_ma);
         }
     }
@@ -249,7 +252,7 @@ void pdList(const char* arg) {
     Cli::respond(buf);
 }
 
-void pdActive(const char* arg) {
+void pdActive(const char* /*arg*/) {
     const ActiveContract& c = pdManager.getActiveContract();
     if (!c.valid) {
         Cli::respond("NONE");
@@ -261,11 +264,11 @@ void pdActive(const char* arg) {
     else if (c.is_avs) type = "AVS";
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "%u,%u,%s", c.voltage_mv, c.current_ma, type);
+    snprintf(buf, sizeof(buf), "%lu,%lu,%s", c.voltage_mv, c.current_ma, type);
     Cli::respond(buf);
 }
 
-void pdRev(const char* arg) {
+void pdRev(const char* /*arg*/) {
     const char* rev = pdManager.getPdRevision();
     Cli::respond(rev && rev[0] ? rev : "NONE");
 }
@@ -379,7 +382,7 @@ void currLim(const char* arg) {
     if (!arg) {
         // Query
         char buf[16];
-        snprintf(buf, sizeof(buf), "%u", settings.getCurrentLimit());
+        snprintf(buf, sizeof(buf), "%lu", settings.getCurrentLimit());
         Cli::respond(buf);
         return;
     }
@@ -410,7 +413,7 @@ void currLim(const char* arg) {
 // TPS26750 diagnostics / config test
 // -------------------------------------------------------------------------
 
-void tpsMode(const char* arg) {
+void tpsMode(const char* /*arg*/) {
     char mode[5] = {0};
     if (hw.pdController.getMode(mode)) {
         Cli::respond(mode);  // "APP ", "PTCH", "BOOT", ...
@@ -419,7 +422,7 @@ void tpsMode(const char* arg) {
     }
 }
 
-void tpsGarbage(const char* arg) {
+void tpsGarbage(const char* /*arg*/) {
     // Blank the EEPROM so the TPS rejects it and boots into PTCH on next power
     // cycle, letting the RP2040 boot-time patch push take over.
     //
@@ -533,12 +536,12 @@ void settDim(const char* arg) {
     Cli::respond("OK");
 }
 
-void settSave(const char* arg) {
+void settSave(const char* /*arg*/) {
     settings.saveToFlash();
     Cli::respond("OK");
 }
 
-void settReset(const char* arg) {
+void settReset(const char* /*arg*/) {
     settings.resetToDefaults();
     settings.saveToFlash();
     Cli::respond("OK");

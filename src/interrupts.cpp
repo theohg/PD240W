@@ -31,7 +31,7 @@ constexpr uint64_t BTN_DEBOUNCE_US = 15000;
 //
 // IMPORTANT: The alert pin goes low when the switch is disabled (no current flow).
 // We must only trigger overcurrent if the switch was supposed to be ON.
-static void isrOvercurrent(uint gpio, uint32_t events) {
+static void isrOvercurrent(uint /*gpio*/, uint32_t /*events*/) {
     // Only trigger if switch is currently enabled (or was just enabled)
     // Reading GPIO directly is safe in ISR
     if (gpio_get(Board::PIN_SWITCH_EN)) {
@@ -43,7 +43,7 @@ static void isrOvercurrent(uint gpio, uint32_t events) {
 
 // USB-PD interrupt handler (TPS26750 INT pin)
 // Just sets flag - I2C read happens in main loop
-static void isrUsbPd(uint gpio, uint32_t events) {
+static void isrUsbPd(uint /*gpio*/, uint32_t /*events*/) {
     pdInterruptPending = true;
 }
 

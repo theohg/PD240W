@@ -55,7 +55,8 @@ struct UserSettings {
     // Saved startup-contract hint (PDO indices are charger-specific, so this is only a hint)
     int8_t last_pdo_index;
 
-    // Output states (for restoration after power cycle - future use)
+    // Output states (unused: accessors were removed as dead code). Retained only
+    // to keep the flash layout stable; delete on the next SETTINGS_VERSION bump.
     bool load_switch_enabled;
     bool buck_17v_enabled;
 
@@ -112,8 +113,6 @@ public:
     // Modify settings
     void setCurrentLimit(uint32_t limit_ma);
     void setLastPdoIndex(int8_t index);
-    void setLoadSwitchEnabled(bool enabled);
-    void setBuck17vEnabled(bool enabled);
     void setLcdBrightness(uint8_t brightness);
     void setSoundsEnabled(bool enabled);
     void setAutoPpsEnabled(bool enabled);
@@ -132,8 +131,6 @@ public:
     // Accessors
     uint32_t getCurrentLimit() const { return _settings.current_limit_ma; }
     int8_t getLastPdoIndex() const { return _settings.last_pdo_index; }
-    bool isLoadSwitchEnabled() const { return _settings.load_switch_enabled; }
-    bool isBuck17vEnabled() const { return _settings.buck_17v_enabled; }
     uint8_t getLcdBrightness() const { return _settings.lcd_brightness; }
     bool isSoundsEnabled() const { return _settings.sounds_enabled; }
     bool isAutoPpsEnabled() const { return _settings.auto_pps_enabled; }

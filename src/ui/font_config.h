@@ -7,16 +7,16 @@
 // screen text sizes from a single location.
 //
 // To regenerate fonts at a different size, run from the tools/ directory:
-//   /Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
-//       fonts/Inter-Bold.ttf 28 ../src/drivers/display/font_inter_28b.h \
+//   python generate_font.py
+//       fonts/Inter-Bold.ttf 28 ../src/drivers/display/font_inter_28b.h
 //       --chars digits --name font_inter_28b
 //
-//   /Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
-//       fonts/Inter-SemiBold.ttf 20 ../src/drivers/display/font_inter_20sb.h \
+//   python generate_font.py
+//       fonts/Inter-SemiBold.ttf 20 ../src/drivers/display/font_inter_20sb.h
 //       --name font_inter_20sb
 //
-//   /Users/theoh/anaconda3/envs/IAPR/bin/python generate_font.py \
-//       fonts/Inter-Regular.ttf 14 ../src/drivers/display/font_inter_14.h \
+//   python generate_font.py
+//       fonts/Inter-Regular.ttf 14 ../src/drivers/display/font_inter_14.h
 //       --name font_inter_14
 // ============================================================================
 

@@ -45,12 +45,19 @@ bool ST7789::init() {
     gpio_init(_pinDC);  gpio_set_dir(_pinDC, GPIO_OUT);  gpio_put(_pinDC, 1);
     gpio_init(_pinRST); gpio_set_dir(_pinRST, GPIO_OUT); gpio_put(_pinRST, 1);
     
-    // Initialize backlight with PWM for brightness control
+    // Initialize backlight with PWM for brightness control.
+    // Use a local for the slice (kept in the [0,7] range GCC can see from
+    // pwm_gpio_to_slice_num) rather than reloading the member, which would
+    // trip a -Warray-bounds false positive on the SDK's pwm slice[] access.
     gpio_set_function(_pinBL, GPIO_FUNC_PWM);
-    _pwm_slice = pwm_gpio_to_slice_num(_pinBL);
-    pwm_set_wrap(_pwm_slice, 255);  // 8-bit resolution
+    // Mask to the valid slice range (RP2040 has 8 PWM slices, 0-7). This is a
+    // no-op for real values but makes the [0,7] range visible to GCC, avoiding a
+    // -Warray-bounds false positive on the SDK's slice[] access in pwm_set_wrap.
+    uint pwm_slice = pwm_gpio_to_slice_num(_pinBL) & 7u;
+    _pwm_slice = pwm_slice;
+    pwm_set_wrap(pwm_slice, 255);  // 8-bit resolution
     pwm_set_gpio_level(_pinBL, 0);  // Start OFF to hide ghost image
-    pwm_set_enabled(_pwm_slice, true);
+    pwm_set_enabled(pwm_slice, true);
 
     // 1. Hardware Reset Sequence (LCD.pdf Page 19 recommends ~100ms+ delays)
     gpio_put(_pinRST, 1); sleep_ms(100);
@@ -280,14 +287,6 @@ void ST7789::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c
     }
 }
 
-void ST7789::drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
-    // Draw four lines to form rectangle outline
-    drawLine(x, y, x + w - 1, y, color);         // Top
-    drawLine(x + w - 1, y, x + w - 1, y + h - 1, color); // Right
-    drawLine(x + w - 1, y + h - 1, x, y + h - 1, color); // Bottom
-    drawLine(x, y + h - 1, x, y, color);         // Left
-}
-
 void ST7789::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
     // Bounds checking and clipping
     if (x >= WIDTH || y >= HEIGHT) return;
@@ -393,17 +392,6 @@ void ST7789::fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r
     // Fill top and bottom strips between corners
     fillRect(x + r, y, w - 2 * r, r, color);
     fillRect(x + r, y + h - r, w - 2 * r, r, color);
-}
-
-void ST7789::fillGradientRect(int16_t x, int16_t y, int16_t w, int16_t h,
-                              uint16_t start_color, uint16_t end_color) {
-    // Route directly to the updated columns function with 0 radius
-    fillRoundRectGradientColumns(x, y, w, h, 0, 0, w, start_color, end_color);
-}
-
-void ST7789::fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
-                                   uint16_t start_color, uint16_t end_color) {
-    fillRoundRectGradientColumns(x, y, w, h, r, 0, w, start_color, end_color);
 }
 
 void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
@@ -587,25 +575,6 @@ void ST7789::drawString(int16_t x, int16_t y, const char* str, uint16_t color, u
         }
         str++;
     }
-}
-
-// ===== Number rendering =====
-
-void ST7789::drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size) {
-    char buffer[12]; // Enough for INT_MIN
-    snprintf(buffer, sizeof(buffer), "%d", value);
-    drawString(x, y, buffer, color, bg, size);
-}
-
-void ST7789::drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size) {
-    char buffer[20];
-    char format[8];
-
-    // Create format string like "%.2f" based on decimals parameter
-    snprintf(format, sizeof(format), "%%.%df", decimals);
-    snprintf(buffer, sizeof(buffer), format, value);
-
-    drawString(x, y, buffer, color, bg, size);
 }
 
 // ===== Anti-aliased text rendering =====

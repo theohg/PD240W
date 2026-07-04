@@ -63,8 +63,11 @@ static void eeprom_i2c_deinit() {
 
 /**
  * @brief Scan I2C bus and print found devices (for debugging)
+ *
+ * Kept as a bench tool: not called in normal flows, so [[maybe_unused]] keeps
+ * it compiled and warning-free until someone wires it into a debug path.
  */
-static void eeprom_i2c_scan() {
+[[maybe_unused]] static void eeprom_i2c_scan() {
     LOG_INFO("[EEPROM] Scanning I2C1 bus...");
     int found = 0;
     for (uint8_t addr = 0x08; addr < 0x78; addr++) {

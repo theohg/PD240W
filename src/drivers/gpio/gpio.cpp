@@ -31,10 +31,6 @@ bool SimpleIO::read() const {
     return gpio_get(pin);
 }
 
-bool SimpleIO::get() const {
-    return read();  // Alias for consistency with some APIs
-}
-
 // Non-blocking blink implementation
 void SimpleIO::startBlink(uint32_t interval_ms, uint32_t duration_ms) {
     if (is_input) return;  // Only works for outputs

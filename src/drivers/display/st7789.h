@@ -40,14 +40,9 @@ public:
 
     // Shapes
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
-    void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
     void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
     void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color);
-    void fillGradientRect(int16_t x, int16_t y, int16_t w, int16_t h,
-                          uint16_t start_color, uint16_t end_color);
-    void fillRoundRectGradient(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
-                               uint16_t start_color, uint16_t end_color);
     void fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r,
                                       int16_t start_column, int16_t end_column,
                                       uint16_t start_color, uint16_t end_color);
@@ -55,9 +50,6 @@ public:
     // Text rendering
     void drawChar(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, uint8_t size = 1);
     void drawString(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg, uint8_t size = 1);
-    // Number rendering with formatting
-    void drawInt(int16_t x, int16_t y, int value, uint16_t color, uint16_t bg, uint8_t size = 1);
-    void drawFloat(int16_t x, int16_t y, float value, uint8_t decimals, uint16_t color, uint16_t bg, uint8_t size = 1);
 
     // Anti-aliased text rendering (4-bit alpha blended)
     void drawCharAA(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg, const AAFont* font);

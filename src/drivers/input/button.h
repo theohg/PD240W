@@ -14,7 +14,6 @@ class Button {
     bool active_low;
     // State tracking for debounce
     bool last_steady_state;             // The last stable state (pressed/not pressed)
-    bool last_flickerable_state;        // The raw state from the previous read
     absolute_time_t last_debounce_time; // Timestamp of the last state change
     // State tracking for edge detection (each button needs its own)
     bool was_pressed_for_click;         // Previous state for isClicked() edge detection

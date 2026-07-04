@@ -25,7 +25,6 @@ Button::Button(uint p, ButtonPull pull_config, uint32_t debounce_ms, bool active
     bool logic_state = active_low ? !initial_read : initial_read;
 
     last_steady_state = logic_state;
-    last_flickerable_state = logic_state;
     last_debounce_time = get_absolute_time();
     was_pressed_for_click = false;  // Initialize click detection state
 }

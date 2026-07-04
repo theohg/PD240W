@@ -13,10 +13,10 @@ Hardware::Hardware() :
     overcurrentAlert(Board::PIN_SWITCH_EN_READ, IOMode::INPUT),
     pdInterrupt(Board::PIN_USB_PD_IRQ, IOMode::INPUT),
     encoder(Board::PIN_ENC_A, Board::PIN_ENC_B),
-    EN_17V(Board::PIN_17V_EN, IOMode::OUTPUT),
-    loadSwitch(Board::PIN_SWITCH_EN, IOMode::OUTPUT),
     buzzer(Board::PIN_BUZZER),
     rgbLed(Board::PIN_RGB_LED, pio0, Board::LED_IS_RGBW),
+    EN_17V(Board::PIN_17V_EN, IOMode::OUTPUT),
+    loadSwitch(Board::PIN_SWITCH_EN, IOMode::OUTPUT),
     pdController(i2c0, Board::I2C_ADDR_TPS26750),
     powerMonitor(i2c0, Board::I2C_ADDR_INA228, Board::INA228_SHUNT_RESISTOR, Board::INA228_MEASUREMENT_MAX_CURRENT, Board::INA228_SHUNT_TEMPCO_PPM),
     display(spi0, Board::PIN_LCD_CS, Board::PIN_LCD_DC, Board::PIN_LCD_RST, Board::PIN_LCD_BL)

@@ -24,7 +24,6 @@ static constexpr int SCREEN_HEIGHT = AppConfig::LCD_HEIGHT;
 
 // Layout constants
 static constexpr int HEADER_HEIGHT = 40;
-static constexpr int STATUS_BAR_HEIGHT = 20;
 static constexpr int CONTENT_Y_START = HEADER_HEIGHT + 5;
 static constexpr int MENU_ITEM_HEIGHT = 25;
 static constexpr int MARGIN = 10;
@@ -161,10 +160,15 @@ void updateProgressBarFill(int x, int y, int width, int height,
 // ============================================================================
 
 DisplayManager::DisplayManager()
+    // NOTE: keep this list in member-declaration order (see display_manager.h)
+    // so -Wreorder stays clean.
     : _needs_full_redraw(true)
+    , _backlight_on(false)
     , _last_rendered_state(AppState::BOOT)
-    , _pdo_list(nullptr)
-    , _pdo_count(0)
+    , _last_pps_state(-1)
+    , _last_pd_revision_drawn(false)
+    , _last_pd_revision{0}
+    , _last_epr_badge_drawn(false)
     , _last_menu_selection(-1)
     , _last_settings_selection(-1)
     , _last_pdo_selection(-1)
@@ -176,14 +180,9 @@ DisplayManager::DisplayManager()
     , _last_pps_percent(255)
     , _last_avs_voltage(0)
     , _last_avs_percent(255)
-    , _last_pps_state(-1)
-    , _last_pd_revision_drawn(false)
-    , _last_pd_revision{0}
-    , _last_epr_badge_drawn(false)
     , _last_brightness_value(255)
     , _last_boot_message(nullptr)
     , _last_boot_progress(255)
-    , _backlight_on(false)
     , _last_auto_pps(false)
     , _last_auto_avs(false)
     , _last_auto_output(false)
@@ -193,6 +192,8 @@ DisplayManager::DisplayManager()
     , _last_brightness_adjusting(false)
     , _last_dim_adjusting(false)
     , _last_melody_adjusting(false)
+    , _last_contract_mode(255)
+    , _last_contract_mode_adjusting(false)
     , _last_pps_converged(false)
     , _last_avs_converged(false)
     , _last_pps_tuning_active(false)
@@ -309,11 +310,6 @@ void DisplayManager::render() {
 void DisplayManager::invalidate() {
     _needs_full_redraw = true;
     _last_pdo_scroll_idx = -1;  // Reset scroll position on invalidate
-}
-
-void DisplayManager::setPdoList(const TPS26750_SourceCapability* pdos, uint8_t count) {
-    _pdo_list = pdos;
-    _pdo_count = count;
 }
 
 // ============================================================================
@@ -1088,7 +1084,6 @@ void DisplayManager::drawOutputStatus() {
     if (_needs_full_redraw) {
         hw.display.drawStringAA(MARGIN, y + 2, "Load Switch:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
         hw.display.drawStringAA(MARGIN, y + 22, "17V Buck:", UIColors::TEXT_SECONDARY, UIColors::BACKGROUND, FONT_SMALL);
-        // hw.display.drawStringAA(MARGIN, SCREEN_HEIGHT - 20, "Click: Menu", UIColors::MUTED, UIColors::BACKGROUND, FONT_SMALL);
         // Force badge redraw
         _last_load_on = !load_on;
         _last_buck_on = !buck_on;
@@ -2276,17 +2271,6 @@ void DisplayManager::drawFaultLiveTemperature() {
 
 void DisplayManager::clearScreen() {
     hw.display.fillScreen(UIColors::BACKGROUND);
-}
-
-void DisplayManager::drawCenteredString(int y, const char* text, uint16_t color, uint8_t size) {
-    // Calculate approximate width (6 pixels per char at size 1)
-    int char_width = 6 * size;
-    int text_width = strlen(text) * char_width;
-    int x = (SCREEN_WIDTH - text_width) / 2;
-
-    if (x < 0) x = 0;
-
-    hw.display.drawString(x, y, text, color, UIColors::BACKGROUND, size);
 }
 
 void DisplayManager::drawCenteredStringAA(int y, const char* text, uint16_t color, const AAFont* font) {

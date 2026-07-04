@@ -266,6 +266,15 @@ private:
     // Startup restore coordination
     bool _startup_restore_waiting_for_epr;
 
+    // Non-blocking timer state for update()/waitForPdos(). Member variables (not
+    // function-local statics) so they reset on warm boot and waitForPdos() is
+    // re-entrant across unplug/replug discovery cycles.
+    absolute_time_t _next_pdo_retry;
+    absolute_time_t _next_pps_convergence_check;
+    absolute_time_t _next_avs_convergence_check;
+    absolute_time_t _next_contract_refresh;
+    absolute_time_t _wait_pdos_start;
+
     // EPR safe exit: 3-step sequence to avoid hard reset when exiting EPR to SPR
     // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
     // Step 2 (REQUESTING_5V): Request 5V Fixed — cleanly exits EPR mode (no voltage rise)

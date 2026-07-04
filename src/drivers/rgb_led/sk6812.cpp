@@ -22,8 +22,9 @@ bool SK6812::init() {
     }
     _offset = pio_add_program(_pio, &sk6812_program);
 
-    // 2. Claim a free state machine (safest way)
-    _sm = pio_claim_unused_sm(_pio, true);
+    // 2. Claim a free state machine. Pass required=false so a full PIO returns
+    //    -1 and we fail gracefully here, instead of panicking inside the SDK.
+    _sm = pio_claim_unused_sm(_pio, false);
     if (_sm == -1) return false; // No SM available
 
     // 3. Configure via the helper generated in the .pio.h file
@@ -52,32 +53,6 @@ void SK6812::_write(uint8_t r, uint8_t g, uint8_t b) {
 
     pio_sm_put_blocking(_pio, _sm, data);
 }
-
-// void SK6812::setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
-//     uint32_t data;
-
-//     // SK6812/WS2812 usually expect GRB data order
-//     if (_is_rgbw) {
-//         // For RGBW, we usually send: Green, Red, Blue, White (32 bits)
-//         // Adjust this order if your specific LED is different (e.g. WRGB)
-//         data = ((uint32_t)g << 24) | 
-//                ((uint32_t)r << 16) | 
-//                ((uint32_t)b << 8)  | 
-//                ((uint32_t)w);
-//     } else {
-//         // For RGB, we send 24 bits: Green, Red, Blue
-//         // But the PIO shifts Left (MSB first). 
-//         // We must shift our 24-bit data to the top 8 bits of the 32-bit FIFO word.
-//         uint32_t grb = ((uint32_t)g << 16) | 
-//                        ((uint32_t)r << 8)  | 
-//                        ((uint32_t)b);
-                       
-//         data = grb << 8;
-//     }
-
-//     // Write to the FIFO
-//     pio_sm_put_blocking(_pio, _sm, data);
-// }
 
 void SK6812::setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
     // 1. Store the "Target" color

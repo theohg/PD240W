@@ -43,9 +43,6 @@ public:
     // Force full redraw on next render
     void invalidate();
 
-    // Set PDO list for rendering (called by state machine)
-    void setPdoList(const TPS26750_SourceCapability* pdos, uint8_t count);
-
 private:
     // Render flags
     bool _needs_full_redraw;
@@ -55,10 +52,6 @@ private:
     bool _last_pd_revision_drawn;  // True if PD revision badge was drawn
     char _last_pd_revision[8];     // Last drawn PD revision string
     bool _last_epr_badge_drawn;    // True if EPR badge was drawn
-
-    // PDO list reference
-    const TPS26750_SourceCapability* _pdo_list;
-    uint8_t _pdo_count;
 
     // Screen renderers
     void renderBootScreen();
@@ -110,7 +103,6 @@ private:
 
     // Helper functions
     void clearScreen();
-    void drawCenteredString(int y, const char* text, uint16_t color, uint8_t size);
     void drawCenteredStringAA(int y, const char* text, uint16_t color, const AAFont* font);
 
     // Tracking for flicker reduction (skip redraw when unchanged)

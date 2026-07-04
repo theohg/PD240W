@@ -20,8 +20,7 @@ static constexpr float TEMP_HYSTERESIS_C = 2.0f;
 // ============================================================================
 
 Safety::Safety()
-    : _current_limit_a(5.0f)
-    , _last_temp_check(nil_time)
+    : _last_temp_check(nil_time)
     , _last_voltage_check(nil_time)
     , _temp_caution_active(false)
     , _temp_warning_active(false)
@@ -38,7 +37,6 @@ Safety::Safety()
     _state.pd_connected = false;
     _state.current_a = 0.0f;
     _state.current_overflow = false;
-    _state.overcurrent_latched = false;
     _state.power_w = 0.0f;
 }
 
@@ -299,24 +297,4 @@ bool Safety::isOvertemperatureWarning() const {
 
 bool Safety::isPdConnected() const {
     return _state.pd_connected;
-}
-
-bool Safety::isOvercurrentLatched() const {
-    return _state.overcurrent_latched;
-}
-
-// ============================================================================
-// Control
-// ============================================================================
-
-void Safety::clearOvercurrentLatch() {
-    // Clear INA228 alert latch by reading DIAG_ALRT register
-    hw.powerMonitor.getDiagnoseAlert();
-    _state.overcurrent_latched = false;
-    LOG_INFO("Overcurrent latch cleared");
-}
-
-void Safety::setCurrentLimit(float limit_a) {
-    _current_limit_a = limit_a;
-    LOG_DEBUG("Current limit set to %.2fA", limit_a);
 }

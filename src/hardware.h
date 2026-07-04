@@ -15,9 +15,15 @@
 
 struct Hardware {
     // Inputs
+    // btn1/btn2 are not polled as Button objects (BTN1/BTN2 run through the
+    // ISR-flag path in interrupts.cpp). They are retained because their
+    // constructors perform the load-bearing GPIO init (gpio_init + input dir +
+    // pull config) for the BTN1/BTN2 pads; interrupts::init() only enables the
+    // IRQ and does not configure the pads. Fully removing them means migrating
+    // that pad init — deferred to the P3.4 button-architecture unification.
     Button btn1;
     Button btn2;
-    Button btnEnc;
+    Button btnEnc;  // Polled via isPressed() for encoder long-press
     SimpleIO overcurrentAlert;  // INA228 ALERT pin (active low)
     SimpleIO pdInterrupt;       // TPS26750 INT pin (active low)
     RotaryEncoder encoder;

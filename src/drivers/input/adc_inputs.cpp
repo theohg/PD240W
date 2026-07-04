@@ -31,10 +31,6 @@ uint16_t ADCInputs::readADCRaw(uint8_t channel) const {
     return sum / AVERAGING_SAMPLES;
 }
 
-uint16_t ADCInputs::readADC(uint8_t channel) const {
-    return readADCRaw(channel);
-}
-
 float ADCInputs::readVoltage(uint8_t channel) const {
     uint16_t adc_raw = readADCRaw(channel);
 

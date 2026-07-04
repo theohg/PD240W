@@ -151,13 +151,13 @@ void Settings::init() {
 
     SavedStartupContractType saved_type = getLastContractType();
     if (saved_type == SavedStartupContractType::NONE) {
-        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=none",
+        LOG_INFO("Settings initialized: current_limit=%lumA, saved_startup=none",
                  _settings.current_limit_ma);
         return;
     }
 
     if (getLastContractMinVoltageMv() > 0 || getLastContractMaxVoltageMv() > 0) {
-        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=%s target=%umV range=%u-%umV hint_pdo=%d",
+        LOG_INFO("Settings initialized: current_limit=%lumA, saved_startup=%s target=%lumV range=%lu-%lumV hint_pdo=%d",
                  _settings.current_limit_ma,
                  savedStartupContractTypeName(saved_type),
                  getLastRequestedVoltageMv(),
@@ -165,7 +165,7 @@ void Settings::init() {
                  getLastContractMaxVoltageMv(),
                  _settings.last_pdo_index);
     } else {
-        LOG_INFO("Settings initialized: current_limit=%umA, saved_startup=%s target=%umV hint_pdo=%d",
+        LOG_INFO("Settings initialized: current_limit=%lumA, saved_startup=%s target=%lumV hint_pdo=%d",
                  _settings.current_limit_ma,
                  savedStartupContractTypeName(saved_type),
                  getLastRequestedVoltageMv(),
@@ -189,27 +189,13 @@ void Settings::setCurrentLimit(uint32_t limit_ma) {
     if (_settings.current_limit_ma != limit_ma) {
         _settings.current_limit_ma = limit_ma;
         _dirty = true;
-        LOG_DEBUG("Current limit changed to %u mA", limit_ma);
+        LOG_DEBUG("Current limit changed to %lu mA", limit_ma);
     }
 }
 
 void Settings::setLastPdoIndex(int8_t index) {
     if (_settings.last_pdo_index != index) {
         _settings.last_pdo_index = index;
-        _dirty = true;
-    }
-}
-
-void Settings::setLoadSwitchEnabled(bool enabled) {
-    if (_settings.load_switch_enabled != enabled) {
-        _settings.load_switch_enabled = enabled;
-        _dirty = true;
-    }
-}
-
-void Settings::setBuck17vEnabled(bool enabled) {
-    if (_settings.buck_17v_enabled != enabled) {
-        _settings.buck_17v_enabled = enabled;
         _dirty = true;
     }
 }
@@ -357,16 +343,32 @@ bool Settings::saveToFlash() {
     memset(buffer, 0xFF, sizeof(buffer));  // Fill with 0xFF (erased state)
     memcpy(buffer, &_settings, sizeof(_settings));
     
-    // Disable interrupts during flash operations
+    // Disable interrupts during flash operations.
+    //
+    // ACCEPTED OVERCURRENT-LATENCY BOUND: the 4 KB sector erase + page program
+    // runs from RAM with XIP paused and ALL interrupts masked (on the order of
+    // tens of milliseconds). During that window the overcurrent ISR
+    // (interrupts.cpp isrOvercurrent) cannot run, so if the INA228 ALERT asserts
+    // mid-write the load switch stays ON until the write completes. This is a
+    // deliberate, bounded tradeoff rather than a bug:
+    //   - The ALERT edge is not lost: the RP2040 GPIO controller latches the
+    //     pending IRQ, so the ISR fires (and cuts power) the instant interrupts
+    //     are restored below. Worst-case software cut latency == this flash op.
+    //   - The TPS26750's own hardware overcurrent/OVP protection is the backstop
+    //     that covers this window independently of the RP2040.
+    //   - Saves are debounced (SETTINGS_SAVE_DEBOUNCE_MS), so this window is
+    //     entered at most once per burst of settings changes, not per change.
+    // If this bound ever becomes unacceptable, defer the save while the output is
+    // enabled and drawing significant current (see CODE_REVIEW.md P2.3 option b).
     uint32_t interrupts = save_and_disable_interrupts();
-    
+
     // Erase the sector (4KB)
     flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
-    
+
     // Write the settings (256 bytes minimum)
     flash_range_program(FLASH_TARGET_OFFSET, buffer, FLASH_PAGE_SIZE);
-    
-    // Restore interrupts
+
+    // Restore interrupts (fires any overcurrent IRQ latched during the write)
     restore_interrupts(interrupts);
     
     _dirty = false;
@@ -379,7 +381,7 @@ bool Settings::loadFromFlash() {
     
     // Validate magic number
     if (flash_settings->magic != SETTINGS_MAGIC) {
-        LOG_DEBUG("Settings: Invalid magic (0x%08X), using defaults", flash_settings->magic);
+        LOG_DEBUG("Settings: Invalid magic (0x%08lX), using defaults", flash_settings->magic);
         return false;
     }
     

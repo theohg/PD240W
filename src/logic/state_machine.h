@@ -173,7 +173,6 @@ private:
     // Adjust state
     AdjustMode _adjust_mode;
     uint32_t _current_limit_ma;
-    uint32_t _adjust_original_value;    // For cancellation
 
     // Non-blocking EPR probe (replaces a blocking sleep_ms after probeEpr() in the
     // menu). When the user opens "Select Voltage" / "About Charger" we send the

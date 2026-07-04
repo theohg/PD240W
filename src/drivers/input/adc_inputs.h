@@ -20,9 +20,6 @@ public:
     // Initialization
     bool init();
 
-    // Raw ADC reading (12-bit: 0-4095)
-    uint16_t readADC(uint8_t channel) const;
-
     // Generic voltage reading with ADC reference scaling
     float readVoltage(uint8_t channel) const;
 
