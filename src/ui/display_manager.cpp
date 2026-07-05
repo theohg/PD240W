@@ -309,8 +309,17 @@ void DisplayManager::render() {
 
     _needs_full_redraw = false;
 
-    // Turn on backlight after first frame is fully rendered (prevents ghost image)
-    // Use saved brightness level from settings
+    // Backlight ownership split (intentional, single owner per concern):
+    //   - DisplayManager owns exactly ONE backlight action: the first-frame "reveal".
+    //     The panel boots dark (st7789.cpp) so stale VRAM isn't shown as a ghost image;
+    //     this one-shot turns it on only after the first full frame has painted. This
+    //     lives here, not in the state machine, because it is a render-timing event.
+    //   - StateMachine owns every backlight change thereafter (auto-dim/undim, live
+    //     brightness edits). It is the sole caller of setBacklightBrightness() outside
+    //     this reveal, so ongoing brightness never has two owners.
+    // The reveal uses the same saved brightness the state machine treats as "normal",
+    // so the two paths agree. (Auto-dim can't have fired yet on the first frame — it
+    // needs minutes of inactivity — so there is no dim state to clobber here.)
     if (!_backlight_on) {
         hw.display.setBacklightBrightness(settings.getLcdBrightness());
         _backlight_on = true;

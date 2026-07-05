@@ -4,6 +4,7 @@
 #include "pico/stdlib.h"
 #include "config/app_config.h"
 #include "tps26750.h"
+#include "logic/pd_diagnostics.h"  // DetectedCableRating + pure PD domain logic (P4-testable)
 
 // ============================================================================
 // USB Power Delivery Manager
@@ -34,12 +35,8 @@ struct ActiveContract {
     uint32_t programmable_max_mv;  // Active APDO range max voltage
 };
 
-enum class DetectedCableRating : uint8_t {
-    EPR_CAPABLE,           ///< Source exposes an EPR rail (>21 V), implying an EPR-capable cable.
-    CAPABLE_5A,            ///< A trustworthy >3 A contract confirms a 5 A cable.
-    STANDARD_3A,           ///< Source is capped at 60 W with no trustworthy >3 A path, so a 3 A cable is likely.
-    UNKNOWN_CHARGER_LIMIT, ///< Source tops out below 60 W, so the cable rating is not observable.
-};
+// DetectedCableRating now lives in logic/pd_diagnostics.h (included above) so the
+// inference logic that produces it is host-testable alongside the enum.
 
 struct ChargerDiagInfo {
     const char* pd_revision;        // Example: "PD3.2", or "N/A" when unknown

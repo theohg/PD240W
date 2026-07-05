@@ -1,0 +1,305 @@
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>  // abs()
+#include "tps26750.h"
+#include "config/app_config.h"
+#include "utils/pd_voltage.h"
+#include "logic/settings.h"  // SavedStartupContractType
+
+// ============================================================================
+// PD Diagnostics — pure USB-PD domain logic
+// ============================================================================
+// This header holds the trickiest, purely-computational USB-PD logic that used
+// to live in pd_manager.cpp's anonymous namespace: startup-contract matching,
+// charger-identity decoding, and cable-rating inference.
+//
+// Nothing here touches hardware, globals, or the `settings`/`hw` singletons — every
+// function takes its inputs explicitly and returns a value. That makes it directly
+// includable and exercisable from a host unit-test build (see notes/UNIT_TEST.md,
+// P4) without the Pico SDK or any mock HAL. `PdManager` re-exports these into its
+// own translation unit with `using namespace PdDiagnostics;`, so its call sites are
+// unchanged.
+// ============================================================================
+
+/// @brief Inferred cable current/voltage rating, deduced from the source's advertised PDOs.
+/// Defined at namespace scope (not inside PdDiagnostics) because it is part of the
+/// public `ChargerDiagInfo` surface consumed by the UI.
+enum class DetectedCableRating : uint8_t {
+    EPR_CAPABLE,           ///< Source exposes an EPR rail (>21 V), implying an EPR-capable cable.
+    CAPABLE_5A,            ///< A trustworthy >3 A contract confirms a 5 A cable.
+    STANDARD_3A,           ///< Source is capped at 60 W with no trustworthy >3 A path, so a 3 A cable is likely.
+    UNKNOWN_CHARGER_LIMIT, ///< Source tops out below 60 W, so the cable rating is not observable.
+};
+
+namespace PdDiagnostics {
+
+// USB Vendor IDs of chargers we can name from the manufacturer-info VDO.
+constexpr uint16_t USB_VID_FRAMEWORK = 0x32AC;
+constexpr uint16_t USB_VID_ANKER     = 0x291A;
+constexpr uint16_t USB_VID_APPLE     = 0x05AC;
+constexpr uint16_t USB_VID_SAMSUNG   = 0x04E8;
+constexpr uint16_t USB_VID_LENOVO    = 0x17EF;
+
+/// @brief Power in whole watts from a mV × mA product (integer, truncated).
+inline uint32_t powerWatts(uint32_t voltage_mv, uint32_t current_ma) {
+    return (voltage_mv * current_ma) / 1000000UL;
+}
+
+/// @brief Copy @p src into @p dest with truncation and guaranteed null-termination.
+/// Uses snprintf to sidestep the -Wstringop-truncation false positive that the
+/// strncpy + manual terminator idiom trips in optimized builds.
+inline void copyStringTruncated(char* dest, size_t dest_len, const char* src) {
+    if (!dest || dest_len == 0) {
+        return;
+    }
+
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+
+    snprintf(dest, dest_len, "%s", src);
+}
+
+/// @brief Human-readable brand name for a known USB vendor ID, or "Unknown".
+inline const char* getVendorBrandName(uint16_t vid) {
+    switch (vid) {
+        case USB_VID_FRAMEWORK: return "Framework";
+        case USB_VID_ANKER: return "Anker";
+        case USB_VID_APPLE: return "Apple";
+        case USB_VID_SAMSUNG: return "Samsung";
+        case USB_VID_LENOVO: return "Lenovo";
+        default: return "Unknown";
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Startup-contract restore matching
+// ----------------------------------------------------------------------------
+
+/// @brief Snapshot of the last-negotiated contract persisted to flash, used to
+/// re-select the closest PDO on the next boot.
+struct SavedStartupContractSnapshot {
+    SavedStartupContractType type;
+    int8_t pdo_index_hint;
+    uint32_t requested_voltage_mv;
+    uint32_t range_min_voltage_mv;
+    uint32_t range_max_voltage_mv;
+};
+
+/// @brief Result of scanning the advertised PDOs for the best startup-restore match.
+struct StartupMatchResult {
+    bool valid;
+    int8_t pdo_index;
+    uint32_t requested_voltage_mv;
+    uint32_t diff_mv;
+};
+
+/// @brief True when a PDO's contract type matches the saved contract type.
+/// UNKNOWN (legacy saves) matches anything; NONE matches nothing.
+inline bool sourceCapabilityMatchesSavedType(const TPS26750_SourceCapability& pdo,
+                                             SavedStartupContractType type) {
+    switch (type) {
+        case SavedStartupContractType::FIXED:
+            return !pdo.is_pps && !pdo.is_avs;
+        case SavedStartupContractType::PPS:
+            return pdo.is_pps;
+        case SavedStartupContractType::AVS:
+            return pdo.is_avs;
+        case SavedStartupContractType::UNKNOWN:
+            return true;
+        case SavedStartupContractType::NONE:
+            return false;
+    }
+
+    return false;
+}
+
+/// @brief Find the advertised PDO closest to @p target_voltage_mv for startup restore.
+/// For programmable PDOs the candidate voltage is clamped into range and step-aligned
+/// before comparison. When @p same_type_only is set, only PDOs matching the saved
+/// contract type are considered.
+inline StartupMatchResult findBestStartupMatch(const SavedStartupContractSnapshot& snapshot,
+                                               const TPS26750_SourceCapability* pdos,
+                                               uint8_t count,
+                                               uint32_t target_voltage_mv,
+                                               bool same_type_only) {
+    StartupMatchResult best{false, -1, 0, UINT32_MAX};
+
+    for (uint8_t i = 0; i < count; i++) {
+        const TPS26750_SourceCapability& candidate = pdos[i];
+        if (same_type_only && !sourceCapabilityMatchesSavedType(candidate, snapshot.type)) {
+            continue;
+        }
+
+        uint32_t candidate_requested_mv = candidate.voltage_mv;
+        uint32_t diff_mv = UINT32_MAX;
+
+        if (candidate.is_pps) {
+            candidate_requested_mv = target_voltage_mv;
+            if (candidate_requested_mv < candidate.min_voltage_mv) candidate_requested_mv = candidate.min_voltage_mv;
+            if (candidate_requested_mv > candidate.voltage_mv) candidate_requested_mv = candidate.voltage_mv;
+            candidate_requested_mv = PdVoltage::alignDown(candidate_requested_mv,
+                                                          AppConfig::PPS_VOLTAGE_STEP_MV);
+            diff_mv = static_cast<uint32_t>(abs(static_cast<int32_t>(candidate_requested_mv) -
+                                                static_cast<int32_t>(target_voltage_mv)));
+        } else if (candidate.is_avs) {
+            candidate_requested_mv = target_voltage_mv;
+            if (candidate_requested_mv < candidate.min_voltage_mv) candidate_requested_mv = candidate.min_voltage_mv;
+            if (candidate_requested_mv > candidate.voltage_mv) candidate_requested_mv = candidate.voltage_mv;
+            candidate_requested_mv = PdVoltage::alignDown(candidate_requested_mv,
+                                                          AppConfig::AVS_VOLTAGE_STEP_MV);
+            diff_mv = static_cast<uint32_t>(abs(static_cast<int32_t>(candidate_requested_mv) -
+                                                static_cast<int32_t>(target_voltage_mv)));
+        } else {
+            diff_mv = static_cast<uint32_t>(abs(static_cast<int32_t>(candidate.voltage_mv) -
+                                                static_cast<int32_t>(target_voltage_mv)));
+        }
+
+        if (!best.valid || diff_mv < best.diff_mv) {
+            best.valid = true;
+            best.pdo_index = static_cast<int8_t>(i);
+            best.requested_voltage_mv = candidate_requested_mv;
+            best.diff_mv = diff_mv;
+        }
+
+        if (best.valid && best.diff_mv == 0) {
+            break;
+        }
+    }
+
+    return best;
+}
+
+// ----------------------------------------------------------------------------
+// Charger identity decoding
+// ----------------------------------------------------------------------------
+
+/// @brief Decode a TPS26750 manufacturer-info VDO response into VID/PID + a cleaned
+/// manufacturer name. The name is trimmed, sanitized to printable ASCII, and falls
+/// back to the vendor brand name when empty. Returns true when a non-zero VID was read.
+inline bool decodeManufacturerInfoResponse(const uint8_t* response_buf,
+                                           uint8_t response_len,
+                                           uint16_t& vendor_id,
+                                           uint16_t& product_id,
+                                           char* manufacturer_name,
+                                           size_t manufacturer_name_len) {
+    vendor_id = 0;
+    product_id = 0;
+
+    if (manufacturer_name && manufacturer_name_len > 0) {
+        manufacturer_name[0] = '\0';
+    }
+
+    if (!response_buf || response_len < 4) {
+        return false;
+    }
+
+    vendor_id = static_cast<uint16_t>(response_buf[0]) |
+                (static_cast<uint16_t>(response_buf[1]) << 8);
+    product_id = static_cast<uint16_t>(response_buf[2]) |
+                 (static_cast<uint16_t>(response_buf[3]) << 8);
+
+    if (!manufacturer_name || manufacturer_name_len == 0) {
+        return vendor_id != 0;
+    }
+
+    size_t name_bytes = response_len - 4;
+    if (name_bytes >= manufacturer_name_len) {
+        name_bytes = manufacturer_name_len - 1;
+    }
+
+    memcpy(manufacturer_name, &response_buf[4], name_bytes);
+    manufacturer_name[name_bytes] = '\0';
+
+    while (name_bytes > 0 &&
+           (manufacturer_name[name_bytes - 1] == ' ' || manufacturer_name[name_bytes - 1] == '\0')) {
+        name_bytes--;
+        manufacturer_name[name_bytes] = '\0';
+    }
+
+    size_t first_non_space = 0;
+    while (first_non_space < name_bytes && manufacturer_name[first_non_space] == ' ') {
+        first_non_space++;
+    }
+    if (first_non_space > 0 && first_non_space < name_bytes) {
+        memmove(manufacturer_name,
+                &manufacturer_name[first_non_space],
+                name_bytes - first_non_space + 1);
+        name_bytes -= first_non_space;
+    } else if (first_non_space >= name_bytes) {
+        name_bytes = 0;
+        manufacturer_name[0] = '\0';
+    }
+
+    for (size_t i = 0; i < name_bytes; i++) {
+        char& ch = manufacturer_name[i];
+        if (ch < 32 || ch > 126) {
+            ch = '.';
+        }
+    }
+
+    if (name_bytes == 0) {
+        const char* fallback_name = getVendorBrandName(vendor_id);
+        copyStringTruncated(manufacturer_name, manufacturer_name_len, fallback_name);
+    }
+
+    return vendor_id != 0;
+}
+
+// ----------------------------------------------------------------------------
+// Cable-rating inference
+// ----------------------------------------------------------------------------
+
+/// @brief Infer cable capability from advertised source PDOs. Below EPR, fixed rails
+/// are the strongest signal: a charger must cap them to 3 A when the cable is not 5 A
+/// capable. Programmable PDOs above 3 A are only trusted when the source also proves it
+/// can exceed 60 W on its non-programmable rails.
+inline DetectedCableRating inferDetectedCableRating(const TPS26750_SourceCapability* pdos, uint8_t count) {
+    bool has_fixed_over_3a = false;
+    bool has_programmable_over_3a = false;
+    uint32_t max_fixed_power_w = 0;
+
+    for (uint8_t i = 0; i < count; i++) {
+        const TPS26750_SourceCapability& pdo = pdos[i];
+        if (pdo.voltage_mv > 21000) {
+            return DetectedCableRating::EPR_CAPABLE;
+        }
+
+        if (!pdo.is_pps && !pdo.is_avs) {
+            uint32_t power_w = powerWatts(pdo.voltage_mv, pdo.max_current_ma);
+            if (power_w > max_fixed_power_w) {
+                max_fixed_power_w = power_w;
+            }
+
+            if (pdo.max_current_ma > 3000) {
+                has_fixed_over_3a = true;
+            }
+            continue;
+        }
+
+        if (pdo.max_current_ma > 3000 || pdo.max_current_9_15_ma > 3000) {
+            has_programmable_over_3a = true;
+        }
+    }
+
+    if (has_fixed_over_3a) {
+        return DetectedCableRating::CAPABLE_5A;
+    }
+
+    if (has_programmable_over_3a && max_fixed_power_w > 60) {
+        return DetectedCableRating::CAPABLE_5A;
+    }
+
+    if (max_fixed_power_w < 60) {
+        return DetectedCableRating::UNKNOWN_CHARGER_LIMIT;
+    }
+
+    return DetectedCableRating::STANDARD_3A;
+}
+
+}  // namespace PdDiagnostics
