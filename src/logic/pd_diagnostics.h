@@ -8,7 +8,7 @@
 #include "tps26750.h"
 #include "config/app_config.h"
 #include "utils/pd_voltage.h"
-#include "logic/settings.h"  // SavedStartupContractType
+#include "logic/settings_types.h"  // SavedStartupContractType (pure, no Pico SDK)
 
 // ============================================================================
 // PD Diagnostics — pure USB-PD domain logic

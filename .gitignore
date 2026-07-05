@@ -104,5 +104,6 @@ cmake-build-*/
 dev_tools/
 notes/
 tools/
+test/build/
 build/PD240W.uf2
 src/utils/tps26750_configs/
