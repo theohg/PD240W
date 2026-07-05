@@ -96,32 +96,32 @@ public:
     bool isChargerConnected() const { return _charger_connected; }
 
     // Check if PPS contract is active
-    bool isPpsActive() const { return _pps_active; }
+    bool isPpsActive() const { return _pps.active; }
 
     // Auto PPS tuning
     bool isPpsTuningActive() const;   // PPS active AND auto-tune enabled
-    bool isPpsTuningConverged() const { return _pps_tuning_converged; }
-    uint32_t getPpsUserTargetMv() const { return _pps_user_target_mv; }
+    bool isPpsTuningConverged() const { return _pps.tuning_converged; }
+    uint32_t getPpsUserTargetMv() const { return _pps.user_target_mv; }
 
     // Auto AVS tuning
     bool isAvsTuningActive() const;   // AVS active AND auto-tune enabled
-    bool isAvsTuningConverged() const { return _avs_tuning_converged; }
-    uint32_t getAvsUserTargetMv() const { return _avs_user_target_mv; }
+    bool isAvsTuningConverged() const { return _avs.tuning_converged; }
+    uint32_t getAvsUserTargetMv() const { return _avs.user_target_mv; }
 
     // Check if AVS contract is active
-    bool isAvsActive() const { return _avs_active; }
+    bool isAvsActive() const { return _avs.active; }
 
     /// @brief Index of the active APDO in the PDO cache, or -1 if unknown/fixed contract.
     int8_t getActivePdoIndex() const { return _active_pdo_index; }
 
     /// @brief Minimum voltage [mV] of the active PPS APDO range (0 if not PPS).
-    uint32_t getPpsRangeMinMv() const { return _pps_range_min_mv; }
+    uint32_t getPpsRangeMinMv() const { return _pps.range_min_mv; }
     /// @brief Maximum voltage [mV] of the active PPS APDO range (0 if not PPS).
-    uint32_t getPpsRangeMaxMv() const { return _pps_range_max_mv; }
+    uint32_t getPpsRangeMaxMv() const { return _pps.range_max_mv; }
     /// @brief Minimum voltage [mV] of the active AVS APDO range (0 if not AVS).
-    uint32_t getAvsRangeMinMv() const { return _avs_range_min_mv; }
+    uint32_t getAvsRangeMinMv() const { return _avs.range_min_mv; }
     /// @brief Maximum voltage [mV] of the active AVS APDO range (0 if not AVS).
-    uint32_t getAvsRangeMaxMv() const { return _avs_range_max_mv; }
+    uint32_t getAvsRangeMaxMv() const { return _avs.range_max_mv; }
 
     // Update keep-alive voltage from CC controller (avoids fighting with CC regulation)
     // Only updates internal tracking, does NOT send a PD request
@@ -206,37 +206,33 @@ private:
     uint8_t _pdo_count;
     bool _pdos_valid;
 
-    // PPS keep-alive state
-    bool _pps_active;                   // True if current contract is PPS
-    uint32_t _pps_voltage_mv;           // Last requested PPS voltage
-    uint32_t _pps_current_ma;           // Last requested PPS current
-    absolute_time_t _pps_last_refresh;  // Time of last PPS request
-    static constexpr uint32_t PPS_REFRESH_INTERVAL_MS = 7000;  // Refresh every 7s (spec requires <10s)
+    // Programmable (PPS/AVS) contract state + per-type configuration. PPS and AVS
+    // share identical keep-alive, auto-tune, request, and clear logic; grouping the
+    // state into one struct lets a single code path service both, ending the historical
+    // "fixed it for PPS, forgot AVS" divergence. Instantiated once each as _pps/_avs.
+    struct ProgrammableContract {
+        // Per-type configuration (constant after construction)
+        bool     is_avs;                 // false = PPS, true = AVS (selects HW profile + settings flag)
+        uint32_t step_mv;                // Request voltage alignment step (PD spec)
+        uint32_t refresh_ms;             // Keep-alive interval (spec requires <10s)
+        int32_t  tune_threshold_mv;      // Converged when |error| <= this
+        int32_t  tune_max_correction_mv; // Safety clamp on accumulated correction
+        uint32_t tracking_tolerance_mv;  // Droop allowed before tracked state is dropped
 
-    // Auto PPS tuning state
-    uint32_t _pps_user_target_mv;       // What the user asked for
-    int32_t  _pps_correction_mv;        // Accumulated correction offset
-    bool     _pps_tuning_converged;     // True when |error| < threshold
-    uint32_t _pps_range_min_mv;         // PPS PDO min voltage (for clamping)
-    uint32_t _pps_range_max_mv;         // PPS PDO max voltage (for clamping)
-    static constexpr int32_t PPS_TUNE_THRESHOLD_MV = 12;       // Converged when error < this
-    static constexpr int32_t PPS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
+        // Runtime state
+        bool     active;                 // True if the current contract is this type
+        uint32_t voltage_mv;             // Last requested voltage
+        uint32_t current_ma;             // Last requested current
+        absolute_time_t last_refresh;    // Time of last keep-alive request
+        uint32_t user_target_mv;         // What the user asked for (auto-tune setpoint)
+        int32_t  correction_mv;          // Accumulated auto-tune correction offset
+        bool     tuning_converged;       // True when |error| <= tune_threshold_mv
+        uint32_t range_min_mv;           // Active APDO min voltage (for clamping)
+        uint32_t range_max_mv;           // Active APDO max voltage (for clamping)
+    };
 
-    // AVS keep-alive state (EPR contracts also need periodic re-request)
-    bool _avs_active;                   // True if current contract is AVS
-    uint32_t _avs_voltage_mv;           // Last requested AVS voltage
-    uint32_t _avs_current_ma;           // Last requested AVS current
-    absolute_time_t _avs_last_refresh;  // Time of last AVS request
-    static constexpr uint32_t AVS_REFRESH_INTERVAL_MS = 7000;  // Same as PPS
-
-    // Auto AVS tuning state
-    uint32_t _avs_user_target_mv;       // What the user asked for
-    int32_t  _avs_correction_mv;        // Accumulated correction offset
-    bool     _avs_tuning_converged;     // True when |error| < threshold
-    uint32_t _avs_range_min_mv;         // AVS PDO min voltage (for clamping)
-    uint32_t _avs_range_max_mv;         // AVS PDO max voltage (for clamping)
-    static constexpr int32_t AVS_TUNE_THRESHOLD_MV = 55;       // Converged when error < half a step (100mV steps)
-    static constexpr int32_t AVS_TUNE_MAX_CORRECTION_MV = 500; // Safety clamp on correction
+    ProgrammableContract _pps;
+    ProgrammableContract _avs;
 
     // PD revision string (cached)
     char _pd_revision[8];
@@ -262,8 +258,6 @@ private:
     static constexpr uint32_t FIXED_MATCH_TOLERANCE_MV = 50;
     static constexpr uint32_t PPS_MATCH_TOLERANCE_MV = 20;
     static constexpr uint32_t AVS_MATCH_TOLERANCE_MV = 25;
-    static constexpr uint32_t PPS_TRACKING_TOLERANCE_MV = 150;      // Allow normal PPS droop without dropping Vset/tuning state
-    static constexpr uint32_t AVS_TRACKING_TOLERANCE_MV = 250;      // Allow normal AVS regulation error without dropping state
 
     // Index of the active PPS or AVS APDO in _pdo_cache (-1 = unknown / fixed contract)
     int8_t _active_pdo_index;
@@ -306,9 +300,18 @@ private:
     void detectPdRevision();
 
     // Clear tracked programmable contract state when the source no longer matches it
-    void clearPpsTracking();
-    void clearAvsTracking();
+    void clearTracking(ProgrammableContract& contract);
     void clearRequestedContract();
+
+    // Service one programmable contract's keep-alive + auto-tune cycle (PPS or AVS)
+    void serviceKeepAlive(ProgrammableContract& contract);
+
+    // Shared core for requestPpsVoltage()/requestAvsVoltage(): resolves APDO bounds,
+    // sends the profile request, and updates tracking state on success.
+    bool requestProgrammable(ProgrammableContract& self, ProgrammableContract& other,
+                             uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index,
+                             RequestedContractType type,
+                             uint32_t default_min_mv, uint32_t default_max_mv);
 
     // Process PD interrupt events
     void handlePdInterrupt();

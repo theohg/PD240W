@@ -417,24 +417,15 @@ PdManager::PdManager()
     , _charger_connected(false)
     , _pdo_count(0)
     , _pdos_valid(false)
-    , _pps_active(false)
-    , _pps_voltage_mv(0)
-    , _pps_current_ma(0)
-    , _pps_last_refresh(nil_time)
-    , _pps_user_target_mv(0)
-    , _pps_correction_mv(0)
-    , _pps_tuning_converged(false)
-    , _pps_range_min_mv(0)
-    , _pps_range_max_mv(0)
-    , _avs_active(false)
-    , _avs_voltage_mv(0)
-    , _avs_current_ma(0)
-    , _avs_last_refresh(nil_time)
-    , _avs_user_target_mv(0)
-    , _avs_correction_mv(0)
-    , _avs_tuning_converged(false)
-    , _avs_range_min_mv(0)
-    , _avs_range_max_mv(0)
+    , _pps{ /*is_avs*/ false, AppConfig::PPS_VOLTAGE_STEP_MV, /*refresh_ms*/ 7000,
+            /*tune_threshold_mv*/ 12, /*tune_max_correction_mv*/ 500,
+            /*tracking_tolerance_mv*/ 150,  // Allow normal PPS droop without dropping Vset/tuning state
+            false, 0, 0, nil_time, 0, 0, false, 0, 0 }
+    , _avs{ /*is_avs*/ true, AppConfig::AVS_VOLTAGE_STEP_MV, /*refresh_ms*/ 7000,
+            /*tune_threshold_mv*/ 55,  // Converged when error < half a step (100mV steps)
+            /*tune_max_correction_mv*/ 500,
+            /*tracking_tolerance_mv*/ 250,  // Allow normal AVS regulation error without dropping state
+            false, 0, 0, nil_time, 0, 0, false, 0, 0 }
     , _pre_request_voltage_mv(0)
     , _pre_request_current_ma(0)
     , _requested_contract_type(RequestedContractType::NONE)
@@ -572,12 +563,12 @@ void PdManager::update() {
             _pre_request_voltage_mv = _active_contract.voltage_mv;
             _pre_request_current_ma = _active_contract.current_ma;
             // Deactivate AVS/PPS tracking for the intermediate 5V request
-            _avs_active = false;
-            _avs_voltage_mv = 0;
-            _avs_current_ma = 0;
-            _pps_active = false;
-            _pps_voltage_mv = 0;
-            _pps_current_ma = 0;
+            _avs.active = false;
+            _avs.voltage_mv = 0;
+            _avs.current_ma = 0;
+            _pps.active = false;
+            _pps.voltage_mv = 0;
+            _pps.current_ma = 0;
             if (!hw.pdController.requestFixedProfile(EPR_EXIT_SAFE_MV, EPR_EXIT_SAFE_CURRENT_MA)) {
                 LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
                 _epr_exit_state = EprExitState::NONE;
@@ -639,83 +630,13 @@ void PdManager::update() {
         }
     }
 
-    // PPS keep-alive: must refresh contract every <10 seconds or source reverts to 5V
-    if (_pps_active && _pps_voltage_mv > 0) {
-        uint32_t elapsed_ms = absolute_time_diff_us(_pps_last_refresh, get_absolute_time()) / 1000;
-        uint32_t refresh_interval_ms = PPS_REFRESH_INTERVAL_MS;
-        if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 &&
-            !_pps_tuning_converged && !CcController::isRegulating()) {
-            refresh_interval_ms = TUNE_REQUEST_INTERVAL_MS;
-        }
-
-        if (elapsed_ms >= refresh_interval_ms) {
-            uint32_t request_mv = _pps_voltage_mv;
-
-            // Auto PPS tuning: measure actual voltage and adjust request
-            // Skip auto-tuning when CC controller is regulating (CC adjusts voltage for current)
-            if (settings.isAutoPpsEnabled() && _pps_user_target_mv > 0 && !CcController::isRegulating()) {
-                // Measure actual output voltage
-                float measured_v;
-                if (gpio_get(Board::PIN_SWITCH_EN)) {
-                    measured_v = hw.powerMonitor.getBusVoltage();  // Post-switch (accurate)
-                } else {
-                    measured_v = hw.adc.getVBUS();  // Pre-switch (fallback)
-                }
-                uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
-
-                // Only tune if we have a valid measurement (> 1V, likely PPS is delivering)
-                if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
-                    int32_t error = (int32_t)_pps_user_target_mv - (int32_t)measured_mv;
-
-                    if (abs(error) > PPS_TUNE_THRESHOLD_MV) {
-                        // Accumulate correction
-                        _pps_correction_mv += error;
-
-                        // Clamp correction to safety limit
-                        if (_pps_correction_mv > PPS_TUNE_MAX_CORRECTION_MV)
-                            _pps_correction_mv = PPS_TUNE_MAX_CORRECTION_MV;
-                        if (_pps_correction_mv < -PPS_TUNE_MAX_CORRECTION_MV)
-                            _pps_correction_mv = -PPS_TUNE_MAX_CORRECTION_MV;
-
-                        _pps_tuning_converged = false;
-                        LOG_DEBUG("PPS tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
-                                  _pps_user_target_mv, measured_mv, error, _pps_correction_mv);
-                    } else {
-                        _pps_tuning_converged = true;
-                    }
-                }
-
-                // Compute adjusted request voltage
-                int32_t adjusted = (int32_t)_pps_user_target_mv + _pps_correction_mv;
-
-                // Clamp to PPS range
-                if (_pps_range_max_mv > 0) {
-                    if (adjusted < (int32_t)_pps_range_min_mv) adjusted = (int32_t)_pps_range_min_mv;
-                    if (adjusted > (int32_t)_pps_range_max_mv) adjusted = (int32_t)_pps_range_max_mv;
-                }
-
-                // Align to the PPS request step before re-requesting the contract.
-                adjusted = static_cast<int32_t>(PdVoltage::alignDown(
-                    static_cast<uint32_t>(adjusted), AppConfig::PPS_VOLTAGE_STEP_MV));
-
-                request_mv = (uint32_t)adjusted;
-            }
-
-            LOG_DEBUG("PPS keep-alive: requesting %lumV @ %lumA", request_mv, _pps_current_ma);
-
-            if (hw.pdController.requestPPSProfile(request_mv, _pps_current_ma,
-                                                    _pps_range_min_mv, _pps_range_max_mv)) {
-                _pps_last_refresh = get_absolute_time();
-                _pps_voltage_mv = request_mv;  // Track what we actually requested
-            } else {
-                LOG_WARN("PPS keep-alive request failed");
-            }
-        }
-    }
+    // PPS/AVS keep-alive: must refresh the contract every <10 seconds or the source
+    // reverts to 5V. One shared routine services both programmable contract types.
+    serviceKeepAlive(_pps);
 
     // Fast convergence check: when PPS tuning is active,
     // check frequently (every 500ms) to detect drift in either direction
-    if (_pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0) {
+    if (_pps.active && settings.isAutoPpsEnabled() && _pps.user_target_mv > 0) {
         if (absolute_time_diff_us(_next_pps_convergence_check, get_absolute_time()) >= 0) {
             _next_pps_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
             checkTuningConvergenceImmediate();
@@ -723,82 +644,11 @@ void PdManager::update() {
     }
 
     // AVS keep-alive: EPR contracts also need periodic re-request to maintain the contract
-    if (_avs_active && _avs_voltage_mv > 0) {
-        uint32_t elapsed_ms = absolute_time_diff_us(_avs_last_refresh, get_absolute_time()) / 1000;
-        uint32_t refresh_interval_ms = AVS_REFRESH_INTERVAL_MS;
-        if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 &&
-            !_avs_tuning_converged && !CcController::isRegulating()) {
-            refresh_interval_ms = TUNE_REQUEST_INTERVAL_MS;
-        }
-
-        if (elapsed_ms >= refresh_interval_ms) {
-            uint32_t request_mv = _avs_voltage_mv;
-
-            // Auto AVS tuning: measure actual voltage and adjust request
-            // Skip auto-tuning when CC controller is regulating (CC adjusts voltage for current)
-            if (settings.isAutoAvsEnabled() && _avs_user_target_mv > 0 && !CcController::isRegulating()) {
-                // Measure actual output voltage
-                float measured_v;
-                if (gpio_get(Board::PIN_SWITCH_EN)) {
-                    measured_v = hw.powerMonitor.getBusVoltage();  // Post-switch (accurate)
-                } else {
-                    measured_v = hw.adc.getVBUS();  // Pre-switch (fallback)
-                }
-                uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
-
-                // Only tune if we have a valid measurement (> 1V, likely AVS is delivering)
-                if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
-                    int32_t error = (int32_t)_avs_user_target_mv - (int32_t)measured_mv;
-
-                    if (abs(error) > AVS_TUNE_THRESHOLD_MV) {
-                        // Accumulate correction
-                        _avs_correction_mv += error;
-
-                        // Clamp correction to safety limit
-                        if (_avs_correction_mv > AVS_TUNE_MAX_CORRECTION_MV)
-                            _avs_correction_mv = AVS_TUNE_MAX_CORRECTION_MV;
-                        if (_avs_correction_mv < -AVS_TUNE_MAX_CORRECTION_MV)
-                            _avs_correction_mv = -AVS_TUNE_MAX_CORRECTION_MV;
-
-                        _avs_tuning_converged = false;
-                        LOG_DEBUG("AVS tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
-                                  _avs_user_target_mv, measured_mv, error, _avs_correction_mv);
-                    } else {
-                        _avs_tuning_converged = true;
-                    }
-                }
-
-                // Compute adjusted request voltage
-                int32_t adjusted = (int32_t)_avs_user_target_mv + _avs_correction_mv;
-
-                // Clamp to AVS range
-                if (_avs_range_max_mv > 0) {
-                    if (adjusted < (int32_t)_avs_range_min_mv) adjusted = (int32_t)_avs_range_min_mv;
-                    if (adjusted > (int32_t)_avs_range_max_mv) adjusted = (int32_t)_avs_range_max_mv;
-                }
-
-                // Align to the configured AVS request step before re-requesting the contract.
-                adjusted = static_cast<int32_t>(PdVoltage::alignDown(
-                    static_cast<uint32_t>(adjusted), AppConfig::AVS_VOLTAGE_STEP_MV));
-
-                request_mv = (uint32_t)adjusted;
-            }
-
-            LOG_DEBUG("AVS keep-alive: requesting %lumV @ %lumA", request_mv, _avs_current_ma);
-
-            if (hw.pdController.requestAVSProfile(request_mv, _avs_current_ma,
-                                                    _avs_range_min_mv, _avs_range_max_mv)) {
-                _avs_last_refresh = get_absolute_time();
-                _avs_voltage_mv = request_mv;  // Track what we actually requested
-            } else {
-                LOG_WARN("AVS keep-alive request failed");
-            }
-        }
-    }
+    serviceKeepAlive(_avs);
 
     // Fast convergence check: when AVS tuning is active,
     // check frequently (every 500ms) to detect drift in either direction
-    if (_avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0) {
+    if (_avs.active && settings.isAutoAvsEnabled() && _avs.user_target_mv > 0) {
         if (absolute_time_diff_us(_next_avs_convergence_check, get_absolute_time()) >= 0) {
             _next_avs_convergence_check = make_timeout_time_ms(TUNE_CONVERGENCE_CHECK_MS);
             checkTuningConvergenceImmediate();
@@ -1039,28 +889,104 @@ bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_curre
 // Contract Negotiation
 // ============================================================================
 
-void PdManager::clearPpsTracking() {
-    _pps_active = false;
-    _pps_voltage_mv = 0;
-    _pps_current_ma = 0;
-    _pps_user_target_mv = 0;
-    _pps_correction_mv = 0;
-    _pps_tuning_converged = false;
-    _pps_range_min_mv = 0;
-    _pps_range_max_mv = 0;
+void PdManager::clearTracking(ProgrammableContract& c) {
+    c.active = false;
+    c.voltage_mv = 0;
+    c.current_ma = 0;
+    c.user_target_mv = 0;
+    c.correction_mv = 0;
+    c.tuning_converged = false;
+    c.range_min_mv = 0;
+    c.range_max_mv = 0;
     _active_pdo_index = -1;
 }
 
-void PdManager::clearAvsTracking() {
-    _avs_active = false;
-    _avs_voltage_mv = 0;
-    _avs_current_ma = 0;
-    _avs_user_target_mv = 0;
-    _avs_correction_mv = 0;
-    _avs_tuning_converged = false;
-    _avs_range_min_mv = 0;
-    _avs_range_max_mv = 0;
-    _active_pdo_index = -1;
+// Service one programmable (PPS or AVS) contract's keep-alive + auto-tune cycle.
+// The two contract types differ only in their configuration (step, thresholds,
+// refresh interval), which settings flag gates auto-tuning, and which TPS26750
+// profile request they issue -- all captured by the ProgrammableContract struct.
+void PdManager::serviceKeepAlive(ProgrammableContract& c) {
+    if (!(c.active && c.voltage_mv > 0)) {
+        return;
+    }
+
+    const bool auto_enabled = c.is_avs ? settings.isAutoAvsEnabled() : settings.isAutoPpsEnabled();
+    const char* const label = c.is_avs ? "AVS" : "PPS";
+
+    uint32_t elapsed_ms = absolute_time_diff_us(c.last_refresh, get_absolute_time()) / 1000;
+    uint32_t refresh_interval_ms = c.refresh_ms;
+    if (auto_enabled && c.user_target_mv > 0 &&
+        !c.tuning_converged && !CcController::isRegulating()) {
+        refresh_interval_ms = TUNE_REQUEST_INTERVAL_MS;
+    }
+
+    if (elapsed_ms < refresh_interval_ms) {
+        return;
+    }
+
+    uint32_t request_mv = c.voltage_mv;
+
+    // Auto tuning: measure actual voltage and adjust the request.
+    // Skip auto-tuning when CC controller is regulating (CC adjusts voltage for current).
+    if (auto_enabled && c.user_target_mv > 0 && !CcController::isRegulating()) {
+        // Measure actual output voltage
+        float measured_v;
+        if (gpio_get(Board::PIN_SWITCH_EN)) {
+            measured_v = hw.powerMonitor.getBusVoltage();  // Post-switch (accurate)
+        } else {
+            measured_v = hw.adc.getVBUS();  // Pre-switch (fallback)
+        }
+        uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
+
+        // Only tune if we have a valid measurement (> 1V, likely the source is delivering)
+        if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
+            int32_t error = (int32_t)c.user_target_mv - (int32_t)measured_mv;
+
+            if (abs(error) > c.tune_threshold_mv) {
+                // Accumulate correction
+                c.correction_mv += error;
+
+                // Clamp correction to safety limit
+                if (c.correction_mv > c.tune_max_correction_mv)
+                    c.correction_mv = c.tune_max_correction_mv;
+                if (c.correction_mv < -c.tune_max_correction_mv)
+                    c.correction_mv = -c.tune_max_correction_mv;
+
+                c.tuning_converged = false;
+                LOG_DEBUG("%s tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
+                          label, c.user_target_mv, measured_mv, error, c.correction_mv);
+            } else {
+                c.tuning_converged = true;
+            }
+        }
+
+        // Compute adjusted request voltage
+        int32_t adjusted = (int32_t)c.user_target_mv + c.correction_mv;
+
+        // Clamp to APDO range
+        if (c.range_max_mv > 0) {
+            if (adjusted < (int32_t)c.range_min_mv) adjusted = (int32_t)c.range_min_mv;
+            if (adjusted > (int32_t)c.range_max_mv) adjusted = (int32_t)c.range_max_mv;
+        }
+
+        // Align to the request step before re-requesting the contract.
+        adjusted = static_cast<int32_t>(PdVoltage::alignDown(
+            static_cast<uint32_t>(adjusted), c.step_mv));
+
+        request_mv = (uint32_t)adjusted;
+    }
+
+    LOG_DEBUG("%s keep-alive: requesting %lumV @ %lumA", label, request_mv, c.current_ma);
+
+    bool ok = c.is_avs
+        ? hw.pdController.requestAVSProfile(request_mv, c.current_ma, c.range_min_mv, c.range_max_mv)
+        : hw.pdController.requestPPSProfile(request_mv, c.current_ma, c.range_min_mv, c.range_max_mv);
+    if (ok) {
+        c.last_refresh = get_absolute_time();
+        c.voltage_mv = request_mv;  // Track what we actually requested
+    } else {
+        LOG_WARN("%s keep-alive request failed", label);
+    }
 }
 
 void PdManager::clearRequestedContract() {
@@ -1180,10 +1106,10 @@ bool PdManager::requestFixedVoltage(uint32_t voltage_mv, uint32_t current_ma) {
         _negotiation_start = get_absolute_time();
 
         // Deactivate PPS mode when switching to fixed
-        clearPpsTracking();
+        clearTracking(_pps);
 
         // Deactivate AVS mode when switching to fixed
-        clearAvsTracking();
+        clearTracking(_avs);
     } else {
         _negotiation_state = NegotiationState::FAILED;
         LOG_ERROR("Failed to send Fixed contract request");
@@ -1214,69 +1140,9 @@ bool PdManager::requestPpsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
         }
     }
 
-    // Resolve APDO bounds: if a specific PDO index is provided, use it directly;
-    // otherwise fall back to first-match search (startup restore, EPR exit paths).
-    uint32_t pdo_min_mv = 0;
-    uint32_t pdo_max_mv = 0;
-    int8_t resolved_index = pdo_index;
-    if (pdo_index >= 0 && pdo_index < _pdo_count && _pdo_cache[pdo_index].is_pps) {
-        pdo_min_mv = _pdo_cache[pdo_index].min_voltage_mv;
-        pdo_max_mv = _pdo_cache[pdo_index].voltage_mv;
-    } else {
-        for (uint8_t i = 0; i < _pdo_count; i++) {
-            if (_pdo_cache[i].is_pps &&
-                voltage_mv >= _pdo_cache[i].min_voltage_mv &&
-                voltage_mv <= _pdo_cache[i].voltage_mv) {
-                pdo_min_mv = _pdo_cache[i].min_voltage_mv;
-                pdo_max_mv = _pdo_cache[i].voltage_mv;
-                resolved_index = (int8_t)i;
-                break;
-            }
-        }
-        if (pdo_max_mv == 0) {
-            // No matching PDO found: use broad defaults so the request still goes through.
-            pdo_min_mv = 3300;
-            pdo_max_mv = 21000;
-        }
-    }
-
-    // Store pre-request contract for polling fallback
-    _pre_request_voltage_mv = _active_contract.voltage_mv;
-    _pre_request_current_ma = _active_contract.current_ma;
-    _requested_contract_type = RequestedContractType::PPS;
-    _requested_voltage_mv = voltage_mv;
-    _requested_current_ma = current_ma;
-
-    bool success = hw.pdController.requestPPSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv);
-
-    if (success) {
-        _negotiation_state = NegotiationState::REQUESTING;
-        _negotiation_start = get_absolute_time();
-
-        // Track PPS state for keep-alive
-        _pps_active = true;
-        _pps_voltage_mv = voltage_mv;
-        _pps_current_ma = current_ma;
-        _pps_last_refresh = get_absolute_time();
-
-        // Deactivate AVS mode when switching to PPS
-        clearAvsTracking();
-
-        // Auto PPS tuning: store user target and reset correction
-        _pps_user_target_mv = voltage_mv;
-        _pps_correction_mv = 0;
-        _pps_tuning_converged = false;
-
-        // Store resolved identity and bounds for keep-alive clamping and UI highlighting
-        _active_pdo_index = resolved_index;
-        _pps_range_min_mv = pdo_min_mv;
-        _pps_range_max_mv = pdo_max_mv;
-    } else {
-        _negotiation_state = NegotiationState::FAILED;
-        LOG_ERROR("Failed to send PPS contract request");
-    }
-
-    return success;
+    // Broad defaults (3.3-21V) when no matching PPS APDO is found, so the request still goes through.
+    return requestProgrammable(_pps, _avs, voltage_mv, current_ma, pdo_index,
+                               RequestedContractType::PPS, 3300, 21000);
 }
 
 bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index) {
@@ -1303,17 +1169,34 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
         }
     }
 
+    // Broad defaults (9-48V) when no matching AVS APDO is found, so the request still goes through.
+    return requestProgrammable(_avs, _pps, voltage_mv, current_ma, pdo_index,
+                               RequestedContractType::AVS, 9000, 48000);
+}
+
+// Shared core for requestPpsVoltage()/requestAvsVoltage(). `self` is the contract type
+// being requested; `other` is the sibling type that gets deactivated. The EPR-safe-exit
+// guard lives in the type-specific wrappers because its deferred type and log strings differ.
+bool PdManager::requestProgrammable(ProgrammableContract& self, ProgrammableContract& other,
+                                    uint32_t voltage_mv, uint32_t current_ma, int8_t pdo_index,
+                                    RequestedContractType type,
+                                    uint32_t default_min_mv, uint32_t default_max_mv) {
+    const bool want_avs = self.is_avs;
+
     // Resolve APDO bounds: if a specific PDO index is provided, use it directly;
-    // otherwise fall back to first-match search (startup restore, EPR step-down paths).
+    // otherwise fall back to first-match search (startup restore, EPR exit paths).
     uint32_t pdo_min_mv = 0;
     uint32_t pdo_max_mv = 0;
     int8_t resolved_index = pdo_index;
-    if (pdo_index >= 0 && pdo_index < _pdo_count && _pdo_cache[pdo_index].is_avs) {
+    auto matchesType = [want_avs](const TPS26750_SourceCapability& p) {
+        return want_avs ? p.is_avs : p.is_pps;
+    };
+    if (pdo_index >= 0 && pdo_index < _pdo_count && matchesType(_pdo_cache[pdo_index])) {
         pdo_min_mv = _pdo_cache[pdo_index].min_voltage_mv;
         pdo_max_mv = _pdo_cache[pdo_index].voltage_mv;
     } else {
         for (uint8_t i = 0; i < _pdo_count; i++) {
-            if (_pdo_cache[i].is_avs &&
+            if (matchesType(_pdo_cache[i]) &&
                 voltage_mv >= _pdo_cache[i].min_voltage_mv &&
                 voltage_mv <= _pdo_cache[i].voltage_mv) {
                 pdo_min_mv = _pdo_cache[i].min_voltage_mv;
@@ -1323,58 +1206,59 @@ bool PdManager::requestAvsVoltage(uint32_t voltage_mv, uint32_t current_ma, int8
             }
         }
         if (pdo_max_mv == 0) {
-            // No matching PDO found: use broad defaults so the request still goes through.
-            pdo_min_mv = 9000;
-            pdo_max_mv = 48000;
+            pdo_min_mv = default_min_mv;
+            pdo_max_mv = default_max_mv;
         }
     }
 
     // Store pre-request contract for polling fallback
     _pre_request_voltage_mv = _active_contract.voltage_mv;
     _pre_request_current_ma = _active_contract.current_ma;
-    _requested_contract_type = RequestedContractType::AVS;
+    _requested_contract_type = type;
     _requested_voltage_mv = voltage_mv;
     _requested_current_ma = current_ma;
 
-    bool success = hw.pdController.requestAVSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv);
+    bool success = want_avs
+        ? hw.pdController.requestAVSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv)
+        : hw.pdController.requestPPSProfile(voltage_mv, current_ma, pdo_min_mv, pdo_max_mv);
 
     if (success) {
         _negotiation_state = NegotiationState::REQUESTING;
         _negotiation_start = get_absolute_time();
 
-        // Deactivate PPS mode when switching to AVS
-        clearPpsTracking();
+        // Deactivate the sibling contract type when switching
+        clearTracking(other);
 
-        // Track AVS state for keep-alive
-        _avs_active = true;
-        _avs_voltage_mv = voltage_mv;
-        _avs_current_ma = current_ma;
-        _avs_last_refresh = get_absolute_time();
+        // Track this contract's state for keep-alive
+        self.active = true;
+        self.voltage_mv = voltage_mv;
+        self.current_ma = current_ma;
+        self.last_refresh = get_absolute_time();
 
-        // Auto AVS tuning: store user target and reset correction
-        _avs_user_target_mv = voltage_mv;
-        _avs_correction_mv = 0;
-        _avs_tuning_converged = false;
+        // Auto tuning: store user target and reset correction
+        self.user_target_mv = voltage_mv;
+        self.correction_mv = 0;
+        self.tuning_converged = false;
 
         // Store resolved identity and bounds for keep-alive clamping and UI highlighting
         _active_pdo_index = resolved_index;
-        _avs_range_min_mv = pdo_min_mv;
-        _avs_range_max_mv = pdo_max_mv;
+        self.range_min_mv = pdo_min_mv;
+        self.range_max_mv = pdo_max_mv;
     } else {
         _negotiation_state = NegotiationState::FAILED;
-        LOG_ERROR("Failed to send AVS contract request");
+        LOG_ERROR("Failed to send %s contract request", want_avs ? "AVS" : "PPS");
     }
 
     return success;
 }
 
 void PdManager::setCcKeepAliveVoltage(uint32_t voltage_mv) {
-    if (_pps_active) {
-        _pps_voltage_mv = voltage_mv;
-        _pps_last_refresh = get_absolute_time();
-    } else if (_avs_active) {
-        _avs_voltage_mv = voltage_mv;
-        _avs_last_refresh = get_absolute_time();
+    if (_pps.active) {
+        _pps.voltage_mv = voltage_mv;
+        _pps.last_refresh = get_absolute_time();
+    } else if (_avs.active) {
+        _avs.voltage_mv = voltage_mv;
+        _avs.last_refresh = get_absolute_time();
     }
 }
 
@@ -1405,24 +1289,24 @@ bool PdManager::refreshActiveContract() {
         // droop. Also preserve it while a PPS/AVS request is still in flight, otherwise a
         // poll of the pre-existing fixed contract can hide Vset before negotiation completes.
         // Only drop it once the live contract has actually snapped back to a fixed rail.
-        if (_pps_active && (_pps_voltage_mv == 0 ||
+        if (_pps.active && (_pps.voltage_mv == 0 ||
             (!waiting_for_programmable_request &&
-             !withinTolerance(voltage_mv, _pps_voltage_mv, PPS_TRACKING_TOLERANCE_MV) &&
+             !withinTolerance(voltage_mv, _pps.voltage_mv, _pps.tracking_tolerance_mv) &&
              matches_fixed_pdo))) {
-            clearPpsTracking();
+            clearTracking(_pps);
         }
-        if (_avs_active && (_avs_voltage_mv == 0 ||
+        if (_avs.active && (_avs.voltage_mv == 0 ||
             (!waiting_for_programmable_request &&
-             !withinTolerance(voltage_mv, _avs_voltage_mv, AVS_TRACKING_TOLERANCE_MV) &&
+             !withinTolerance(voltage_mv, _avs.voltage_mv, _avs.tracking_tolerance_mv) &&
              matches_fixed_pdo))) {
-            clearAvsTracking();
+            clearTracking(_avs);
         }
 
         // Detect PPS/AVS from tracked state or by matching against PDO cache.
-        // On warm MCU reset, _pps_active/_avs_active is false but TPS26750 still has a contract.
+        // On warm MCU reset, _pps.active/_avs.active is false but TPS26750 still has a contract.
         // Detect this by checking if the active voltage matches a fixed PDO exactly.
-        bool detected_pps = _pps_active;
-        bool detected_avs = _avs_active;
+        bool detected_pps = _pps.active;
+        bool detected_avs = _avs.active;
 
         // Suppress warm-reset re-detection while a contract request is in flight.
         // When exiting a programmable (PPS/AVS) contract to a Fixed PDO, the TPS26750
@@ -1432,7 +1316,7 @@ bool PdManager::refreshActiveContract() {
         // impossible to exit. During a request the requested type is authoritative;
         // genuine warm-reset detection only needs to run when idle/settled.
         if (_negotiation_state != NegotiationState::REQUESTING &&
-            !_pps_active && !_avs_active && _pdos_valid && voltage_mv > 0) {
+            !_pps.active && !_avs.active && _pdos_valid && voltage_mv > 0) {
             // Check if this voltage matches any fixed PDO
             bool matches_fixed = false;
             for (uint8_t i = 0; i < _pdo_count; i++) {
@@ -1450,12 +1334,12 @@ bool PdManager::refreshActiveContract() {
                         voltage_mv <= _pdo_cache[i].voltage_mv) {
                         detected_pps = true;
                         // Restore PPS keep-alive state so it doesn't revert to 5V
-                        _pps_active = true;
-                        _pps_voltage_mv = voltage_mv;
-                        _pps_current_ma = current_ma;
-                        _pps_last_refresh = get_absolute_time();
-                        _pps_range_min_mv = _pdo_cache[i].min_voltage_mv;
-                        _pps_range_max_mv = _pdo_cache[i].voltage_mv;
+                        _pps.active = true;
+                        _pps.voltage_mv = voltage_mv;
+                        _pps.current_ma = current_ma;
+                        _pps.last_refresh = get_absolute_time();
+                        _pps.range_min_mv = _pdo_cache[i].min_voltage_mv;
+                        _pps.range_max_mv = _pdo_cache[i].voltage_mv;
                         _active_pdo_index = (int8_t)i;
                         LOG_INFO("Detected active PPS contract on warm reset: %lumV", voltage_mv);
                         break;
@@ -1464,12 +1348,12 @@ bool PdManager::refreshActiveContract() {
                         voltage_mv >= _pdo_cache[i].min_voltage_mv &&
                         voltage_mv <= _pdo_cache[i].voltage_mv) {
                         detected_avs = true;
-                        _avs_active = true;
-                        _avs_voltage_mv = voltage_mv;
-                        _avs_current_ma = current_ma;
-                        _avs_last_refresh = get_absolute_time();
-                        _avs_range_min_mv = _pdo_cache[i].min_voltage_mv;
-                        _avs_range_max_mv = _pdo_cache[i].voltage_mv;
+                        _avs.active = true;
+                        _avs.voltage_mv = voltage_mv;
+                        _avs.current_ma = current_ma;
+                        _avs.last_refresh = get_absolute_time();
+                        _avs.range_min_mv = _pdo_cache[i].min_voltage_mv;
+                        _avs.range_max_mv = _pdo_cache[i].voltage_mv;
                         _active_pdo_index = (int8_t)i;
                         LOG_INFO("Detected active AVS contract on warm reset: %lumV", voltage_mv);
                         break;
@@ -1481,23 +1365,23 @@ bool PdManager::refreshActiveContract() {
         _active_contract.is_pps = detected_pps;
         _active_contract.is_avs = detected_avs;
         // EPR AVS APDOs always have min_voltage > 9V (e.g. 15V); SPR AVS is always 9V.
-        _active_contract.is_epr = detected_avs && (_avs_range_min_mv != 9000 && _avs_range_min_mv != 0);
+        _active_contract.is_epr = detected_avs && (_avs.range_min_mv != 9000 && _avs.range_min_mv != 0);
 
         // Prefer the requested programmable current when a PPS/AVS contract overlaps
         // a fixed PDO and the controller reports the fixed-PDO current instead.
-        if (detected_pps && _pps_current_ma > 0) {
-            _active_contract.current_ma = _pps_current_ma;
-        } else if (detected_avs && _avs_current_ma > 0) {
-            _active_contract.current_ma = _avs_current_ma;
+        if (detected_pps && _pps.current_ma > 0) {
+            _active_contract.current_ma = _pps.current_ma;
+        } else if (detected_avs && _avs.current_ma > 0) {
+            _active_contract.current_ma = _avs.current_ma;
         }
 
         // Cache the active programmable range for UI/CLI validation.
         if (detected_pps) {
-            _active_contract.programmable_min_mv = _pps_range_min_mv;
-            _active_contract.programmable_max_mv = _pps_range_max_mv;
+            _active_contract.programmable_min_mv = _pps.range_min_mv;
+            _active_contract.programmable_max_mv = _pps.range_max_mv;
         } else if (detected_avs) {
-            _active_contract.programmable_min_mv = _avs_range_min_mv;
-            _active_contract.programmable_max_mv = _avs_range_max_mv;
+            _active_contract.programmable_min_mv = _avs.range_min_mv;
+            _active_contract.programmable_max_mv = _avs.range_max_mv;
         } else {
             _active_contract.programmable_min_mv = 0;
             _active_contract.programmable_max_mv = 0;
@@ -1513,8 +1397,8 @@ bool PdManager::refreshActiveContract() {
     _active_contract.programmable_min_mv = 0;
     _active_contract.programmable_max_mv = 0;
     if (!_pdos_valid || !_charger_connected) {
-        clearPpsTracking();
-        clearAvsTracking();
+        clearTracking(_pps);
+        clearTracking(_avs);
         _pd_revision[0] = '\0';
     }
     return false;
@@ -1643,8 +1527,8 @@ void PdManager::handlePdInterrupt() {
 
         // Invalidate PDO cache
         _pdos_valid = false;
-        clearPpsTracking();
-        clearAvsTracking();
+        clearTracking(_pps);
+        clearTracking(_avs);
         clearRequestedContract();
         _pd_revision[0] = '\0';
         clearChargerIdentity();
@@ -1680,8 +1564,8 @@ void PdManager::handlePdInterrupt() {
         _active_contract.programmable_min_mv = 0;
         _active_contract.programmable_max_mv = 0;
         _negotiation_state = NegotiationState::IDLE;
-        clearPpsTracking();
-        clearAvsTracking();
+        clearTracking(_pps);
+        clearTracking(_avs);
         clearRequestedContract();
         _pd_revision[0] = '\0';
         clearChargerIdentity();
@@ -1739,11 +1623,11 @@ bool PdManager::isRequestedContractSatisfied() const {
 }
 
 bool PdManager::isPpsTuningActive() const {
-    return _pps_active && settings.isAutoPpsEnabled() && _pps_user_target_mv > 0;
+    return _pps.active && settings.isAutoPpsEnabled() && _pps.user_target_mv > 0;
 }
 
 bool PdManager::isAvsTuningActive() const {
-    return _avs_active && settings.isAutoAvsEnabled() && _avs_user_target_mv > 0;
+    return _avs.active && settings.isAutoAvsEnabled() && _avs.user_target_mv > 0;
 }
 
 void PdManager::checkTuningConvergenceImmediate() {
@@ -1756,13 +1640,13 @@ void PdManager::checkTuningConvergenceImmediate() {
     uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
 
     if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
-        if (_pps_active && _pps_user_target_mv > 0) {
-            int32_t error = (int32_t)_pps_user_target_mv - (int32_t)measured_mv;
-            _pps_tuning_converged = (abs(error) <= PPS_TUNE_THRESHOLD_MV);
+        if (_pps.active && _pps.user_target_mv > 0) {
+            int32_t error = (int32_t)_pps.user_target_mv - (int32_t)measured_mv;
+            _pps.tuning_converged = (abs(error) <= _pps.tune_threshold_mv);
         }
-        if (_avs_active && _avs_user_target_mv > 0) {
-            int32_t error = (int32_t)_avs_user_target_mv - (int32_t)measured_mv;
-            _avs_tuning_converged = (abs(error) <= AVS_TUNE_THRESHOLD_MV);
+        if (_avs.active && _avs.user_target_mv > 0) {
+            int32_t error = (int32_t)_avs.user_target_mv - (int32_t)measured_mv;
+            _avs.tuning_converged = (abs(error) <= _avs.tune_threshold_mv);
         }
     }
 }
@@ -1795,8 +1679,8 @@ bool PdManager::waitForPdos(uint32_t timeout_ms) {
     // Check timeout
     if (elapsed_ms >= timeout_ms) {
         LOG_WARN("PDO discovery timed out after %lums", elapsed_ms);
-        clearPpsTracking();
-        clearAvsTracking();
+        clearTracking(_pps);
+        clearTracking(_avs);
         clearRequestedContract();
         _pd_revision[0] = '\0';
         refreshActiveContract();
