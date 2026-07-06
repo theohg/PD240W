@@ -172,6 +172,7 @@ DisplayManager::DisplayManager()
     , _last_contract_shown(-1)
     , _last_contract_voltage_mv(0)
     , _last_contract_current_ma(0)
+    , _about_charger_connected(-1)
     , _last_menu_selection(-1)
     , _last_settings_selection(-1)
     , _last_pdo_selection(-1)
@@ -264,6 +265,7 @@ void DisplayManager::init() {
     _last_contract_shown = -1;
     _last_contract_voltage_mv = 0;
     _last_contract_current_ma = 0;
+    _about_charger_connected = -1;
 }
 
 // ============================================================================
@@ -448,9 +450,18 @@ void DisplayManager::renderAdjustScreen() {
             drawAboutScreen();
         }
     } else if (mode == AdjustMode::ABOUT_CHARGER) {
+        int8_t connected = pdManager.isChargerConnected() ? 1 : 0;
         if (_needs_full_redraw) {
             drawHeader("About This Charger");
             drawAboutChargerScreen();
+            _about_charger_connected = connected;
+        } else if (connected != _about_charger_connected) {
+            // Plug/unplug while the screen is open: the row layout changes shape, so
+            // clear the content area before redrawing to avoid leaving stale rows.
+            hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH,
+                                SCREEN_HEIGHT - CONTENT_Y_START, UIColors::BACKGROUND);
+            drawAboutChargerScreen();
+            _about_charger_connected = connected;
         }
     } else if (mode == AdjustMode::SETTINGS_MENU) {
         if (_needs_full_redraw) {
@@ -462,7 +473,7 @@ void DisplayManager::renderAdjustScreen() {
 
 void DisplayManager::renderFaultScreen() {
     if (_needs_full_redraw) {
-        clearScreen();
+        // render() already cleared the screen for this full redraw; don't clear again.
         drawFaultIcon();
         drawFaultDetails();
     }
@@ -639,6 +650,16 @@ void DisplayManager::drawActiveContract() {
                 int old_w = ST7789::getStringWidthAA(_last_pd_revision, FONT_SMALL) + 8;
                 int old_x = RIGHTMOST_BADGE_X - old_w - 4;
                 hw.display.fillRect(old_x, y - 2, old_w, BADGE_H, UIColors::BACKGROUND);
+
+                // The EPR badge is anchored to the left of the rev badge, so a rev-width
+                // change shifts where it belongs. Clear it at its old anchor and force a
+                // redraw below at the new anchor; otherwise it's left stranded/duplicated.
+                if (_last_epr_badge_drawn) {
+                    int old_epr_w = ST7789::getStringWidthAA("EPR", FONT_SMALL) + 8;
+                    int old_epr_x = old_x - old_epr_w - 4;
+                    hw.display.fillRect(old_epr_x, y - 3, old_epr_w + 4, BADGE_H + 2, UIColors::BACKGROUND);
+                    _last_epr_badge_drawn = false;
+                }
             }
             int rev_w = ST7789::getStringWidthAA(pd_rev, FONT_SMALL) + 8;
             int rev_x = RIGHTMOST_BADGE_X - rev_w - 4;
@@ -1241,9 +1262,8 @@ void DisplayManager::drawPdoList() {
         return;
     }
 
-    // A redraw is happening: now copy the PDO array + active contract for highlighting.
-    TPS26750_SourceCapability pdos[AppConfig::MAX_PDO_COUNT];
-    pdManager.getSourceCapabilities(pdos, AppConfig::MAX_PDO_COUNT);
+    // A redraw is happening: read each PDO straight from the manager's cache (via
+    // pdoAt below) instead of copying the whole array into a local buffer.
     const ActiveContract& active = pdManager.getActiveContract();
 
     int visible_count = (total_items - start_idx > PDO_VISIBLE_ROWS) ? PDO_VISIBLE_ROWS : (total_items - start_idx);
@@ -1263,10 +1283,14 @@ void DisplayManager::drawPdoList() {
             if (i == count) {
                 drawMenuItem(y, "Back", selected, true);
             } else {
+                const TPS26750_SourceCapability* pdo_ptr = pdManager.pdoAt((uint8_t)i);
+                if (!pdo_ptr) { y += MENU_ITEM_HEIGHT; continue; }
+                const TPS26750_SourceCapability& pdo = *pdo_ptr;
+
                 // Check if this PDO is the currently active (negotiated) contract
                 bool is_active = false;
                 if (active.valid) {
-                    if (pdos[i].is_pps && active.is_pps) {
+                    if (pdo.is_pps && active.is_pps) {
                         // Prefer the authoritative PDO index to resolve overlapping APDOs.
                         // Fall back to range-only check when no explicit index is stored
                         // (e.g. warm-reset detection has not yet run).
@@ -1274,19 +1298,19 @@ void DisplayManager::drawPdoList() {
                         if (active_idx >= 0) {
                             is_active = (i == (uint8_t)active_idx);
                         } else {
-                            is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
-                                         active.voltage_mv <= pdos[i].voltage_mv);
+                            is_active = (active.voltage_mv >= pdo.min_voltage_mv &&
+                                         active.voltage_mv <= pdo.voltage_mv);
                         }
-                    } else if (pdos[i].is_avs && active.is_avs) {
+                    } else if (pdo.is_avs && active.is_avs) {
                         int8_t active_idx = pdManager.getActivePdoIndex();
                         if (active_idx >= 0) {
                             is_active = (i == (uint8_t)active_idx);
                         } else {
-                            is_active = (active.voltage_mv >= pdos[i].min_voltage_mv &&
-                                         active.voltage_mv <= pdos[i].voltage_mv);
+                            is_active = (active.voltage_mv >= pdo.min_voltage_mv &&
+                                         active.voltage_mv <= pdo.voltage_mv);
                         }
-                    } else if (!pdos[i].is_pps && !pdos[i].is_avs && !active.is_pps && !active.is_avs) {
-                        is_active = (pdos[i].voltage_mv == active.voltage_mv);
+                    } else if (!pdo.is_pps && !pdo.is_avs && !active.is_pps && !active.is_avs) {
+                        is_active = (pdo.voltage_mv == active.voltage_mv);
                     }
                 }
 
@@ -1317,10 +1341,10 @@ void DisplayManager::drawPdoList() {
                     hw.display.fillRect(MARGIN, y, SCREEN_WIDTH - MARGIN * 2, MENU_ITEM_HEIGHT, bg);
 
                 char line[40];
-                if (pdos[i].is_pps || pdos[i].is_avs) {
+                if (pdo.is_pps || pdo.is_avs) {
                     char min_v[8], max_v[8];
-                    uint32_t min_mv = pdos[i].min_voltage_mv;
-                    uint32_t max_mv = pdos[i].voltage_mv;
+                    uint32_t min_mv = pdo.min_voltage_mv;
+                    uint32_t max_mv = pdo.voltage_mv;
                     if (min_mv % 1000 == 0)
                         snprintf(min_v, sizeof(min_v), "%u", (unsigned)(min_mv / 1000));
                     else
@@ -1330,13 +1354,13 @@ void DisplayManager::drawPdoList() {
                     else
                         snprintf(max_v, sizeof(max_v), "%.1f", max_mv / 1000.0f);
                     snprintf(line, sizeof(line), "%s %s-%sV %umA",
-                             pdos[i].is_pps ? "PPS" : "AVS",
+                             pdo.is_pps ? "PPS" : "AVS",
                              min_v, max_v,
-                             (unsigned)pdos[i].max_current_ma);
+                             (unsigned)pdo.max_current_ma);
                 } else {
                     snprintf(line, sizeof(line), "%uV @ %umA",
-                             (unsigned)(pdos[i].voltage_mv / 1000),
-                             (unsigned)pdos[i].max_current_ma);
+                             (unsigned)(pdo.voltage_mv / 1000),
+                             (unsigned)pdo.max_current_ma);
                 }
 
                 hw.display.drawStringAA(MARGIN + 5, y + 5, prefix, fg, bg, FONT_SMALL);
@@ -1962,7 +1986,8 @@ void DisplayManager::drawEepromFlashScreen() {
                 const int hint_y = percent_y + 30;
 
                 if (_needs_full_redraw || stage_changed) {
-                    hw.display.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, UIColors::BACKGROUND);
+                    // Content area was already cleared above on this same condition;
+                    // no second full-width clear needed here.
                     drawCenteredStringAA(title_y, "Updating EEPROM", UIColors::TEXT_PRIMARY, FONT_MEDIUM);
                     drawCenteredStringAA(hint_y, "Keep power connected", UIColors::WARNING, FONT_SMALL);
                 }
@@ -2181,8 +2206,8 @@ void DisplayManager::drawFaultIcon() {
     int cx = SCREEN_WIDTH / 2;
     int cy = 80;
 
-    // Red background
-    hw.display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, UIColors::BACKGROUND);
+    // No background fill here: the caller (renderFaultScreen) only draws this on a
+    // full redraw, which render() has already cleared to the background color.
 
     // Draw "!" symbol using large font
     hw.display.drawString(cx - 10, cy - 20, "!", UIColors::ERROR, UIColors::BACKGROUND, 4);

@@ -225,8 +225,7 @@ void measAll(const char* /*arg*/) {
 // -------------------------------------------------------------------------
 
 void pdList(const char* /*arg*/) {
-    TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
-    uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+    uint8_t count = pdManager.getPdoCount();
 
     if (count == 0) {
         Cli::respond("NONE");
@@ -238,17 +237,19 @@ void pdList(const char* /*arg*/) {
     int pos = 0;
 
     for (uint8_t i = 0; i < count && pos < (int)sizeof(buf) - 40; i++) {
+        const TPS26750_SourceCapability* pdo = pdManager.pdoAt(i);
+        if (!pdo) break;
         if (i > 0) buf[pos++] = ',';
 
-        if (caps[i].is_pps) {
+        if (pdo->is_pps) {
             pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:PPS/%lu-%lu/%lu",
-                           i, caps[i].min_voltage_mv, caps[i].voltage_mv, caps[i].max_current_ma);
-        } else if (caps[i].is_avs) {
+                           i, pdo->min_voltage_mv, pdo->voltage_mv, pdo->max_current_ma);
+        } else if (pdo->is_avs) {
             pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:AVS/%lu-%lu/%lu",
-                           i, caps[i].min_voltage_mv, caps[i].voltage_mv, caps[i].max_current_ma);
+                           i, pdo->min_voltage_mv, pdo->voltage_mv, pdo->max_current_ma);
         } else {
             pos += snprintf(buf + pos, sizeof(buf) - pos, "%u:%lu/%lu",
-                           i, caps[i].voltage_mv, caps[i].max_current_ma);
+                           i, pdo->voltage_mv, pdo->max_current_ma);
         }
     }
     buf[pos] = '\0';
@@ -283,33 +284,38 @@ void pdSel(const char* arg) {
     long index = strtol(arg, &end, 10);
     if (*end != '\0') { Cli::error("INVALID_PARAM"); return; }
 
-    TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
-    uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+    uint8_t count = pdManager.getPdoCount();
 
     if (index < 0 || index >= count) {
         Cli::error("INVALID_INDEX");
         return;
     }
 
+    const TPS26750_SourceCapability* pdo = pdManager.pdoAt((uint8_t)index);
+    if (!pdo) {
+        Cli::error("INVALID_INDEX");
+        return;
+    }
+
     bool ok;
-    if (caps[index].is_pps) {
-        ok = pdManager.requestPpsVoltage(caps[index].voltage_mv, caps[index].max_current_ma,
+    if (pdo->is_pps) {
+        ok = pdManager.requestPpsVoltage(pdo->voltage_mv, pdo->max_current_ma,
                                          (int8_t)index);
-    } else if (caps[index].is_avs) {
-        ok = pdManager.requestAvsVoltage(caps[index].voltage_mv, caps[index].max_current_ma,
+    } else if (pdo->is_avs) {
+        ok = pdManager.requestAvsVoltage(pdo->voltage_mv, pdo->max_current_ma,
                                          (int8_t)index);
     } else {
-        ok = pdManager.requestFixedVoltage(caps[index].voltage_mv, caps[index].max_current_ma);
+        ok = pdManager.requestFixedVoltage(pdo->voltage_mv, pdo->max_current_ma);
     }
 
     if (ok) {
         settings.setLastPdoIndex(static_cast<int8_t>(index));
-        settings.setLastContractType(caps[index].is_avs ? SavedStartupContractType::AVS :
-                                     caps[index].is_pps ? SavedStartupContractType::PPS :
+        settings.setLastContractType(pdo->is_avs ? SavedStartupContractType::AVS :
+                                     pdo->is_pps ? SavedStartupContractType::PPS :
                                      SavedStartupContractType::FIXED);
-        settings.setLastRequestedVoltageMv(caps[index].voltage_mv);
-        settings.setLastContractRange((caps[index].is_pps || caps[index].is_avs) ? caps[index].min_voltage_mv : caps[index].voltage_mv,
-                                      caps[index].voltage_mv);
+        settings.setLastRequestedVoltageMv(pdo->voltage_mv);
+        settings.setLastContractRange((pdo->is_pps || pdo->is_avs) ? pdo->min_voltage_mv : pdo->voltage_mv,
+                                      pdo->voltage_mv);
         settings.requestSave();
         Cli::respond("OK");
     } else {

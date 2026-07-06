@@ -86,9 +86,6 @@ static const char* BOOT_MESSAGES[] = {
 };
 static constexpr uint8_t BOOT_STAGE_COUNT = 4;
 
-// Storage for PDO list (shared with display)
-static TPS26750_SourceCapability s_pdo_list[AppConfig::MAX_PDO_COUNT];
-
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -329,7 +326,7 @@ void StateMachine::handleBootState() {
             // PDO discovery finished (found PDOs or timed out)
             _boot_pdos_found = pdManager.hasPdos();
             if (_boot_pdos_found) {
-                _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
+                _num_pdos = pdManager.getPdoCount();
                 LOG_INFO("Boot: Found %d PDOs", _num_pdos);
                 _boot_stage = 2;  // Move to negotiation stage
             } else {
@@ -420,7 +417,7 @@ void StateMachine::handleBootState() {
         if (epr_elapsed >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS && epr_elapsed - _boot_last_epr_poll_ms >= AppConfig::BOOT_EPR_POLL_INTERVAL_MS) {
             _boot_last_epr_poll_ms = epr_elapsed;
             pdManager.invalidatePdoCache();
-            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
+            _num_pdos = pdManager.getPdoCount();
             pdManager.refreshActiveContract();
 
             // Check if EPR/AVS PDOs have arrived. SPR AVS has voltage_mv == 20000 (==
@@ -428,7 +425,8 @@ void StateMachine::handleBootState() {
             // (28/36/48 V) and EPR AVS (max > 20 V) satisfy it.
             if (!_boot_epr_pdos_found) {
                 for (uint8_t i = 0; i < _num_pdos; i++) {
-                    if (s_pdo_list[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
+                    const TPS26750_SourceCapability* pdo = pdManager.pdoAt(i);
+                    if (pdo && pdo->voltage_mv > AppConfig::EPR_SPR_MAX_MV) {
                         _boot_epr_pdos_found = true;
                         LOG_INFO("Boot: EPR PDOs found after %lums: %d PDOs", epr_elapsed, _num_pdos);
                         break;
@@ -486,7 +484,7 @@ void StateMachine::handleBootState() {
             }
 
             pdManager.invalidatePdoCache();
-            _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
+            _num_pdos = pdManager.getPdoCount();
             pdManager.refreshActiveContract();
             LOG_INFO("Boot: EPR probe timeout, proceeding with %d PDOs", _num_pdos);
             _boot_last_epr_poll_ms = 0;
@@ -536,30 +534,32 @@ void StateMachine::handleMainState(EncoderEvent event) {
         if (contract.valid && contract.is_pps && pdManager.isPpsActive()) {
             // Use the authoritative active PDO index when available (avoids first-match
             // ambiguity when overlapping PPS APDOs exist, e.g. 3.3-11V and 3.3-16V).
-            TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
-            uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+            uint8_t count = pdManager.getPdoCount();
             int8_t active_idx = pdManager.getActivePdoIndex();
             uint8_t selected = 0;
             bool found = false;
-            if (active_idx >= 0 && active_idx < count && caps[active_idx].is_pps) {
+            const TPS26750_SourceCapability* active_pdo = pdManager.pdoAt((uint8_t)active_idx);
+            if (active_idx >= 0 && active_pdo && active_pdo->is_pps) {
                 selected = (uint8_t)active_idx;
                 found = true;
             } else {
                 for (uint8_t i = 0; i < count; i++) {
-                    if (caps[i].is_pps &&
-                        contract.voltage_mv >= caps[i].min_voltage_mv &&
-                        contract.voltage_mv <= caps[i].voltage_mv) {
+                    const TPS26750_SourceCapability* pdo = pdManager.pdoAt(i);
+                    if (pdo && pdo->is_pps &&
+                        contract.voltage_mv >= pdo->min_voltage_mv &&
+                        contract.voltage_mv <= pdo->voltage_mv) {
                         selected = i;
                         found = true;
                         break;
                     }
                 }
             }
-            if (found) {
+            const TPS26750_SourceCapability* sel_pdo = found ? pdManager.pdoAt(selected) : nullptr;
+            if (sel_pdo) {
                 _pps_pdo_index = selected;
-                _pps_min_voltage_mv = caps[selected].min_voltage_mv;
-                _pps_max_voltage_mv = caps[selected].voltage_mv;
-                _pps_max_current_ma = caps[selected].max_current_ma;
+                _pps_min_voltage_mv = sel_pdo->min_voltage_mv;
+                _pps_max_voltage_mv = sel_pdo->voltage_mv;
+                _pps_max_current_ma = sel_pdo->max_current_ma;
                 _pps_target_voltage_mv = getInitialProgrammableTargetMv(
                     true,
                     pdManager.getPpsUserTargetMv(),
@@ -574,30 +574,32 @@ void StateMachine::handleMainState(EncoderEvent event) {
             }
         } else if (contract.valid && contract.is_avs && pdManager.isAvsActive()) {
             // Find AVS PDO that covers current voltage and set up adjustment
-            TPS26750_SourceCapability caps[AppConfig::MAX_PDO_COUNT];
-            uint8_t count = pdManager.getSourceCapabilities(caps, AppConfig::MAX_PDO_COUNT);
+            uint8_t count = pdManager.getPdoCount();
             int8_t active_idx = pdManager.getActivePdoIndex();
             uint8_t selected = 0;
             bool found = false;
-            if (active_idx >= 0 && active_idx < count && caps[active_idx].is_avs) {
+            const TPS26750_SourceCapability* active_pdo = pdManager.pdoAt((uint8_t)active_idx);
+            if (active_idx >= 0 && active_pdo && active_pdo->is_avs) {
                 selected = (uint8_t)active_idx;
                 found = true;
             } else {
                 for (uint8_t i = 0; i < count; i++) {
-                    if (caps[i].is_avs &&
-                        contract.voltage_mv >= caps[i].min_voltage_mv &&
-                        contract.voltage_mv <= caps[i].voltage_mv) {
+                    const TPS26750_SourceCapability* pdo = pdManager.pdoAt(i);
+                    if (pdo && pdo->is_avs &&
+                        contract.voltage_mv >= pdo->min_voltage_mv &&
+                        contract.voltage_mv <= pdo->voltage_mv) {
                         selected = i;
                         found = true;
                         break;
                     }
                 }
             }
-            if (found) {
+            const TPS26750_SourceCapability* sel_pdo = found ? pdManager.pdoAt(selected) : nullptr;
+            if (sel_pdo) {
                 _avs_pdo_index = selected;
-                _avs_min_voltage_mv = caps[selected].min_voltage_mv;
-                _avs_max_voltage_mv = caps[selected].voltage_mv;
-                _avs_max_current_ma = caps[selected].max_current_ma;
+                _avs_min_voltage_mv = sel_pdo->min_voltage_mv;
+                _avs_max_voltage_mv = sel_pdo->voltage_mv;
+                _avs_max_current_ma = sel_pdo->max_current_ma;
                 _avs_target_voltage_mv = getInitialProgrammableTargetMv(
                     true,
                     pdManager.getAvsUserTargetMv(),
@@ -892,8 +894,9 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
                     break;
                 }
                 // Check if selected PDO is PPS - if so, enter voltage adjustment mode
-                if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos) {
-                    TPS26750_SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+                const TPS26750_SourceCapability* sel = pdManager.pdoAt((uint8_t)_selected_pdo_index);
+                if (_selected_pdo_index >= 0 && _selected_pdo_index < _num_pdos && sel) {
+                    const TPS26750_SourceCapability& pdo = *sel;
                     const ActiveContract& contract = pdManager.getActiveContract();
                     int8_t active_pdo_index = pdManager.getActivePdoIndex();
                     if (pdo.is_pps) {
@@ -1407,7 +1410,7 @@ void StateMachine::runPatchPush() {
 void StateMachine::loadPdoList() {
     // Reload PDOs first so the cache is valid before refreshActiveContract() runs its
     // warm-reset detection (which needs the cache to identify PPS/AVS contracts).
-    _num_pdos = pdManager.getSourceCapabilities(s_pdo_list, AppConfig::MAX_PDO_COUNT);
+    _num_pdos = pdManager.getPdoCount();
     pdManager.refreshActiveContract();  // Update active contract after PDO cache is valid
     _selected_pdo_index = 0;
 
@@ -1420,7 +1423,12 @@ void StateMachine::requestSelectedPdo() {
         return;
     }
 
-    TPS26750_SourceCapability& pdo = s_pdo_list[_selected_pdo_index];
+    const TPS26750_SourceCapability* pdo_ptr = pdManager.pdoAt((uint8_t)_selected_pdo_index);
+    if (!pdo_ptr) {
+        LOG_ERROR("Invalid PDO index: %d", _selected_pdo_index);
+        return;
+    }
+    const TPS26750_SourceCapability& pdo = *pdo_ptr;
 
     LOG_INFO("Requesting PDO[%d]: %lumV @ %lumA (PPS=%d, AVS=%d)",
              _selected_pdo_index, pdo.voltage_mv, pdo.max_current_ma,
@@ -1547,8 +1555,9 @@ void StateMachine::applyPpsVoltage() {
             hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);  // Confirmation beep
         }
         // Save PPS state for boot restore (only in Last Used mode to reduce flash wear)
-        if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
-            saveStartupContractSnapshot(s_pdo_list[_pps_pdo_index], _pps_pdo_index, _pps_target_voltage_mv);
+        const TPS26750_SourceCapability* pps_pdo = pdManager.pdoAt((uint8_t)_pps_pdo_index);
+        if (pps_pdo && settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
+            saveStartupContractSnapshot(*pps_pdo, _pps_pdo_index, _pps_target_voltage_mv);
             settings.requestSave();
         }
     } else {
@@ -1571,8 +1580,9 @@ void StateMachine::applyAvsVoltage() {
             hw.buzzer.playTone(AppConfig::BEEP_CONFIRM_FREQ, AppConfig::BEEP_CONFIRM_DURATION);
         }
         // Save AVS state for boot restore (only in Last Used mode to reduce flash wear)
-        if (settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
-            saveStartupContractSnapshot(s_pdo_list[_avs_pdo_index], _avs_pdo_index, _avs_target_voltage_mv);
+        const TPS26750_SourceCapability* avs_pdo = pdManager.pdoAt((uint8_t)_avs_pdo_index);
+        if (avs_pdo && settings.getStartupNegotiationMode() == StartupContractMode::LAST_USED) {
+            saveStartupContractSnapshot(*avs_pdo, _avs_pdo_index, _avs_target_voltage_mv);
             settings.requestSave();
         }
     } else {

@@ -458,16 +458,12 @@ uint8_t PdManager::getPdoCount() {
     return _pdo_count;
 }
 
-uint8_t PdManager::getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps) {
-    uint8_t available = getPdoCount();  // refresh cache + get count
-
-    // Copy from cache
-    uint8_t count = (available < max_caps) ? available : max_caps;
-    for (uint8_t i = 0; i < count; i++) {
-        caps[i] = _pdo_cache[i];
+const TPS26750_SourceCapability* PdManager::pdoAt(uint8_t index) {
+    uint8_t count = getPdoCount();  // refresh cache + get count
+    if (index >= count) {
+        return nullptr;
     }
-
-    return count;
+    return &_pdo_cache[index];
 }
 
 bool PdManager::getChargerDiagInfo(ChargerDiagInfo& info) {
@@ -603,58 +599,24 @@ bool PdManager::refreshChargerIdentity() {
 // ============================================================================
 
 bool PdManager::needsEprExit(uint32_t target_voltage_mv, bool target_is_pps) const {
-    // EPR exit needed when:
-    // 1. Currently in EPR territory (>20V)
-    // 2. Target is SPR (fixed <=20V or any PPS which is always SPR)
-    if (_active_contract.voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
-        return false;  // Already in SPR range
-    }
-    if (target_is_pps) {
-        return true;  // PPS is always SPR (max 21V)
-    }
-    return target_voltage_mv <= AppConfig::EPR_SPR_MAX_MV;
+    // Pure decision logic lives in pd_diagnostics.h (host-testable). Qualify the call
+    // so it resolves to the free function, not this same-named member.
+    return PdDiagnostics::needsEprExit(_active_contract.voltage_mv, target_voltage_mv, target_is_pps);
 }
 
 bool PdManager::isSafeEprExitPossible() const {
-    // Safe EPR exit requires an EPR AVS APDO that can step VBUS into SPR range
-    // without leaving EPR mode first.
-    for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs &&
-            _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
-            _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
-            return true;
-        }
-    }
-    return false;
+    return PdDiagnostics::isSafeEprExitPossible(_pdo_cache, _pdo_count);
 }
 
 bool PdManager::findAvsSafeVoltage(uint32_t& avs_voltage_mv, uint32_t& avs_current_ma,
                                    int8_t& avs_pdo_index) const {
-    // Prefer an EPR AVS APDO whose minimum voltage is already within SPR range.
-    // This preserves the old firmware behavior: step down while still in EPR,
-    // then request 5V to exit EPR cleanly. Using SPR AVS directly here can cause
-    // some chargers to reset during the EPR->SPR transition.
-    uint32_t best_min_mv = UINT32_MAX;
-    int8_t best_index = -1;
-
-    for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs &&
-            _pdo_cache[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
-            _pdo_cache[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV &&
-            _pdo_cache[i].min_voltage_mv < best_min_mv) {
-            best_min_mv = _pdo_cache[i].min_voltage_mv;
-            best_index = (int8_t)i;
-        }
-    }
-
-    if (best_index < 0) {
+    PdDiagnostics::AvsSafeVoltageResult r = PdDiagnostics::findAvsSafeVoltage(_pdo_cache, _pdo_count);
+    if (!r.valid) {
         return false;
     }
-
-    avs_pdo_index = best_index;
-    avs_voltage_mv = ((best_min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) /
-                      AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
-    avs_current_ma = _pdo_cache[best_index].max_current_ma;
+    avs_voltage_mv = r.voltage_mv;
+    avs_current_ma = r.current_ma;
+    avs_pdo_index = r.pdo_index;
     return true;
 }
 

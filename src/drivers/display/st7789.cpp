@@ -489,40 +489,53 @@ void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16
         // buffer bound is enforced here rather than trusted at every call site.
         if (column_height > LINE_BUF_MAX_PX) column_height = LINE_BUF_MAX_PX;
 
+        int16_t cx = x + dx;
+        int16_t cy = y + inset;
+
+        // Screen-bounds clipping. Unlike the solid fast path (which routes through
+        // fillRect), this path drives setAddressWindow + raw SPI directly, so an
+        // off-screen origin would otherwise write past the panel. Skip columns off
+        // the left/right edge and trim the column to the top/bottom edges. The dither
+        // keys off absolute screen coords, so shift the start row, not the anchor.
+        if (cx < 0 || cx >= WIDTH) continue;
+        int16_t dy_start = (cy < 0) ? static_cast<int16_t>(-cy) : 0;
+        int16_t dy_end = column_height;
+        if (cy + dy_end > HEIGHT) dy_end = static_cast<int16_t>(HEIGHT - cy);
+        if (dy_start >= dy_end) continue;   // column fully above/below the screen
+        int16_t visible_h = static_cast<int16_t>(dy_end - dy_start);
+
         // Gamma-correct interpolation: computed once per column, so std::sqrt is very fast
         int r8 = std::sqrt(sr2 + ((er2 - sr2) * dx) / max_step);
         int g8 = std::sqrt(sg2 + ((eg2 - sg2) * dx) / max_step);
         int b8 = std::sqrt(sb2 + ((eb2 - sb2) * dx) / max_step);
 
-        int16_t cx = x + dx;
-        int16_t cy = y + inset;
-
-        setAddressWindow(cx, cy, cx, cy + column_height - 1);
+        setAddressWindow(cx, cy + dy_start, cx, cy + dy_start + visible_h - 1);
         gpio_put(_pinDC, 1);
         gpio_put(_pinCS, 0);
 
         uint8_t line_buf[LINE_BUF_MAX_PX * 2];
 
-        for (int16_t dy = 0; dy < column_height; ++dy) {
+        for (int16_t dy = dy_start; dy < dy_end; ++dy) {
             // Apply 8x8 noise matrix based on absolute screen coordinates
             uint8_t d = bayer[(cy + dy) & 7][cx & 7];
-            
+
             // Red/Blue need up to +7 noise. Matrix is 0-63, so >> 3 scales it to 0-7.
             // Green needs up to +3 noise. Matrix is 0-63, so >> 4 scales it to 0-3.
             int r_val = r8 + (d >> 3);
             int g_val = g8 + (d >> 4);
             int b_val = b8 + (d >> 3);
-            
+
             uint16_t r5 = (r_val > 255 ? 255 : r_val) >> 3;
             uint16_t g6 = (g_val > 255 ? 255 : g_val) >> 2;
             uint16_t b5 = (b_val > 255 ? 255 : b_val) >> 3;
-            
+
             uint16_t color = (r5 << 11) | (g6 << 5) | b5;
-            line_buf[dy * 2]     = color >> 8;
-            line_buf[dy * 2 + 1] = color & 0xFF;
+            int16_t bi = static_cast<int16_t>(dy - dy_start);
+            line_buf[bi * 2]     = color >> 8;
+            line_buf[bi * 2 + 1] = color & 0xFF;
         }
-        
-        spi_write_blocking(_spi, line_buf, column_height * 2);
+
+        spi_write_blocking(_spi, line_buf, visible_h * 2);
         gpio_put(_pinCS, 1);
     }
 }

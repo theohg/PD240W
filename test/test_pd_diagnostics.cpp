@@ -346,3 +346,79 @@ TEST_CASE("inferPdRevision: EPR AVS outranks PPS (PD3.1 wins)", "[pd_diag]") {
     };
     CHECK(std::string(inferPdRevision(pdos, 3)) == "PD3.1");
 }
+
+// ============================================================================
+// EPR safe-exit decisions
+// ============================================================================
+TEST_CASE("needsEprExit: only when in EPR and target is SPR", "[pd_diag]") {
+    // Active already in SPR range -> never needs the exit dance.
+    CHECK_FALSE(needsEprExit(20000, 5000, false));
+    CHECK_FALSE(needsEprExit(15000, 12000, true));
+
+    // Active in EPR (>20V), PPS target is always SPR -> needs exit.
+    CHECK(needsEprExit(28000, 9000, true));
+
+    // Active in EPR, fixed/AVS target within SPR -> needs exit.
+    CHECK(needsEprExit(48000, 20000, false));
+    CHECK(needsEprExit(28000, 5000, false));
+
+    // Active in EPR, target stays in EPR -> no exit needed.
+    CHECK_FALSE(needsEprExit(48000, 28000, false));
+}
+
+TEST_CASE("isSafeEprExitPossible: needs an EPR AVS APDO reaching into SPR", "[pd_diag]") {
+    SECTION("EPR AVS with SPR-reachable floor") {
+        TPS26750_SourceCapability pdos[] = {
+            fixedPdo(5000, 3000),
+            avsPdo(48000, 15000, 5000),  // min 15V <= 20V < max 48V
+        };
+        CHECK(isSafeEprExitPossible(pdos, 2));
+    }
+    SECTION("EPR AVS whose floor is still above SPR boundary") {
+        TPS26750_SourceCapability pdos[] = {
+            avsPdo(48000, 21000, 5000),  // min 21V > 20V -> cannot reach SPR
+        };
+        CHECK_FALSE(isSafeEprExitPossible(pdos, 1));
+    }
+    SECTION("SPR AVS only (max not above boundary)") {
+        TPS26750_SourceCapability pdos[] = {
+            avsPdo(20000, 9000, 5000),   // max == boundary, not > boundary
+        };
+        CHECK_FALSE(isSafeEprExitPossible(pdos, 1));
+    }
+    SECTION("no AVS at all") {
+        TPS26750_SourceCapability pdos[] = { fixedPdo(48000, 5000) };
+        CHECK_FALSE(isSafeEprExitPossible(pdos, 1));
+    }
+}
+
+TEST_CASE("findAvsSafeVoltage: picks lowest reachable floor, step-aligned", "[pd_diag]") {
+    SECTION("lowest floor wins, already step-aligned") {
+        TPS26750_SourceCapability pdos[] = {
+            avsPdo(48000, 18000, 5000),
+            avsPdo(48000, 15000, 4000),  // lower floor -> chosen
+        };
+        AvsSafeVoltageResult r = findAvsSafeVoltage(pdos, 2);
+        CHECK(r.valid);
+        CHECK(r.pdo_index == 1);
+        CHECK(r.voltage_mv == 15000);   // 15000 already a multiple of 100mV
+        CHECK(r.current_ma == 4000);
+    }
+    SECTION("floor rounded up to the AVS step") {
+        TPS26750_SourceCapability pdos[] = {
+            avsPdo(48000, 15050, 5000),  // 15050 -> aligned up to 15100
+        };
+        AvsSafeVoltageResult r = findAvsSafeVoltage(pdos, 1);
+        CHECK(r.valid);
+        CHECK(r.voltage_mv == 15100);
+    }
+    SECTION("no reachable APDO -> invalid") {
+        TPS26750_SourceCapability pdos[] = {
+            avsPdo(48000, 21000, 5000),  // floor above SPR boundary
+            fixedPdo(28000, 5000),
+        };
+        AvsSafeVoltageResult r = findAvsSafeVoltage(pdos, 2);
+        CHECK_FALSE(r.valid);
+        CHECK(r.pdo_index == -1);
+    }
+}

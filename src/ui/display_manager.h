@@ -57,6 +57,10 @@ private:
     int8_t _last_contract_shown;
     uint32_t _last_contract_voltage_mv;
     uint32_t _last_contract_current_ma;
+    // About-Charger screen: last charger-connected state it was drawn for. -1=unknown,
+    // 0=disconnected, 1=connected. Lets a plug/unplug while the screen is open redraw
+    // the (otherwise freeze-framed) diagnostics instead of showing stale data.
+    int8_t _about_charger_connected;
 
     // Screen renderers
     void renderBootScreen();

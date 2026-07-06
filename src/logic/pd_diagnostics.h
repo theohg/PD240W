@@ -350,4 +350,74 @@ inline const char* inferPdRevision(const TPS26750_SourceCapability* pdos, uint8_
     return "";
 }
 
+// ----------------------------------------------------------------------------
+// EPR safe-exit decisions
+// ----------------------------------------------------------------------------
+// The firmware intercepts direct EPR->SPR transitions and replaces them with a
+// stepped sequence (AVS step-down within EPR -> 5 V -> target), because a direct
+// request reboots some chargers. These three helpers are the pure decision layer:
+// "does this transition need the dance", "can we do it safely", and "which APDO do
+// we step down through". The FSM that drives the hardware requests stays in
+// PdManager; only the arithmetic lives here so it is host-testable.
+
+/// @brief True when leaving the active contract for @p target_voltage_mv requires the
+/// EPR safe-exit sequence: currently above the SPR/EPR boundary (>20 V) and the target
+/// is within SPR range (any PPS, or a fixed/AVS target <= 20 V).
+inline bool needsEprExit(uint32_t active_voltage_mv, uint32_t target_voltage_mv, bool target_is_pps) {
+    if (active_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
+        return false;  // Already in SPR range
+    }
+    if (target_is_pps) {
+        return true;   // PPS is always SPR (max 21 V)
+    }
+    return target_voltage_mv <= AppConfig::EPR_SPR_MAX_MV;
+}
+
+/// @brief True when the source advertises an EPR AVS APDO able to step VBUS from EPR
+/// into SPR range without first leaving EPR mode (min <= 20 V < max).
+inline bool isSafeEprExitPossible(const TPS26750_SourceCapability* pdos, uint8_t count) {
+    for (uint8_t i = 0; i < count; i++) {
+        if (pdos[i].is_avs &&
+            pdos[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
+            pdos[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Result of choosing the intermediate AVS step-down for the EPR safe exit.
+struct AvsSafeVoltageResult {
+    bool valid;
+    uint32_t voltage_mv;   ///< Step-aligned request voltage within SPR range
+    uint32_t current_ma;   ///< Chosen APDO's max current
+    int8_t pdo_index;      ///< PDO-cache index of the chosen APDO (-1 when none)
+};
+
+/// @brief Pick the intermediate EPR AVS step-down for the safe exit. Selects the EPR
+/// AVS APDO with the lowest SPR-reachable floor, then requests that floor rounded up
+/// to the AVS voltage step. Returns {valid=false} when no such APDO exists.
+inline AvsSafeVoltageResult findAvsSafeVoltage(const TPS26750_SourceCapability* pdos, uint8_t count) {
+    uint32_t best_min_mv = UINT32_MAX;
+    int8_t best_index = -1;
+
+    for (uint8_t i = 0; i < count; i++) {
+        if (pdos[i].is_avs &&
+            pdos[i].voltage_mv > AppConfig::EPR_SPR_MAX_MV &&
+            pdos[i].min_voltage_mv <= AppConfig::EPR_SPR_MAX_MV &&
+            pdos[i].min_voltage_mv < best_min_mv) {
+            best_min_mv = pdos[i].min_voltage_mv;
+            best_index = static_cast<int8_t>(i);
+        }
+    }
+
+    if (best_index < 0) {
+        return {false, 0, 0, -1};
+    }
+
+    uint32_t aligned = ((best_min_mv + AppConfig::AVS_VOLTAGE_STEP_MV - 1) /
+                        AppConfig::AVS_VOLTAGE_STEP_MV) * AppConfig::AVS_VOLTAGE_STEP_MV;
+    return {true, aligned, pdos[best_index].max_current_ma, best_index};
+}
+
 }  // namespace PdDiagnostics

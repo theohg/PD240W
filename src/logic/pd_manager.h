@@ -64,13 +64,15 @@ public:
     // Handles negotiation state machine and interrupt processing
     void update();
 
-    // Get available PDOs from charger
-    uint8_t getSourceCapabilities(TPS26750_SourceCapability* caps, uint8_t max_caps);
-
     // Number of cached PDOs (refreshes the cache if needed). Cheap alternative to
     // getSourceCapabilities() when only the count is needed for change detection —
     // avoids copying the whole PDO array on every render tick.
     uint8_t getPdoCount();
+
+    // Read-only view of a single cached PDO (refreshes the cache if needed). Returns
+    // nullptr when @p index is out of range. Lets callers index the cache directly
+    // instead of copying the whole array into a local/global buffer.
+    const TPS26750_SourceCapability* pdoAt(uint8_t index);
 
     // Request a specific contract (non-blocking)
     bool requestContract(const TPS26750_SourceCapability& pdo);
