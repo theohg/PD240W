@@ -107,11 +107,16 @@ void update() {
     uint32_t step_size;
     if (pps) {
         user_max_mv = (int32_t)pdManager.getPpsUserTargetMv();
-        voltage_min_mv = 3300;
+        // Use the active APDO's advertised range min; fall back to the spec
+        // floor only when the range is unknown (0). Hard-coding the floor would
+        // wrongly clamp a contract whose range starts below it.
+        uint32_t range_min = pdManager.getPpsRangeMinMv();
+        voltage_min_mv = (int32_t)(range_min > 0 ? range_min : AppConfig::PPS_VOLTAGE_FLOOR_MV);
         step_size = AppConfig::PPS_VOLTAGE_STEP_MV;
     } else {
         user_max_mv = (int32_t)pdManager.getAvsUserTargetMv();
-        voltage_min_mv = 15000;
+        uint32_t range_min = pdManager.getAvsRangeMinMv();
+        voltage_min_mv = (int32_t)(range_min > 0 ? range_min : AppConfig::AVS_VOLTAGE_FLOOR_MV);
         step_size = AppConfig::AVS_VOLTAGE_STEP_MV;
     }
     if (user_max_mv <= 0) user_max_mv = (int32_t)pdManager.getActiveContract().voltage_mv;

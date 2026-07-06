@@ -76,6 +76,9 @@ extern bool g_cli_log_enabled;
 #define LOG_VALUE(name, value, unit) \
     LOG_DEBUG("%s: %.3f %s", name, (double)(value), unit)
 
-// Separator for readability in logs
+// Separator for readability in logs (honors the LOG:OFF gate like the others)
 #define LOG_SEPARATOR() \
-    printf("========================================\n")
+    do { \
+        if (g_cli_log_enabled) \
+            printf("========================================\n"); \
+    } while(0)

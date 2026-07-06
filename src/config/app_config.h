@@ -59,12 +59,14 @@ namespace AppConfig {
     // -------------------------------------------------------------------------
     constexpr uint32_t PPS_VOLTAGE_STEP_MV = 20;        // PPS voltage step size [mV] (PD spec minimum)
     constexpr uint32_t PPS_VELOCITY_MULT = 1;           // Keep single-detent PPS moves at the 20mV spec minimum
+    constexpr uint32_t PPS_VOLTAGE_FLOOR_MV = 3300;     // CC fallback floor when the active APDO range min is unknown
 
     // -------------------------------------------------------------------------
     // AVS Voltage Settings
     // -------------------------------------------------------------------------
     constexpr uint32_t AVS_VOLTAGE_STEP_MV = 100;        // AVS voltage step size [mV] (PD spec EPR minimum)
     constexpr uint32_t AVS_VELOCITY_MULT = 1;            // No extra multiplier (100mV base step)
+    constexpr uint32_t AVS_VOLTAGE_FLOOR_MV = 15000;     // CC fallback floor when the active APDO range min is unknown
 
     // -------------------------------------------------------------------------
     // Display Settings

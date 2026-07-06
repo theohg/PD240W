@@ -34,15 +34,23 @@ bool Buzzer::setFrequency(uint32_t frequency) {
     // Get the actual system clock frequency (usually 125MHz)
     uint32_t sys_clock = clock_get_hz(clk_sys);
     
-    // To get a generic buzzer range (100Hz - 10kHz), a divider of 16.0 works well.
-    // It allows precise frequencies without overflowing the 16-bit wrap counter.
-    float clkdiv = 16.0f; 
-    
+    // A divider of 16.0 gives precise frequencies over the buzzer's range
+    // without overflowing the 16-bit wrap counter. For very low frequencies the
+    // resulting wrap would exceed 65535, so raise the divider to keep wrap in
+    // range instead of clamping wrap (which silently shifts the pitch up).
+    float clkdiv = 16.0f;
+
+    // Smallest divider that keeps wrap = F_sys/(div*F) - 1 within the 16-bit
+    // counter. RP2040 clkdiv integer part is 8-bit (max ~255.94).
+    float min_div = static_cast<float>(sys_clock) / (65536.0f * frequency);
+    if (min_div > clkdiv) clkdiv = min_div;
+    if (clkdiv > 255.0f) clkdiv = 255.0f;
+
     // Calculate the wrap value: (F_sys / (div * F_target)) - 1
     // The -1 is because the counter is 0-indexed
     uint32_t wrap = static_cast<uint32_t>((sys_clock / (clkdiv * frequency)) - 1);
 
-    // RP2040 Wrap limit is 16-bit (65535). If wrap is too high, we need a larger divider.
+    // Safety clamp (only reachable at the extreme low end past the div ceiling).
     if (wrap > 65535) {
         wrap = 65535;
     }

@@ -148,11 +148,11 @@ TEST_CASE("thermal: fault hysteresis holds until below 78 C", "[thermal]") {
     CHECK(t.cleared_fault);
 }
 
-TEST_CASE("thermal: fault ramp-down keeps warning latched (status stays FAULT)", "[thermal]") {
-    // Documents the preserved quirk: on the way down out of fault, warning was
-    // latched during the ramp up and is not re-evaluated to WARNING, so `status`
-    // (which colours the on-screen temperature) holds FAULT until the temperature
-    // drops through the warning band.
+TEST_CASE("thermal: fault ramp-down tracks the latched band (status follows level)", "[thermal]") {
+    // On the way down out of fault, warning was latched during the ramp up. The
+    // fixed behaviour re-derives `status` (which colours the on-screen
+    // temperature) from the final flags every evaluate(), so it drops to WARNING
+    // as soon as the fault clears instead of sticking at FAULT.
     State s;
     step(s, 66.0f);            // warning latched
     step(s, 80.0f);            // fault latched; warning_active stays true
@@ -162,8 +162,8 @@ TEST_CASE("thermal: fault ramp-down keeps warning latched (status stays FAULT)",
     step(s, 77.0f);            // fault clears, still in warning band
     CHECK_FALSE(s.fault_active);
     CHECK(s.warning_active);   // still latched
-    CHECK(s.status == Level::FAULT);  // quirk: status not rewritten here
-    CHECK(levelOf(s) == Level::WARNING);  // flags, however, say WARNING
+    CHECK(s.status == Level::WARNING);    // status now follows the latched band
+    CHECK(levelOf(s) == Level::WARNING);
 }
 
 // ============================================================================

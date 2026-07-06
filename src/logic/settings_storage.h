@@ -312,7 +312,9 @@ inline uint32_t clampCurrentLimit(uint32_t limit_ma) {
 }
 
 inline uint8_t clampBrightness(uint8_t brightness) {
-    return brightness > 100 ? 100 : brightness;
+    if (brightness < AppConfig::LCD_BRIGHTNESS_MIN) return AppConfig::LCD_BRIGHTNESS_MIN;
+    if (brightness > AppConfig::LCD_BRIGHTNESS_MAX) return AppConfig::LCD_BRIGHTNESS_MAX;
+    return brightness;
 }
 
 inline uint8_t clampAutoDimMinutes(uint8_t minutes) {

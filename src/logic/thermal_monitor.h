@@ -118,6 +118,13 @@ inline Transition evaluate(State s, float max_temp_c) {
         }
     }
 
+    // Screen colour always reflects the currently-latched band. The per-branch
+    // status writes above only fire on specific edges, which left `status`
+    // stuck at the old colour when a band cleared into an already-latched lower
+    // band (e.g. fault -> already-latched warning kept FAULT colour). Deriving
+    // it from the final flags here removes that quirk.
+    s.status = levelOf(s);
+
     t.state = s;
     return t;
 }

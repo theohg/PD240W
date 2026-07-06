@@ -294,11 +294,12 @@ TEST_CASE("clampCurrentLimit: pins to [MIN, MAX]", "[settings]") {
     CHECK(clampCurrentLimit(AppConfig::CURRENT_LIMIT_MAX_MA + 5000) == AppConfig::CURRENT_LIMIT_MAX_MA);
 }
 
-TEST_CASE("clampBrightness: caps at 100", "[settings]") {
-    CHECK(clampBrightness(0) == 0);
+TEST_CASE("clampBrightness: pins to [MIN, MAX]", "[settings]") {
+    CHECK(clampBrightness(0) == AppConfig::LCD_BRIGHTNESS_MIN);   // floor, not black screen
+    CHECK(clampBrightness(AppConfig::LCD_BRIGHTNESS_MIN) == AppConfig::LCD_BRIGHTNESS_MIN);
     CHECK(clampBrightness(55) == 55);
     CHECK(clampBrightness(100) == 100);
-    CHECK(clampBrightness(200) == 100);
+    CHECK(clampBrightness(200) == AppConfig::LCD_BRIGHTNESS_MAX);
 }
 
 TEST_CASE("clampAutoDimMinutes: pins to [MIN, MAX]", "[settings]") {
