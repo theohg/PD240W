@@ -87,9 +87,10 @@ Receiving any serial command puts the device in **REMOTE** mode:
 | `MEAS:POW?` | — | `30000` | Output power in mW |
 | `MEAS:TEMP?` | — | `452` | Board temperature in °C × 10 (45.2°C) |
 | `MEAS:ITEMP?` | — | `380` | INA228 die temperature in °C × 10 |
-| `MEAS:ENERGY?` | — | `1234` | Accumulated energy since boot in mAh |
+| `MEAS:ENERGY?` | — | `1234` | Accumulated energy since boot in mWh |
+| `MEAS:CHARGE?` | — | `1234` | Accumulated charge since boot in mAh |
 | `MEAS:VBUS?` | — | `20100` | Pre-switch VBUS voltage in mV (from ADC) |
-| `MEAS:ALL?` | — | `20000,1500,30000,452,380,1234` | All measurements, comma-separated |
+| `MEAS:ALL?` | — | `20000,1500,30000,452,380,1234` | volt_mv, curr_ma, pow_mw, temp_c×10, itemp_c×10, energy_mwh |
 
 ### PD Contract Management
 

@@ -21,6 +21,11 @@ namespace {
 constexpr uint8_t GPPI_RESPONSE_READ_BYTES = 32;
 constexpr uint8_t TPS_INTERRUPT_REGISTER_BYTES = 11;
 
+// After a failed keep-alive request, retry this soon instead of re-issuing the
+// I2C 4CC request every main-loop iteration (kHz hammering + a LOG_WARN each
+// time). Well under the <10 s PD keep-alive deadline.
+constexpr uint32_t KEEPALIVE_RETRY_BACKOFF_MS = 500;
+
 // Absolute difference within tolerance (unsigned-safe). Shared by the PPS/AVS
 // tracking checks below.
 inline bool withinTolerance(uint32_t lhs, uint32_t rhs, uint32_t tolerance_mv) {
@@ -736,6 +741,13 @@ void PdManager::serviceKeepAlive(ProgrammableContract& c) {
         c.voltage_mv = request_mv;  // Track what we actually requested
     } else {
         LOG_WARN("%s keep-alive request failed", label);
+        // Back off: push last_refresh so the next attempt lands ~KEEPALIVE_RETRY_
+        // BACKOFF_MS out rather than firing again next loop iteration. We solve
+        // (now + backoff) - last_refresh == refresh_interval_ms for last_refresh.
+        uint64_t retry_at_us = to_us_since_boot(get_absolute_time()) +
+                               (uint64_t)KEEPALIVE_RETRY_BACKOFF_MS * 1000u;
+        c.last_refresh = from_us_since_boot(retry_at_us -
+                               (uint64_t)refresh_interval_ms * 1000u);
     }
 }
 

@@ -18,6 +18,13 @@ namespace AppConfig {
     constexpr uint32_t ENCODER_LONG_PRESS_MS = 300;    // Long press threshold [ms]
     constexpr uint32_t ENCODER_MIN_PRESS_MS = 30;      // Minimum press time for debounce [ms]
 
+    // Hardware watchdog: reboots the MCU if the main loop stops feeding it (e.g. a
+    // stuck I2C bus hangs safety/PD monitoring with the load switch possibly on).
+    // Sized above the longest legitimate blocking window: the boot PD-config push's
+    // waitCommandClear (CMD_CLEAR_TIMEOUT_MS = 3000 ms). The push loop feeds the
+    // watchdog between steps so only a single hung step needs to fit this budget.
+    constexpr uint32_t WATCHDOG_TIMEOUT_MS = 4000;     // Main-loop watchdog timeout [ms]
+
     // -------------------------------------------------------------------------
     // Boot Timing
     // -------------------------------------------------------------------------

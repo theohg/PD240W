@@ -1,4 +1,5 @@
 #include "pico/stdlib.h"
+#include "hardware/watchdog.h"
 #include <stdio.h>
 #include "hardware.h"
 #include "interrupts.h"
@@ -73,6 +74,12 @@ int main() {
 
     LOG_SEPARATOR();
 
+    // Arm the hardware watchdog now that one-time init is done. If a stuck I2C bus
+    // (or any other fault) ever freezes the main loop, this reboots the device
+    // instead of leaving safety/PD monitoring dead with the load switch possibly on.
+    // The loop feeds it every iteration; the boot patch push feeds it between steps.
+    watchdog_enable(AppConfig::WATCHDOG_TIMEOUT_MS, true);
+
     // =========================================================================
     // Main Event Loop
     // =========================================================================
@@ -141,6 +148,13 @@ int main() {
         // ---------------------------------------------------------------------
         // Required for RGB LED blinking and other timed operations
         hw.update();
+
+        // ---------------------------------------------------------------------
+        // 8. Feed the watchdog
+        // ---------------------------------------------------------------------
+        // Reaching here means a full loop iteration completed; keep the device
+        // alive. A hung step (stuck bus) skips this and triggers a reboot.
+        watchdog_update();
     }
 
     return 0;

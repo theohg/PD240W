@@ -110,6 +110,14 @@ void Buzzer::playTone(uint32_t frequency, uint32_t duration_ms) {
     // 3. Set a timer to turn it off later
     // We pass 'this' so the static callback knows WHICH buzzer to stop
     _alarm_id = add_alarm_in_ms(duration_ms, stopToneCallback, this, true);
+
+    // add_alarm_in_ms returns <= 0 when the alarm pool is exhausted (or the delay
+    // already elapsed). With no stop callback scheduled the tone would latch on
+    // forever, so silence it immediately in that case.
+    if (_alarm_id <= 0) {
+        stop();
+        _alarm_id = 0;
+    }
 }
 
 // ===== Melody Playback =====
@@ -221,6 +229,14 @@ int64_t Buzzer::playNextNoteCallback(alarm_id_t /*id*/, void *user_data) {
 
     // Schedule next note after this note's duration
     buzzer->_alarm_id = add_alarm_in_ms(note.duration, playNextNoteCallback, buzzer, true);
+
+    // If the alarm pool is exhausted the chain would stall with the current note
+    // held on. Silence the buzzer and end the melody cleanly instead.
+    if (buzzer->_alarm_id <= 0) {
+        buzzer->stop();
+        buzzer->_alarm_id = 0;
+        buzzer->_playing_melody = false;
+    }
 
     return 0;
 }

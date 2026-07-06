@@ -104,6 +104,12 @@ public:
     // Get current state
     AppState getState() const { return _state; }
 
+    // Paint the RGB LED with the base color that belongs to the current state
+    // (BLUE=MAIN, MAGENTA=MENU, YELLOW=ADJUST, RED=FAULT). Used by the safety
+    // module to hand the LED back to state ownership when a temperature
+    // caution/warning clears, instead of leaving the status color latched.
+    void applyStateLedColor();
+
     // Set fault state (called from safety module or interrupts)
     void setFault(FaultType fault);
 

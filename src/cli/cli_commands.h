@@ -28,6 +28,7 @@ void measPow(const char* arg);
 void measTemp(const char* arg);
 void measItemp(const char* arg);
 void measEnergy(const char* arg);
+void measCharge(const char* arg);
 void measVbus(const char* arg);
 void measAll(const char* arg);
 

@@ -64,6 +64,7 @@ static const CommandEntry commands[] = {
     {"MEAS:TEMP",    true,  false, CliCmd::measTemp},
     {"MEAS:ITEMP",   true,  false, CliCmd::measItemp},
     {"MEAS:ENERGY",  true,  false, CliCmd::measEnergy},
+    {"MEAS:CHARGE",  true,  false, CliCmd::measCharge},
     {"MEAS:VBUS",    true,  false, CliCmd::measVbus},
     {"MEAS:ALL",     true,  false, CliCmd::measAll},
 

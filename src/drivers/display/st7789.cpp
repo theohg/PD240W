@@ -474,10 +474,20 @@ void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16
 
     int32_t max_step = w - 1;
 
+    // Per-column pixel buffer capacity (2 bytes/pixel). Columns taller than this
+    // are clamped below so the burst never exceeds line_buf.
+    constexpr int16_t LINE_BUF_MAX_PX = 240;
+
     for (int16_t dx = start_column; dx < end_column; ++dx) {
         int16_t inset = computeRoundRectInset(dx, w, r);
         int16_t column_height = h - inset * 2;
         if (column_height <= 0) continue;
+
+        // line_buf holds 2 bytes/pixel for at most LINE_BUF_MAX_PX pixels. Any
+        // caller passing h > LINE_BUF_MAX_PX would otherwise write past line_buf
+        // and smash the stack. Current callers stay well under, but clamp so the
+        // buffer bound is enforced here rather than trusted at every call site.
+        if (column_height > LINE_BUF_MAX_PX) column_height = LINE_BUF_MAX_PX;
 
         // Gamma-correct interpolation: computed once per column, so std::sqrt is very fast
         int r8 = std::sqrt(sr2 + ((er2 - sr2) * dx) / max_step);
@@ -491,8 +501,8 @@ void ST7789::fillRoundRectGradientColumns(int16_t x, int16_t y, int16_t w, int16
         gpio_put(_pinDC, 1);
         gpio_put(_pinCS, 0);
 
-        uint8_t line_buf[480]; 
-        
+        uint8_t line_buf[LINE_BUF_MAX_PX * 2];
+
         for (int16_t dy = 0; dy < column_height; ++dy) {
             // Apply 8x8 noise matrix based on absolute screen coordinates
             uint8_t d = bayer[(cy + dy) & 7][cx & 7];

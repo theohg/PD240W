@@ -2,9 +2,9 @@ name: Unit Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 # Host-side (native x86-64) unit tests for the hardware-free logic headers.
 # This is a completely separate toolchain from the firmware build in ci.yml:

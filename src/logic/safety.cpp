@@ -161,6 +161,10 @@ SafetyStatus Safety::update() {
                 break;
             case SafetyStatus::OK:
             default:
+                // Status cleared: hand the LED back to the state machine so it
+                // shows the current state's color instead of leaving the last
+                // caution/warning color latched until the next state transition.
+                stateMachine.applyStateLedColor();
                 break;
         }
         _last_led_status = led_status;

@@ -35,6 +35,12 @@ bool SK6812::init() {
 
 // Internal helper to handle Brightness + Bit Shifting + PIO Write
 void SK6812::_write(uint8_t r, uint8_t g, uint8_t b) {
+    // Bail out if init() failed to claim a state machine (_sm stays -1). Without
+    // this guard pio_sm_put_blocking(_pio, (uint)-1, ...) indexes past the PIO's
+    // state machines -> undefined behavior. setColor()/off() are called
+    // unconditionally from hardware.cpp regardless of init() success.
+    if (_sm < 0) return;
+
     uint32_t data;
 
     // Apply brightness scaling

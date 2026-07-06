@@ -1,4 +1,5 @@
 #include "state_machine.h"
+#include "hardware/watchdog.h"
 #include "hardware.h"
 #include "interrupts.h"
 #include "config/app_config.h"
@@ -243,6 +244,18 @@ bool StateMachine::update() {
         case AppState::FAULT:
             handleFaultState(event);
             break;
+    }
+
+    // Keep the session alive while the EEPROM workflow is busy. During COMPARING
+    // and FLASHING the user provides no input, so _last_activity_time would go
+    // stale and the inactivity timeout could fire mid-write, abandoning a
+    // half-programmed TPS26750 EEPROM. Refreshing activity time also (correctly)
+    // suppresses auto-dim while flashing is in progress.
+    if (_state == AppState::ADJUST && _adjust_mode == AdjustMode::EEPROM_FLASH) {
+        TpsEepromWorkflowStage stage = tpsEepromWorkflow.getStage();
+        if (stage == TpsEepromWorkflowStage::COMPARING || stage == TpsEepromWorkflowStage::FLASHING) {
+            _last_activity_time = get_absolute_time();
+        }
     }
 
     // Check for menu timeout (return to MAIN after inactivity)
@@ -1053,6 +1066,27 @@ void StateMachine::transitionTo(AppState new_state) {
     }
 }
 
+void StateMachine::applyStateLedColor() {
+    // Mirror the per-state colors set in transitionTo(). Kept in sync with the
+    // switch there. BOOT keeps whatever the boot sequence set (no override).
+    switch (_state) {
+        case AppState::MAIN:
+            hw.rgbLed.setColor(LedColor::BLUE, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+            break;
+        case AppState::MENU:
+            hw.rgbLed.setColor(LedColor::MAGENTA, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+            break;
+        case AppState::ADJUST:
+            hw.rgbLed.setColor(LedColor::YELLOW, AppConfig::RGB_LED_BRIGHTNESS_NORMAL);
+            break;
+        case AppState::FAULT:
+            hw.rgbLed.setColor(LedColor::RED);
+            break;
+        case AppState::BOOT:
+            break;
+    }
+}
+
 // ============================================================================
 // Input Processing
 // ============================================================================
@@ -1331,6 +1365,9 @@ void StateMachine::runPatchPush() {
     TpsPatchStatus status;
     uint8_t last_rendered = 0xFF;
     do {
+        // This push blocks the main loop for its whole duration, so feed the
+        // watchdog between steps; only a single hung step must fit the timeout.
+        watchdog_update();
         status = tpsPatchStep(&_boot_patch_session);
         uint8_t progress = tpsPatchProgress(&_boot_patch_session);
         // Animate the boot loading bar during the push. Skip rendering on the

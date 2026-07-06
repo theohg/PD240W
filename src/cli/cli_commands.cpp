@@ -179,8 +179,17 @@ void measItemp(const char* /*arg*/) {
 }
 
 void measEnergy(const char* /*arg*/) {
-    double charge_c = hw.powerMonitor.getCharge();
-    double mah = charge_c * 1000.0 / 3.6;
+    // Actual delivered energy since boot, in mWh (INA228 ENERGY register).
+    double mwh = hw.powerMonitor.getMilliWattHour();
+    if (mwh < 0.0) mwh = 0.0;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u", (unsigned)mwh);
+    Cli::respond(buf);
+}
+
+void measCharge(const char* /*arg*/) {
+    // Accumulated charge since boot, in mAh (INA228 CHARGE register).
+    double mah = hw.powerMonitor.getMilliAmpHour();
     if (mah < 0.0) mah = 0.0;
     char buf[16];
     snprintf(buf, sizeof(buf), "%u", (unsigned)mah);
@@ -196,9 +205,8 @@ void measVbus(const char* /*arg*/) {
 
 void measAll(const char* /*arg*/) {
     const SafetyState& s = safety.getState();
-    double charge_c = hw.powerMonitor.getCharge();
-    double mah = charge_c * 1000.0 / 3.6;
-    if (mah < 0.0) mah = 0.0;
+    double mwh = hw.powerMonitor.getMilliWattHour();
+    if (mwh < 0.0) mwh = 0.0;
 
     char buf[80];
     snprintf(buf, sizeof(buf), "%u,%u,%u,%d,%d,%u",
@@ -207,7 +215,7 @@ void measAll(const char* /*arg*/) {
              toMilliUnsigned(s.power_w),
              (int)(s.temperature_c * 10.0f),
              (int)(s.ina_temperature_c * 10.0f),
-             (unsigned)mah);
+             (unsigned)mwh);
     Cli::respond(buf);
 }
 
