@@ -5,6 +5,7 @@
 #include "logic/cc_controller.h"
 #include "logic/settings.h"
 #include "logic/pd_diagnostics.h"
+#include "logic/programmable_tuning.h"
 #include "utils/logging.h"
 #include "utils/pd_voltage.h"
 #include <array>
@@ -705,42 +706,24 @@ void PdManager::serviceKeepAlive(ProgrammableContract& c) {
         }
         uint32_t measured_mv = (uint32_t)(measured_v * 1000.0f);
 
-        // Only tune if we have a valid measurement (> 1V, likely the source is delivering)
+        // Only tune if we have a valid measurement (> 1V, likely the source is delivering).
+        // The correction math is the pure, host-tested ProgrammableTuning corrector.
         if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
-            int32_t error = (int32_t)c.user_target_mv - (int32_t)measured_mv;
+            ProgrammableTuning::CorrectionUpdate u = ProgrammableTuning::accumulateCorrection(
+                c.correction_mv, c.user_target_mv, measured_mv,
+                c.tune_threshold_mv, c.tune_max_correction_mv);
+            c.correction_mv = u.correction_mv;
+            c.tuning_converged = u.converged;
 
-            if (abs(error) > c.tune_threshold_mv) {
-                // Accumulate correction
-                c.correction_mv += error;
-
-                // Clamp correction to safety limit
-                if (c.correction_mv > c.tune_max_correction_mv)
-                    c.correction_mv = c.tune_max_correction_mv;
-                if (c.correction_mv < -c.tune_max_correction_mv)
-                    c.correction_mv = -c.tune_max_correction_mv;
-
-                c.tuning_converged = false;
+            if (u.adjusted) {
+                int32_t error = (int32_t)c.user_target_mv - (int32_t)measured_mv;
                 LOG_DEBUG("%s tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
                           label, c.user_target_mv, measured_mv, error, c.correction_mv);
-            } else {
-                c.tuning_converged = true;
             }
         }
 
-        // Compute adjusted request voltage
-        int32_t adjusted = (int32_t)c.user_target_mv + c.correction_mv;
-
-        // Clamp to APDO range
-        if (c.range_max_mv > 0) {
-            if (adjusted < (int32_t)c.range_min_mv) adjusted = (int32_t)c.range_min_mv;
-            if (adjusted > (int32_t)c.range_max_mv) adjusted = (int32_t)c.range_max_mv;
-        }
-
-        // Align to the request step before re-requesting the contract.
-        adjusted = static_cast<int32_t>(PdVoltage::alignDown(
-            static_cast<uint32_t>(adjusted), c.step_mv));
-
-        request_mv = (uint32_t)adjusted;
+        request_mv = ProgrammableTuning::resolveRequestVoltage(
+            c.user_target_mv, c.correction_mv, c.range_min_mv, c.range_max_mv, c.step_mv);
     }
 
     LOG_DEBUG("%s keep-alive: requesting %lumV @ %lumA", label, request_mv, c.current_ma);
@@ -1184,37 +1167,9 @@ bool PdManager::getMode(char* mode_str) {
 // ============================================================================
 
 void PdManager::detectPdRevision() {
-    bool has_epr = (_pdo_count > 7);
-    bool has_pps = false;
-    bool has_epr_avs = false;
-    bool has_spr_avs = false;
-    const char* detected_revision = "";
-
-    for (uint8_t i = 0; i < _pdo_count; i++) {
-        if (_pdo_cache[i].is_avs) {
-            if (_pdo_cache[i].min_voltage_mv == 9000) {
-                has_spr_avs = true;
-            } else {
-                has_epr_avs = true;
-                has_epr = true;
-            }
-        }
-        if (_pdo_cache[i].is_pps) has_pps = true;
-    }
-
-    // SPR AVS is new in PD 3.2, so its presence is enough to identify PD 3.2.
-    if (has_spr_avs) {
-        detected_revision = "PD3.2";
-    } else if (has_epr || has_epr_avs) {
-        // EPR-only sources map to PD 3.1.
-        detected_revision = "PD3.1";
-    } else if (has_pps) {
-        // PPS was introduced in PD 3.0
-        detected_revision = "PD3.0";
-    } else if (_pdo_count > 0) {
-        // If neither PPS nor AVS are present and <= 7 PDOs, assume PD 2.0
-        detected_revision = "PD2.0";
-    }
+    // Pure PDO-shape → revision-string classification lives in pd_diagnostics.h
+    // (host-tested); this wrapper owns the caching and the change log.
+    const char* detected_revision = inferPdRevision(_pdo_cache, _pdo_count);
 
     if (strcmp(_pd_revision, detected_revision) != 0) {
         if (detected_revision[0] != '\0') {
@@ -1408,12 +1363,12 @@ void PdManager::checkTuningConvergenceImmediate() {
 
     if (measured_mv > MIN_TUNING_VOLTAGE_MV) {
         if (_pps.active && _pps.user_target_mv > 0) {
-            int32_t error = (int32_t)_pps.user_target_mv - (int32_t)measured_mv;
-            _pps.tuning_converged = (abs(error) <= _pps.tune_threshold_mv);
+            _pps.tuning_converged = ProgrammableTuning::isConverged(
+                _pps.user_target_mv, measured_mv, _pps.tune_threshold_mv);
         }
         if (_avs.active && _avs.user_target_mv > 0) {
-            int32_t error = (int32_t)_avs.user_target_mv - (int32_t)measured_mv;
-            _avs.tuning_converged = (abs(error) <= _avs.tune_threshold_mv);
+            _avs.tuning_converged = ProgrammableTuning::isConverged(
+                _avs.user_target_mv, measured_mv, _avs.tune_threshold_mv);
         }
     }
 }

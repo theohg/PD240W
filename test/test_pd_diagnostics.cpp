@@ -273,3 +273,76 @@ TEST_CASE("inferDetectedCableRating: below 60W -> rating unobservable", "[pd_dia
     };
     CHECK(inferDetectedCableRating(pdos, 2) == DetectedCableRating::UNKNOWN_CHARGER_LIMIT);
 }
+
+// ============================================================================
+// inferPdRevision — PDO-shape -> PD-revision badge string
+// ============================================================================
+TEST_CASE("inferPdRevision: no PDOs -> empty string", "[pd_diag]") {
+    CHECK(std::string(inferPdRevision(nullptr, 0)) == "");
+    TPS26750_SourceCapability none[1] = {};
+    CHECK(std::string(inferPdRevision(none, 0)) == "");
+}
+
+TEST_CASE("inferPdRevision: fixed-only source -> PD2.0", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        fixedPdo(9000, 3000),
+        fixedPdo(15000, 3000),
+        fixedPdo(20000, 3000),
+    };
+    CHECK(std::string(inferPdRevision(pdos, 4)) == "PD2.0");
+}
+
+TEST_CASE("inferPdRevision: PPS present (no AVS) -> PD3.0", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        fixedPdo(9000, 3000),
+        ppsPdo(21000, 3300, 3000),
+    };
+    CHECK(std::string(inferPdRevision(pdos, 3)) == "PD3.0");
+}
+
+TEST_CASE("inferPdRevision: SPR AVS (9V floor) -> PD3.2", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        ppsPdo(21000, 3300, 3000),
+        avsPdo(20000, 9000, 5000),  // SPR AVS: min == 9000
+    };
+    CHECK(std::string(inferPdRevision(pdos, 3)) == "PD3.2");
+}
+
+TEST_CASE("inferPdRevision: EPR AVS (floor above 9V) -> PD3.1", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        avsPdo(48000, 15000, 5000),  // EPR AVS: min != 9000
+    };
+    CHECK(std::string(inferPdRevision(pdos, 2)) == "PD3.1");
+}
+
+TEST_CASE("inferPdRevision: more than 7 PDOs implies EPR -> PD3.1", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),  fixedPdo(9000, 3000),  fixedPdo(12000, 3000),
+        fixedPdo(15000, 3000), fixedPdo(20000, 5000), fixedPdo(28000, 5000),
+        fixedPdo(36000, 5000), fixedPdo(48000, 5000),  // 8 PDOs
+    };
+    CHECK(std::string(inferPdRevision(pdos, 8)) == "PD3.1");
+}
+
+TEST_CASE("inferPdRevision: SPR AVS outranks EPR AVS (PD3.2 wins)", "[pd_diag]") {
+    // A source advertising both an SPR AVS and an EPR AVS is a PD 3.2 supply.
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        avsPdo(20000, 9000, 5000),   // SPR AVS
+        avsPdo(48000, 15000, 5000),  // EPR AVS
+    };
+    CHECK(std::string(inferPdRevision(pdos, 3)) == "PD3.2");
+}
+
+TEST_CASE("inferPdRevision: EPR AVS outranks PPS (PD3.1 wins)", "[pd_diag]") {
+    TPS26750_SourceCapability pdos[] = {
+        fixedPdo(5000, 3000),
+        ppsPdo(21000, 3300, 3000),
+        avsPdo(48000, 15000, 5000),  // EPR AVS
+    };
+    CHECK(std::string(inferPdRevision(pdos, 3)) == "PD3.1");
+}

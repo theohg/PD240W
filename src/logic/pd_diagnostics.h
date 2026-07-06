@@ -302,4 +302,52 @@ inline DetectedCableRating inferDetectedCableRating(const TPS26750_SourceCapabil
     return DetectedCableRating::STANDARD_3A;
 }
 
+// ----------------------------------------------------------------------------
+// PD-revision inference
+// ----------------------------------------------------------------------------
+
+/// @brief Infer the USB-PD revision badge string from the shape of the advertised
+/// PDOs. Mirrors the badge rules in the project docs:
+///   - SPR AVS present (an AVS PDO with a 9 V floor, new in PD 3.2)        -> "PD3.2"
+///   - any EPR rail: >7 PDOs, or an EPR AVS PDO (AVS floor above 9 V)      -> "PD3.1"
+///   - PPS present (no AVS)                                                -> "PD3.0"
+///   - at least one fixed PDO and none of the above                       -> "PD2.0"
+///   - no PDOs at all                                                     -> ""
+/// Pure: reads only the PDO array, so it is host-testable. The caller owns the
+/// side effects (caching the string, logging the change).
+inline const char* inferPdRevision(const TPS26750_SourceCapability* pdos, uint8_t count) {
+    bool has_epr = (count > 7);
+    bool has_pps = false;
+    bool has_epr_avs = false;
+    bool has_spr_avs = false;
+
+    for (uint8_t i = 0; i < count; i++) {
+        if (pdos[i].is_avs) {
+            if (pdos[i].min_voltage_mv == 9000) {
+                has_spr_avs = true;
+            } else {
+                has_epr_avs = true;
+                has_epr = true;
+            }
+        }
+        if (pdos[i].is_pps) has_pps = true;
+    }
+
+    // SPR AVS is new in PD 3.2, so its presence is enough to identify PD 3.2.
+    if (has_spr_avs) {
+        return "PD3.2";
+    } else if (has_epr || has_epr_avs) {
+        // EPR-only sources map to PD 3.1.
+        return "PD3.1";
+    } else if (has_pps) {
+        // PPS was introduced in PD 3.0.
+        return "PD3.0";
+    } else if (count > 0) {
+        // Neither PPS nor AVS present and <= 7 PDOs: assume PD 2.0.
+        return "PD2.0";
+    }
+
+    return "";
+}
+
 }  // namespace PdDiagnostics

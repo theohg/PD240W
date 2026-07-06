@@ -1,0 +1,40 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Host-side (native x86-64) unit tests for the hardware-free logic headers.
+# This is a completely separate toolchain from the firmware build in ci.yml:
+# no Pico SDK, no ARM cross-compiler — just a native C++20 compiler running the
+# Snitch suite under AddressSanitizer + UndefinedBehaviorSanitizer.
+# See test/README.md and notes/UNIT_TEST.md.
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The tested headers pull in the TPS26750 multiplatform driver's data
+          # types (native branch), so its submodule must be present.
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Configure
+        run: cmake -G Ninja -B test/build -S test
+
+      - name: Build
+        run: cmake --build test/build
+
+      - name: Run tests
+        working-directory: test/build
+        run: ctest --output-on-failure
