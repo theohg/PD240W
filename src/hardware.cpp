@@ -66,14 +66,16 @@ void Hardware::init() {
     } else {
         LOG_ERROR("TPS26750 PD Controller initialization FAILED");
     }
-    if (powerMonitor.init()) {
+    _power_monitor_ok = powerMonitor.init();
+    if (_power_monitor_ok) {
         if (!powerMonitor.setADCRange(Board::INA228_USE_LOW_ADC_RANGE)) {
             LOG_WARN("INA228 ADC range configuration failed");
         }
         LOG_INFO("INA228 Power monitor initialized successfully with FW %s",
                  Version::INA_FIRMWARE_VERSION);
     } else {
-        LOG_ERROR("INA228 Power monitor initialization FAILED");
+        LOG_ERROR("INA228 Power monitor initialization FAILED - load switch disabled "
+                  "(no current sensing / overcurrent protection)");
     }
 
     // RGB LED (PIO)

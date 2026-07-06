@@ -86,6 +86,7 @@ bool waitCommandLatched(const char* cmd4) {
                 return true;  // already reported a result; let the clear-poll decode it
             }
         }
+        sleep_ms(1);  // don't hammer the I2C bus between polls (matches waitCommandClear)
     }
     return false;  // CMD1 never showed the command -> write was dropped
 }

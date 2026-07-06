@@ -27,10 +27,18 @@ extern "C" {
 // Private Helper Functions
 // =============================================================================
 
+// Tracks whether I2C1 is currently claimed for EEPROM access so the init/deinit
+// helpers are idempotent. Several no-flash workflow paths call eepromDeinit()
+// and then cleanup() calls it again; without this the SDK i2c_deinit + GPIO
+// reset would run twice on the same idle bus.
+static bool s_i2c_active = false;
+
 /**
  * @brief Initialize I2C1 on GPIO 14/15 for EEPROM access.
  */
 static void eeprom_i2c_init() {
+    if (s_i2c_active) return;
+    s_i2c_active = true;
     // Initialize I2C1 peripheral
     i2c_init(EEPROM_I2C_INST, EEPROM_I2C_SPEED_HZ);
 
@@ -50,6 +58,8 @@ static void eeprom_i2c_init() {
  * @brief Deinitialize I2C1 to release resources.
  */
 static void eeprom_i2c_deinit() {
+    if (!s_i2c_active) return;
+    s_i2c_active = false;
     i2c_deinit(EEPROM_I2C_INST);
 
     // Reset GPIO pins to default state (input, no pulls)
@@ -102,6 +112,33 @@ static bool eeprom_probe_device() {
 }
 
 /**
+ * @brief Write a single page-aligned chunk (up to the next EEPROM page boundary,
+ *        capped at @p len) starting at @p mem_addr.
+ *
+ * Shared by the blocking eeprom_write_block() and the non-blocking
+ * eepromFlashStep(): both need the same page-boundary math and I2C packet layout;
+ * only the wait-for-write-cycle sequencing differs (blocking sleep vs. timer), so
+ * that is left to the caller. Returns the raw i2c_write_timeout_us() result and,
+ * on any non-negative return, stores the number of data bytes written in
+ * @p out_chunk.
+ */
+static int eeprom_write_page_chunk(uint16_t mem_addr, const uint8_t* data, size_t len,
+                                   size_t* out_chunk) {
+    uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
+    size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset), len);
+
+    // Prepare I2C packet: [Addr High] [Addr Low] [Data...]
+    uint8_t buffer[EEPROM_PAGE_SIZE + 2];
+    buffer[0] = (mem_addr >> 8) & 0xFF;
+    buffer[1] = mem_addr & 0xFF;
+    memcpy(&buffer[2], data, chunk_size);
+
+    *out_chunk = chunk_size;
+    return i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR, buffer,
+                                chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
+}
+
+/**
  * @brief Writes a block of data to the EEPROM handling page boundaries.
  * @param mem_addr  Starting EEPROM memory address
  * @param data      Pointer to data buffer
@@ -109,22 +146,10 @@ static bool eeprom_probe_device() {
  * @return true on success, false on I2C error
  */
 static bool eeprom_write_block(uint16_t mem_addr, const uint8_t* data, size_t len) {
-    // Buffer: 2 bytes address + up to EEPROM_PAGE_SIZE data bytes
-    uint8_t buffer[EEPROM_PAGE_SIZE + 2];
-
     size_t written = 0;
     while (written < len) {
-        // Calculate space remaining in current EEPROM page
-        uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
-        size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset), len - written);
-
-        // Prepare I2C packet: [Addr High] [Addr Low] [Data...]
-        buffer[0] = (mem_addr >> 8) & 0xFF;
-        buffer[1] = mem_addr & 0xFF;
-        memcpy(&buffer[2], &data[written], chunk_size);
-
-        // Perform write with timeout
-        int ret = i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR, buffer, chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
+        size_t chunk_size = 0;
+        int ret = eeprom_write_page_chunk(mem_addr, &data[written], len - written, &chunk_size);
 
         if (ret == PICO_ERROR_GENERIC) {
             LOG_ERROR("[EEPROM] I2C write NACK at 0x%04X", mem_addr);
@@ -327,18 +352,10 @@ EepromFlashStatus eepromFlashStep(EepromFlashSession* session,
     }
 
     if (session->write_offset < session->fw_size) {
-        uint8_t buffer[EEPROM_PAGE_SIZE + 2];
         uint16_t mem_addr = session->write_offset;
-        uint16_t page_offset = mem_addr % EEPROM_PAGE_SIZE;
-        size_t chunk_size = std::min((size_t)(EEPROM_PAGE_SIZE - page_offset),
-                                     session->fw_size - session->write_offset);
-
-        buffer[0] = (mem_addr >> 8) & 0xFF;
-        buffer[1] = mem_addr & 0xFF;
-        memcpy(&buffer[2], &session->fw_data[session->write_offset], chunk_size);
-
-        int ret = i2c_write_timeout_us(EEPROM_I2C_INST, EEPROM_I2C_ADDR,
-                                       buffer, chunk_size + 2, false, EEPROM_I2C_TIMEOUT_US);
+        size_t chunk_size = 0;
+        int ret = eeprom_write_page_chunk(mem_addr, &session->fw_data[session->write_offset],
+                                          session->fw_size - session->write_offset, &chunk_size);
         if (ret == PICO_ERROR_TIMEOUT) {
             LOG_ERROR("[EEPROM] Write timeout at 0x%04X", mem_addr);
             return setFlashError(session, "Write timeout");
@@ -478,24 +495,3 @@ bool eepromEraseAll() {
     return true;
 }
 
-bool eepromFlash(EepromProgressCallback callback, void* user_data) {
-    EepromFlashSession session{};
-    if (!eepromFlashBegin(&session)) {
-        return false;
-    }
-
-    while (true) {
-        EepromFlashStatus status = eepromFlashStep(&session, callback, user_data);
-        if (status == EepromFlashStatus::SUCCESS) {
-            return true;
-        }
-        if (status == EepromFlashStatus::ERROR) {
-            return false;
-        }
-
-        if (session.waiting_for_write_cycle &&
-            absolute_time_diff_us(session.next_action_time, get_absolute_time()) < 0) {
-            sleep_ms(1);
-        }
-    }
-}

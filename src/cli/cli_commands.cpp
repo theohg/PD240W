@@ -115,9 +115,10 @@ void outpSw(const char* arg) {
 
     // Route through the shared policy (fault gate, INA latch clear, tuning recheck)
     // so CLI and front-panel buttons behave identically.
-    if (stateMachine.setLoadSwitch(val != 0) == OutputResult::FAULT_ACTIVE) {
-        Cli::error("FAULT_ACTIVE");
-        return;
+    switch (stateMachine.setLoadSwitch(val != 0)) {
+        case OutputResult::FAULT_ACTIVE:     Cli::error("FAULT_ACTIVE");     return;
+        case OutputResult::NO_POWER_MONITOR: Cli::error("NO_POWER_MONITOR"); return;
+        default: break;
     }
     Cli::respond("OK");
 }

@@ -42,7 +42,17 @@ struct Hardware {
 
     Hardware();
     void init();
-    void update(); 
+    void update();
+
+    // True once the INA228 power monitor initialized successfully at boot. When
+    // false, current/power sensing and the INA228 hardware overcurrent latch are
+    // unavailable, so enabling the load switch would drive an unmonitored output
+    // (0V/0A/0C reads look like a plausible idle supply). Callers gate on this
+    // before enabling output — see StateMachine::setLoadSwitch.
+    bool powerMonitorReady() const { return _power_monitor_ok; }
+
+private:
+    bool _power_monitor_ok = false;
 };
 
 extern Hardware hw;

@@ -40,6 +40,7 @@ minicom -D /dev/ttyACM0 -b 115200
 | `OUT_OF_RANGE` | Numeric value outside allowed bounds |
 | `NOT_AVAILABLE` | Operation not possible (e.g. PPS command with no PPS contract, buck with low VBUS) |
 | `FAULT_ACTIVE` | Output command rejected because a safety fault is active |
+| `NO_POWER_MONITOR` | Load switch refused: INA228 power monitor did not initialize (no current sensing / overcurrent protection) |
 
 ### Log Output
 

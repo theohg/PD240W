@@ -1,5 +1,4 @@
 #include "drivers/input/adc_inputs.h"
-#include "utils/logging.h"
 
 bool ADCInputs::init() {
     // Initialize ADC hardware
@@ -14,8 +13,9 @@ bool ADCInputs::init() {
 
 uint16_t ADCInputs::readADCRaw(uint8_t channel) const {
     // Validate channel (RP2040 has ADC channels 0-3, plus internal temp sensor on 4)
+    // Out-of-range returns 0; the caller (SafetyState/getVBUS) treats 0 as an
+    // absent/invalid reading. Drivers stay logging-free per architecture rule #4.
     if (channel > 3) {
-        LOG_ERROR("Invalid ADC channel: %d", channel);
         return 0;
     }
 
@@ -66,9 +66,9 @@ float ADCInputs::getTemperature() const {
 
     float denominator = Board::ADC_REF_VOLTAGE - v_ntc;
     if (denominator <= 0.0f) {
-        // Prevent division by zero or negative values
-        LOG_WARN("Invalid NTC voltage reading: %.3fV", v_ntc);
-        return -273.15f;  // Return absolute zero as error indicator
+        // Prevent division by zero or negative values; absolute zero flags the
+        // caller that the reading is invalid (driver stays logging-free, rule #4).
+        return -273.15f;
     }
 
     float r_ntc = Board::NTC_SERIES_RESISTOR * v_ntc / denominator;

@@ -1203,7 +1203,9 @@ void StateMachine::handleOutputButtons() {
 
     // BTN1: Toggle load switch (shared policy: fault gate, INA latch clear, tuning recheck)
     if (btn1_clicked) {
-        setLoadSwitch(!hw.loadSwitch.read());
+        if (setLoadSwitch(!hw.loadSwitch.read()) == OutputResult::NO_POWER_MONITOR) {
+            hw.buzzer.playTone(AppConfig::BEEP_ERROR_FREQ, AppConfig::BEEP_ERROR_DURATION / 2);
+        }
     }
 
     // BTN2: Context-dependent action
@@ -1279,6 +1281,13 @@ OutputResult StateMachine::setLoadSwitch(bool on) {
         // Never enable output while a fault is latched.
         if (_state == AppState::FAULT) {
             return OutputResult::FAULT_ACTIVE;
+        }
+        // Refuse output when the INA228 never initialized: current/power sensing
+        // and the hardware overcurrent latch are dead, so this would be an
+        // unmonitored output on a 240W supply.
+        if (!hw.powerMonitorReady()) {
+            LOG_ERROR("Load switch refused: INA228 power monitor not initialized");
+            return OutputResult::NO_POWER_MONITOR;
         }
         // Clear the INA228 fault latch before enabling so a stale ALERT does not
         // immediately re-trip the overcurrent ISR.

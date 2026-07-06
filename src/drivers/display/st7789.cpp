@@ -230,10 +230,10 @@ void ST7789::writeData(uint8_t data) {
 
 void ST7789::writeData16(uint16_t data) {
     uint8_t buffer[2] = {static_cast<uint8_t>(data >> 8), static_cast<uint8_t>(data & 0xFF)};
-    gpio_put(_pinDC, 1);
-    gpio_put(_pinCS, 0);
+    gpio_put(_pinCS, 0);  // CS low first, then DC — matches writeCommand/writeData
+    gpio_put(_pinDC, 1);  // Data mode (DC/RS high)
     spi_write_blocking(_spi, buffer, 2);
-    gpio_put(_pinCS, 1);
+    gpio_put(_pinCS, 1);  // CS high to end transaction
 }
 
 void ST7789::setAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
@@ -649,6 +649,11 @@ void ST7789::drawCharAA(int16_t x, int16_t y, char c, uint16_t color, uint16_t b
     int16_t adv_h = font->lineHeight;
     if (adv_w <= 0 || adv_h <= 0) return;
 
+    // Glyph bitmap position, anchored to the UNCLIPPED origin so a negative origin
+    // clips the glyph (via the src_x/src_y range test below) instead of shifting it.
+    int16_t gx = x + glyph.xOffset;
+    int16_t gy = y + glyph.yOffset;
+
     // Clip to screen
     int16_t draw_x1 = x + adv_w - 1;
     int16_t draw_y1 = y + adv_h - 1;
@@ -660,10 +665,6 @@ void ST7789::drawCharAA(int16_t x, int16_t y, char c, uint16_t color, uint16_t b
 
     int16_t draw_w = draw_x1 - x + 1;
     int16_t draw_h = draw_y1 - y + 1;
-
-    // Glyph bitmap position
-    int16_t gx = x + glyph.xOffset;
-    int16_t gy = y + glyph.yOffset;
 
     // Pre-compute bg pixel bytes
     uint8_t bg_hi = bg >> 8;
@@ -743,10 +744,17 @@ int ST7789::getStringWidthAA(const char* str, const AAFont* font) {
 // ===== Bitmap drawing =====
 
 void ST7789::drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data) {
-    if (x >= WIDTH || y >= HEIGHT || w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) return;
 
     int16_t x1 = x + w - 1;
     int16_t y1 = y + h - 1;
+    if (x >= WIDTH || y >= HEIGHT || x1 < 0 || y1 < 0) return;
+
+    // Clip a negative origin by skipping the leading source columns/rows so the
+    // window handed to setAddressWindow never wraps (it takes unsigned coords).
+    int16_t src_x0 = 0, src_y0 = 0;
+    if (x < 0) { src_x0 = -x; x = 0; }
+    if (y < 0) { src_y0 = -y; y = 0; }
     if (x1 >= WIDTH) x1 = WIDTH - 1;
     if (y1 >= HEIGHT) y1 = HEIGHT - 1;
     int16_t draw_w = x1 - x + 1;
@@ -761,7 +769,7 @@ void ST7789::drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16
     uint8_t line_buf[480]; // Max 240 pixels x 2 bytes per row
 
     for (int16_t row = 0; row < draw_h; row++) {
-        const uint16_t* src = &data[row * w];
+        const uint16_t* src = &data[(row + src_y0) * w + src_x0];
         for (int16_t col = 0; col < draw_w; col++) {
             uint16_t pixel = src[col];
             line_buf[col * 2]     = pixel >> 8;
@@ -775,10 +783,18 @@ void ST7789::drawBitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16
 
 void ST7789::drawBitmapScaled(int16_t x, int16_t y, int16_t out_w, int16_t out_h,
                                int16_t src_w, int16_t src_h, const uint16_t* data) {
-    if (x >= WIDTH || y >= HEIGHT || out_w <= 0 || out_h <= 0) return;
+    if (out_w <= 0 || out_h <= 0) return;
 
     int16_t x1 = x + out_w - 1;
     int16_t y1 = y + out_h - 1;
+    if (x >= WIDTH || y >= HEIGHT || x1 < 0 || y1 < 0) return;
+
+    // Clip a negative origin: shift the output-space sampling index so the source
+    // pixel picked for the first drawn column/row is the one that would have
+    // landed at screen 0, not the (off-screen) original origin.
+    int16_t off_x = 0, off_y = 0;
+    if (x < 0) { off_x = -x; x = 0; }
+    if (y < 0) { off_y = -y; y = 0; }
     if (x1 >= WIDTH) x1 = WIDTH - 1;
     if (y1 >= HEIGHT) y1 = HEIGHT - 1;
     int16_t draw_w = x1 - x + 1;
@@ -792,10 +808,10 @@ void ST7789::drawBitmapScaled(int16_t x, int16_t y, int16_t out_w, int16_t out_h
     uint8_t line_buf[480];
 
     for (int16_t row = 0; row < draw_h; row++) {
-        int16_t src_y = (row * src_h) / out_h;
+        int16_t src_y = ((row + off_y) * src_h) / out_h;
         const uint16_t* src_row = &data[src_y * src_w];
         for (int16_t col = 0; col < draw_w; col++) {
-            int16_t src_x = (col * src_w) / out_w;
+            int16_t src_x = ((col + off_x) * src_w) / out_w;
             uint16_t pixel = src_row[src_x];
             line_buf[col * 2]     = pixel >> 8;
             line_buf[col * 2 + 1] = pixel & 0xFF;

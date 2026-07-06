@@ -86,8 +86,9 @@ enum class EncoderEvent {
 // buttons can simply ignore the reason.
 enum class OutputResult {
     OK,
-    FAULT_ACTIVE,   // load switch cannot be enabled while a fault is latched
-    NOT_AVAILABLE   // 17V buck requires VBUS >= MIN_VBUS_FOR_17V_MV
+    FAULT_ACTIVE,       // load switch cannot be enabled while a fault is latched
+    NOT_AVAILABLE,      // 17V buck requires VBUS >= MIN_VBUS_FOR_17V_MV
+    NO_POWER_MONITOR    // load switch refused: INA228 not initialized (no sensing/OCP)
 };
 
 class StateMachine {
