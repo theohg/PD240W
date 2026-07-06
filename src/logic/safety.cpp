@@ -4,6 +4,7 @@
 #include "utils/logging.h"
 #include "drivers/buzzer/buzzer.h"
 #include "logic/state_machine.h"
+#include "logic/thermal_monitor.h"
 
 // Global instance
 Safety safety;
@@ -12,8 +13,34 @@ Safety safety;
 static constexpr uint32_t TEMP_CHECK_INTERVAL_MS = 500;
 static constexpr uint32_t VOLTAGE_CHECK_INTERVAL_MS = 100;
 
-// Temperature hysteresis (avoid rapid toggling)
-static constexpr float TEMP_HYSTERESIS_C = 2.0f;
+// Temperature hysteresis (avoid rapid toggling). Single source of truth is the
+// pure FSM header; aliased here for the critical-alarm code below.
+static constexpr float TEMP_HYSTERESIS_C = ThermalMonitor::HYSTERESIS_C;
+
+namespace {
+
+// Map the pure FSM's status level to the firmware's SafetyStatus (1:1).
+SafetyStatus toSafetyStatus(ThermalMonitor::Level level) {
+    switch (level) {
+        case ThermalMonitor::Level::FAULT:   return SafetyStatus::FAULT;
+        case ThermalMonitor::Level::WARNING: return SafetyStatus::WARNING;
+        case ThermalMonitor::Level::CAUTION: return SafetyStatus::CAUTION;
+        case ThermalMonitor::Level::OK:      return SafetyStatus::OK;
+    }
+    return SafetyStatus::OK;
+}
+
+ThermalMonitor::Level toThermalLevel(SafetyStatus status) {
+    switch (status) {
+        case SafetyStatus::FAULT:   return ThermalMonitor::Level::FAULT;
+        case SafetyStatus::WARNING: return ThermalMonitor::Level::WARNING;
+        case SafetyStatus::CAUTION: return ThermalMonitor::Level::CAUTION;
+        case SafetyStatus::OK:      return ThermalMonitor::Level::OK;
+    }
+    return ThermalMonitor::Level::OK;
+}
+
+}  // namespace
 
 // ============================================================================
 // Constructor
@@ -154,71 +181,37 @@ void Safety::updateTemperature() {
     _state.max_temperature_c = (_state.temperature_c > _state.ina_temperature_c) ?
                          _state.temperature_c : _state.ina_temperature_c;
 
-    float caution_threshold = static_cast<float>(AppConfig::TEMP_CAUTION_C);   // 50.0
-    float warning_threshold = static_cast<float>(AppConfig::TEMP_WARNING_C);   // 65.0
-    float shutdown_threshold = static_cast<float>(AppConfig::TEMP_SHUTDOWN_C); // 80.0
+    // Delegate the 3-band + hysteresis FSM to the pure, host-tested logic; this
+    // wrapper keeps the hardware side effects (load cut, buzzer path, logs).
+    ThermalMonitor::State prev{_temp_caution_active, _temp_warning_active,
+                              _temp_fault_active, toThermalLevel(_state.temp_status)};
+    ThermalMonitor::Transition t = ThermalMonitor::evaluate(prev, _state.max_temperature_c);
 
-    // --------------------------------------------------------
-    // 1. FAULT CHECK (Shutdown >= 80C)
-    // --------------------------------------------------------
-    if (_state.max_temperature_c >= shutdown_threshold) {
-        if (!_temp_fault_active) {
-            _temp_fault_active = true;
-            _state.temp_status = SafetyStatus::FAULT;
+    _temp_caution_active = t.state.caution_active;
+    _temp_warning_active = t.state.warning_active;
+    _temp_fault_active = t.state.fault_active;
+    _state.temp_status = toSafetyStatus(t.state.status);
 
-            // Disable load switch
-            hw.loadSwitch.off();
-            LOG_ERROR("OVERTEMPERATURE FAULT: %.1fC >= %.1fC - Load disabled",
-                     _state.max_temperature_c, shutdown_threshold);
-        }
-    } else if (_temp_fault_active && _state.max_temperature_c < (shutdown_threshold - TEMP_HYSTERESIS_C)) {
-        _temp_fault_active = false;
+    if (t.entered_fault) {
+        hw.loadSwitch.off();  // safety cut
+        LOG_ERROR("OVERTEMPERATURE FAULT: %.1fC >= %.1fC - Load disabled",
+                  _state.max_temperature_c, static_cast<float>(AppConfig::TEMP_SHUTDOWN_C));
+    } else if (t.cleared_fault) {
         LOG_INFO("Temperature returned to safe level: %.1fC", _state.max_temperature_c);
     }
 
-    // --------------------------------------------------------
-    // 2. WARNING CHECK (>= 65C)
-    // Only check if not in Fault
-    // --------------------------------------------------------
-    if (!_temp_fault_active) {
-        if (_state.max_temperature_c >= warning_threshold) {
-            if (!_temp_warning_active) {
-                _temp_warning_active = true;
-                _state.temp_status = SafetyStatus::WARNING;
-                LOG_WARN("Temperature warning: %.1fC >= %.1fC",
-                        _state.max_temperature_c, warning_threshold);
-            }
-            // Ensure lower severity state is cleared
-            _temp_caution_active = false; 
-        } else if (_temp_warning_active && _state.max_temperature_c < (warning_threshold - TEMP_HYSTERESIS_C)) {
-            _temp_warning_active = false;
-            LOG_INFO("Temperature warning cleared: %.1fC", _state.max_temperature_c);
-            // Note: We don't set OK here yet; it might fall through to Caution below
-        }
+    if (t.entered_warning) {
+        LOG_WARN("Temperature warning: %.1fC >= %.1fC",
+                 _state.max_temperature_c, static_cast<float>(AppConfig::TEMP_WARNING_C));
+    } else if (t.cleared_warning) {
+        LOG_INFO("Temperature warning cleared: %.1fC", _state.max_temperature_c);
     }
 
-    // --------------------------------------------------------
-    // 3. CAUTION CHECK (>= 50C)
-    // Only check if not in Fault AND not in Warning
-    // --------------------------------------------------------
-    if (!_temp_fault_active && !_temp_warning_active) {
-        if (_state.max_temperature_c >= caution_threshold) {
-            if (!_temp_caution_active) {
-                _temp_caution_active = true;
-                _state.temp_status = SafetyStatus::CAUTION;
-                LOG_INFO("Temperature caution: %.1fC >= %.1fC", 
-                        _state.max_temperature_c, caution_threshold);
-            }
-        } else if (_temp_caution_active && _state.max_temperature_c < (caution_threshold - TEMP_HYSTERESIS_C)) {
-            _temp_caution_active = false;
-            _state.temp_status = SafetyStatus::OK;
-            LOG_INFO("Temperature caution cleared: %.1fC", _state.max_temperature_c);
-        }
-        
-        // Ensure status is updated if we are neither Fault, Warning, nor Caution
-        if (!_temp_caution_active) {
-            _state.temp_status = SafetyStatus::OK;
-        }
+    if (t.entered_caution) {
+        LOG_INFO("Temperature caution: %.1fC >= %.1fC",
+                 _state.max_temperature_c, static_cast<float>(AppConfig::TEMP_CAUTION_C));
+    } else if (t.cleared_caution) {
+        LOG_INFO("Temperature caution cleared: %.1fC", _state.max_temperature_c);
     }
 }
 

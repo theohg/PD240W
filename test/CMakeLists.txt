@@ -48,6 +48,9 @@ FetchContent_MakeAvailable(snitch)
 # ============================================================================
 add_executable(pd240w_tests
     test_pd_diagnostics.cpp
+    test_settings_storage.cpp
+    test_thermal_monitor.cpp
+    test_programmable_tuning.cpp
 )
 
 # The tested logic headers assume a "native" (non-embedded) TPS26750 platform so
@@ -90,9 +93,9 @@ if(ENABLE_COVERAGE)
         add_custom_target(coverage
             COMMAND ${CMAKE_CURRENT_BINARY_DIR}/pd240w_tests
             COMMAND ${LCOV} --directory . --capture --output-file coverage.info
-                    --ignore-errors mismatch
-            COMMAND ${LCOV} --remove coverage.info '*/test/*' '*/snitch/*' '*/_deps/*' '/usr/*'
-                    --output-file coverage_filtered.info
+                    --ignore-errors mismatch,unsupported,format
+            COMMAND ${LCOV} --remove coverage.info '*/test/*' '*/_deps/*' '/usr/*'
+                    --ignore-errors unused --output-file coverage_filtered.info
             COMMAND ${GENHTML} coverage_filtered.info
                     --output-directory ${CMAKE_CURRENT_BINARY_DIR}/coverage_report
             DEPENDS pd240w_tests

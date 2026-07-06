@@ -2,7 +2,8 @@
 
 #include <cstdint>
 #include "pico/stdlib.h"
-#include "logic/settings_types.h"  // pure flash enums (host-testable)
+#include "logic/settings_types.h"    // pure flash enums (host-testable)
+#include "logic/settings_storage.h"  // UserSettings layout + CRC/validation/migration (host-testable)
 
 // ============================================================================
 // User Settings Manager
@@ -14,74 +15,16 @@
 // Call update() in main loop to process pending saves.
 // ============================================================================
 
-// Magic number to validate stored settings
-constexpr uint32_t SETTINGS_MAGIC = 0x50443234;  // "PD24"
-constexpr uint8_t SETTINGS_VERSION = 6;
-
+// SETTINGS_MAGIC, SETTINGS_VERSION and the UserSettings flash layout now live in
+// logic/settings_storage.h (included above) alongside the pure CRC / validation
+// / migration logic, so all of it is host-testable.
+//
 // SavedStartupContractType, StartupContractMode, CurrentLimitMode and their
-// helpers now live in logic/settings_types.h (included above) so pure logic can
+// helpers live in logic/settings_types.h (included above) so pure logic can
 // depend on them without the Pico SDK.
 
 // Debounce delay for flash writes (reduces wear)
 constexpr uint32_t SETTINGS_SAVE_DEBOUNCE_MS = 2000;
-
-struct UserSettings {
-    // Magic number for validation
-    uint32_t magic;
-    
-    // Settings version for future compatibility
-    uint8_t version;
-
-    // Current limit (mA)
-    uint32_t current_limit_ma;
-
-    // Saved startup-contract hint (PDO indices are charger-specific, so this is only a hint)
-    int8_t last_pdo_index;
-
-    // Output states (unused: accessors were removed as dead code). Retained only
-    // to keep the flash layout stable; delete on the next SETTINGS_VERSION bump.
-    bool load_switch_enabled;
-    bool buck_17v_enabled;
-
-    // Display settings
-    uint8_t lcd_brightness;  // 0-100%
-
-    // Sound settings
-    bool sounds_enabled;     // ON/OFF for navigation buzzer sounds
-
-    // Auto PPS tuning
-    bool auto_pps_enabled;   // ON/OFF for automatic PPS voltage calibration
-
-    // Auto-dim timeout (minutes)
-    uint8_t auto_dim_minutes;  // 0-10, 0 = OFF, default 1
-
-    // Startup melody selection
-    uint8_t startup_melody;    // 0=Silent, 1=Mario, 2=Chime, 3=TwoTone
-
-    // Auto output on boot
-    bool auto_output;          // If true, enable output after boot completes
-
-    // Saved startup contract snapshot for LAST_USED restore
-    uint8_t last_contract_type;             // SavedStartupContractType
-    uint32_t last_requested_voltage_mv;     // Requested fixed/PPS/AVS target [mV]
-    uint32_t last_contract_min_voltage_mv;  // Advertised range min, or fixed voltage [mV]
-    uint32_t last_contract_max_voltage_mv;  // Advertised range max, or fixed voltage [mV]
-
-    // Startup contract negotiation mode
-    uint8_t startup_negotiation;  // 0=Lowest voltage, 1=Highest voltage, 2=Last used
-
-    // Auto AVS tuning
-    bool auto_avs_enabled;   // ON/OFF for automatic AVS voltage calibration
-
-    // Energy display mode: 0 = mAh, 1 = mWh
-    uint8_t energy_display_mode;
-
-    // Current limit operating mode (OFF / OCP / CC)
-    uint8_t current_limit_mode;
-
-    // CRC32 for data integrity
-    uint32_t crc32;
-};
 
 class Settings {
 public:

@@ -75,7 +75,10 @@ Notes:
 
 | Suite | Module under test |
 |-------|-------------------|
-| `test_pd_diagnostics.cpp` | `src/logic/pd_diagnostics.h` — startup-contract matching (PPS/AVS clamping and step alignment), charger-identity VDO decode, cable-rating inference, and power/vendor/string helpers |
+| `test_pd_diagnostics.cpp` | `src/logic/pd_diagnostics.h` — startup-contract matching (PPS/AVS clamping and step alignment), charger-identity VDO decode, cable-rating inference, PD-revision (PD2.0/3.0/3.1/3.2) inference from PDO shape, and power/vendor/string helpers |
+| `test_settings_storage.cpp` | `src/logic/settings_storage.h` — flash-image CRC32 integrity, magic/version validation, v4/v5 → v6 migration, factory defaults, and the setter value clamps |
+| `test_thermal_monitor.cpp` | `src/logic/thermal_monitor.h` — the 3-band (caution/warning/fault) overtemperature FSM with 2 °C hysteresis, latching, edge signalling, and display-status level |
+| `test_programmable_tuning.cpp` | `src/logic/programmable_tuning.h` — the PPS/AVS auto-tuning corrector: convergence check, accumulating P-correction with ±clamp, and request-voltage clamp/step-align |
 
 ---
 
@@ -90,6 +93,10 @@ hardware-coupled:
 - `SavedStartupContractType` — extracted, with the other flash enums, into
   `src/logic/settings_types.h`, a header that includes only `<cstdint>`, so pure
   logic no longer pulls in the Pico-SDK-coupled `Settings` class.
+- `UserSettings` + the flash CRC/validation/migration — extracted into
+  `src/logic/settings_storage.h` (includes only `<cstdint>`/`<cstring>`,
+  `app_config.h`, `settings_types.h`). `Settings` (in `settings.cpp`) now delegates
+  the byte-crunching to it and keeps only the flash I/O, debounce, and logging.
 
 ---
 
