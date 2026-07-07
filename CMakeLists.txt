@@ -129,8 +129,16 @@ pico_set_program_version(PD240W "2.0.3")
 # Enable warnings on our own sources only. Scoped via set_source_files_properties
 # rather than target_compile_options so the Pico SDK's own sources (compiled into
 # this same target) are not flagged. Enforces format-string (%lu/%ld) and
-# init-order cleanliness. Append -Werror here once the tree stays clean.
+# init-order cleanliness.
+#
+# -Werror is gated behind PD240W_WERROR (default OFF) so a stray warning from a
+# newer local toolchain doesn't block day-to-day builds, but CI configures with
+# -DPD240W_WERROR=ON so any format-string/dead-variable regression fails the PR.
+option(PD240W_WERROR "Treat warnings on PD240W sources as errors (used by CI)" OFF)
 set(PD240W_WARN_FLAGS -Wall -Wextra)
+if(PD240W_WERROR)
+    list(APPEND PD240W_WARN_FLAGS -Werror)
+endif()
 set_source_files_properties(${PD240W_SOURCES} PROPERTIES COMPILE_OPTIONS "${PD240W_WARN_FLAGS}")
 
 # =============================================================================

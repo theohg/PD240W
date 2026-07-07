@@ -43,8 +43,10 @@ jobs:
           mkdir -p build
           cd build
           # Build the shipping (Release) config so CI validates what releases ship
-          # and catches optimization-dependent warnings.
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
+          # and catches optimization-dependent warnings. -DPD240W_WERROR=ON promotes
+          # -Wall -Wextra on our sources to errors so any format-string or
+          # dead-variable regression fails the PR instead of merging silently.
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DPD240W_WERROR=ON ..
 
       - name: Build
         run: |
