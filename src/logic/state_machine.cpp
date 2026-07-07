@@ -206,12 +206,17 @@ bool StateMachine::update() {
 
     // Auto-dim handling: wake up on any user activity
     if (_screen_dimmed && event != EncoderEvent::NONE) {
-        // User interacted - restore brightness
+        // User interacted - restore brightness. Read settings, not
+        // _brightness_value: that member is a Settings-submenu editing snapshot
+        // only synced when the submenu opens (100 from the constructor until then).
         _screen_dimmed = false;
-        hw.display.setBacklightBrightness(_brightness_value);
+        hw.display.setBacklightBrightness(settings.getLcdBrightness());
         hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_NORMAL);  // Restore RGB LED brightness
         _last_activity_time = get_absolute_time();
         LOG_INFO("Screen woken from dim (encoder input)");
+        // Swallow the waking input: a click/long-press on a dark screen should
+        // only undim, not select/toggle/enter quick-adjust in the same press.
+        event = EncoderEvent::NONE;
     }
 
     // State-specific handling
@@ -243,15 +248,23 @@ bool StateMachine::update() {
             break;
     }
 
-    // Keep the session alive while the EEPROM workflow is busy. During COMPARING
-    // and FLASHING the user provides no input, so _last_activity_time would go
-    // stale and the inactivity timeout could fire mid-write, abandoning a
-    // half-programmed TPS26750 EEPROM. Refreshing activity time also (correctly)
-    // suppresses auto-dim while flashing is in progress.
-    if (_state == AppState::ADJUST && _adjust_mode == AdjustMode::EEPROM_FLASH) {
+    // The EEPROM flash workflow must run to completion once started. During
+    // COMPARING/FLASHING the user provides no input, so keep the session alive
+    // (else the inactivity timeout fires mid-write and auto-dim kicks in). More
+    // importantly, a fault (overheat / PD_DISCONNECT) transitions to FAULT, which
+    // is not the ADJUST+EEPROM_FLASH branch that pumps update() above — so the
+    // stepper would stop and leave a half-written TPS26750 EEPROM that boots from
+    // a corrupt image next power cycle. The load switch is already off, so
+    // finishing the I2C write is safe: pump it here regardless of state.
+    {
         TpsEepromWorkflowStage stage = tpsEepromWorkflow.getStage();
         if (stage == TpsEepromWorkflowStage::COMPARING || stage == TpsEepromWorkflowStage::FLASHING) {
             _last_activity_time = get_absolute_time();
+            // The ADJUST branch already pumped it this loop; only drive it here
+            // when a transition (fault) pulled us out of the flash screen.
+            if (_state != AppState::ADJUST || _adjust_mode != AdjustMode::EEPROM_FLASH) {
+                tpsEepromWorkflow.update();
+            }
         }
     }
 
@@ -779,6 +792,18 @@ void StateMachine::handleAdjustState(EncoderEvent event) {
         return;
     }
 
+    // PDO_SELECT: the cache can be refreshed mid-selection (late EPR caps, source
+    // re-advertisement). drawPdoList() renders the live getPdoCount() each frame, so
+    // re-sync the navigable count here and clamp the cursor — otherwise a grown list
+    // leaves rows unreachable and a shrunk list treats the drawn "Back" row as a PDO
+    // index (or vice-versa: a click on stale index _num_pdos silently exits).
+    if (_adjust_mode == AdjustMode::PDO_SELECT) {
+        _num_pdos = pdManager.getPdoCount();
+        if (_selected_pdo_index > _num_pdos) {
+            _selected_pdo_index = _num_pdos;  // clamp to the "Back" row at index _num_pdos
+        }
+    }
+
     switch (event) {
         case EncoderEvent::ROTATE_CW:
             if (_adjust_mode == AdjustMode::PDO_SELECT) {
@@ -1195,13 +1220,16 @@ void StateMachine::handleOutputButtons() {
     bool btn1_clicked = Interrupts::checkBtn1Clicked();
     bool btn2_clicked = Interrupts::checkBtn2Clicked();
 
-    // Wake from dim on any button press
+    // Wake from dim on any button press. The waking press only undims — it is
+    // swallowed here (no load-switch / 17V toggle) so a blind press on a dark
+    // screen can't actuate the output, matching bench-instrument behaviour.
     if (_screen_dimmed && (btn1_clicked || btn2_clicked)) {
         _screen_dimmed = false;
-        hw.display.setBacklightBrightness(_brightness_value);
+        hw.display.setBacklightBrightness(settings.getLcdBrightness());  // not _brightness_value (menu snapshot)
         hw.rgbLed.setBrightness(AppConfig::RGB_LED_BRIGHTNESS_NORMAL);  // Restore RGB LED brightness
         _last_activity_time = get_absolute_time();
         LOG_INFO("Screen woken from dim (button press)");
+        return;
     }
 
     // BTN1: Toggle load switch (shared policy: fault gate, INA latch clear, tuning recheck)
@@ -1240,6 +1268,11 @@ void StateMachine::setFault(FaultType fault) {
         return;  // Already in this fault state
     }
 
+    // A different fault while already in FAULT: transitionTo() below no-ops on
+    // same-state, so force a full redraw or the screen keeps the old fault's
+    // details (and an OC->OT switch would live-draw the temperature at a stale Y).
+    const bool fault_type_changed_in_fault = (_state == AppState::FAULT);
+
     _fault_type = fault;
 
     // Store fault values for display
@@ -1270,6 +1303,9 @@ void StateMachine::setFault(FaultType fault) {
     hw.loadSwitch.off();
 
     transitionTo(AppState::FAULT);
+    if (fault_type_changed_in_fault) {
+        displayManager.invalidate();
+    }
 }
 
 // ============================================================================
