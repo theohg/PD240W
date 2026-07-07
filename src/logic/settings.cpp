@@ -322,7 +322,7 @@ bool Settings::loadFromFlash() {
             return true;
 
         case SettingsStorage::LoadStatus::BAD_MAGIC: {
-            const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
+            [[maybe_unused]] const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
             LOG_DEBUG("Settings: Invalid magic (0x%08lX), using defaults", flash_settings->magic);
             return false;
         }
@@ -332,7 +332,7 @@ bool Settings::loadFromFlash() {
             return false;
 
         case SettingsStorage::LoadStatus::BAD_VERSION: {
-            const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
+            [[maybe_unused]] const UserSettings* flash_settings = reinterpret_cast<const UserSettings*>(FLASH_TARGET_ADDR);
             LOG_DEBUG("Settings: Version mismatch (%d vs %d), using defaults",
                       flash_settings->version, SETTINGS_VERSION);
             return false;

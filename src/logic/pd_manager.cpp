@@ -693,7 +693,7 @@ void PdManager::serviceKeepAlive(ProgrammableContract& c) {
             c.tuning_converged = u.converged;
 
             if (u.adjusted) {
-                int32_t error = (int32_t)c.user_target_mv - (int32_t)measured_mv;
+                [[maybe_unused]] int32_t error = (int32_t)c.user_target_mv - (int32_t)measured_mv;
                 LOG_DEBUG("%s tune: target=%lumV measured=%lumV error=%ldmV correction=%ldmV",
                           label, c.user_target_mv, measured_mv, error, c.correction_mv);
             }
