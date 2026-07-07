@@ -311,79 +311,89 @@ void PdManager::update() {
 
     // EPR safe exit 3-step state machine:
     // STEPPING_DOWN -> REQUESTING_5V -> REQUESTING_TARGET -> NONE
+    // The transition table is the pure, host-tested PdDiagnostics::eprExitStep;
+    // we execute the hardware side effect it selects.
     if (_epr_exit_state != EprExitState::NONE) {
-        // Global timeout for entire EPR exit sequence
         uint32_t epr_elapsed = absolute_time_diff_us(_epr_exit_start, get_absolute_time()) / 1000;
-        if (epr_elapsed >= EPR_EXIT_TIMEOUT_MS) {
-            LOG_ERROR("EPR exit sequence timed out after %lums -- aborting", epr_elapsed);
-            _epr_exit_state = EprExitState::NONE;
-        }
-        // Step failed or timed out at negotiation level
-        else if (_negotiation_state == NegotiationState::FAILED ||
-                 _negotiation_state == NegotiationState::TIMEOUT) {
-            LOG_ERROR("EPR exit step failed (state=%d, exit_step=%d) -- aborting",
-                      (int)_negotiation_state, (int)_epr_exit_state);
-            _epr_exit_state = EprExitState::NONE;
-        }
-        // Step 1 complete: AVS step-down succeeded -> request 5V Fixed to cleanly exit EPR
-        else if (_epr_exit_state == EprExitState::STEPPING_DOWN &&
-                 _negotiation_state == NegotiationState::SUCCESS) {
-            refreshActiveContract();
-            LOG_INFO("EPR step 1/3 complete: AVS at %lumV. Requesting 5V Fixed to exit EPR",
-                     _active_contract.voltage_mv);
-            _epr_exit_state = EprExitState::REQUESTING_5V;
-            // Request 5V Fixed -- bypass EPR interception by setting state first
-            _pre_request_voltage_mv = _active_contract.voltage_mv;
-            _pre_request_current_ma = _active_contract.current_ma;
-            // Deactivate AVS/PPS tracking for the intermediate 5V request
-            _avs.active = false;
-            _avs.voltage_mv = 0;
-            _avs.current_ma = 0;
-            _pps.active = false;
-            _pps.voltage_mv = 0;
-            _pps.current_ma = 0;
-            if (!hw.pdController.requestFixedProfile(EPR_EXIT_SAFE_MV, EPR_EXIT_SAFE_CURRENT_MA)) {
-                LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
-                _epr_exit_state = EprExitState::NONE;
-            } else {
-                // Keep the polling fallback aligned with the intermediate 5V request,
-                // otherwise the EPR exit sequence keeps comparing against the prior
-                // AVS step-down target and never reports this stage as complete.
-                _requested_contract_type = RequestedContractType::FIXED;
-                _requested_voltage_mv    = EPR_EXIT_SAFE_MV;
-                _requested_current_ma    = EPR_EXIT_SAFE_CURRENT_MA;
-                _negotiation_state = NegotiationState::REQUESTING;
-                _negotiation_start = get_absolute_time();
+        bool timed_out  = epr_elapsed >= EPR_EXIT_TIMEOUT_MS;
+        bool neg_success = (_negotiation_state == NegotiationState::SUCCESS);
+        bool neg_failed  = (_negotiation_state == NegotiationState::FAILED ||
+                            _negotiation_state == NegotiationState::TIMEOUT);
+
+        PdDiagnostics::EprExitStep step =
+            PdDiagnostics::eprExitStep(_epr_exit_state, neg_success, neg_failed, timed_out);
+        _epr_exit_state = step.next;
+
+        switch (step.action) {
+            case PdDiagnostics::EprExitAction::ABORT_TIMEOUT:
+                LOG_ERROR("EPR exit sequence timed out after %lums -- aborting", epr_elapsed);
+                break;
+
+            case PdDiagnostics::EprExitAction::ABORT_FAILED:
+                LOG_ERROR("EPR exit step failed (state=%d) -- aborting", (int)_negotiation_state);
+                break;
+
+            // Step 1 complete: AVS step-down succeeded -> request 5V Fixed to cleanly exit EPR
+            case PdDiagnostics::EprExitAction::REQUEST_5V: {
+                refreshActiveContract();
+                LOG_INFO("EPR step 1/3 complete: AVS at %lumV. Requesting 5V Fixed to exit EPR",
+                         _active_contract.voltage_mv);
+                // Request 5V Fixed -- bypass EPR interception (state already advanced)
+                _pre_request_voltage_mv = _active_contract.voltage_mv;
+                _pre_request_current_ma = _active_contract.current_ma;
+                // Deactivate AVS/PPS tracking for the intermediate 5V request
+                _avs.active = false;
+                _avs.voltage_mv = 0;
+                _avs.current_ma = 0;
+                _pps.active = false;
+                _pps.voltage_mv = 0;
+                _pps.current_ma = 0;
+                if (!hw.pdController.requestFixedProfile(EPR_EXIT_SAFE_MV, EPR_EXIT_SAFE_CURRENT_MA)) {
+                    LOG_ERROR("EPR exit: failed to request 5V Fixed -- aborting");
+                    _epr_exit_state = EprExitState::NONE;
+                } else {
+                    // Keep the polling fallback aligned with the intermediate 5V request,
+                    // otherwise the EPR exit sequence keeps comparing against the prior
+                    // AVS step-down target and never reports this stage as complete.
+                    _requested_contract_type = RequestedContractType::FIXED;
+                    _requested_voltage_mv    = EPR_EXIT_SAFE_MV;
+                    _requested_current_ma    = EPR_EXIT_SAFE_CURRENT_MA;
+                    _negotiation_state = NegotiationState::REQUESTING;
+                    _negotiation_start = get_absolute_time();
+                }
+                break;
             }
-        }
-        // Step 2 complete: 5V Fixed succeeded -> now request user's actual target
-        else if (_epr_exit_state == EprExitState::REQUESTING_5V &&
-                 _negotiation_state == NegotiationState::SUCCESS) {
-            refreshActiveContract();
-            const char* type_str = "Fixed";
-            if (_epr_deferred_contract_type == RequestedContractType::PPS) type_str = "PPS";
-            else if (_epr_deferred_contract_type == RequestedContractType::AVS) type_str = "AVS";
-            LOG_INFO("EPR step 2/3 complete: at %lumV (SPR). Requesting target: %s %lumV @ %lumA",
-                     _active_contract.voltage_mv,
-                     type_str,
-                     _epr_deferred_voltage_mv, _epr_deferred_current_ma);
-            _epr_exit_state = EprExitState::REQUESTING_TARGET;
-            // Fire the user's actual request (EPR exit state prevents re-interception)
-            if (_epr_deferred_contract_type == RequestedContractType::PPS) {
-                requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
-            } else if (_epr_deferred_contract_type == RequestedContractType::AVS) {
-                requestAvsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
-            } else {
-                requestFixedVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+
+            // Step 2 complete: 5V Fixed succeeded -> now request user's actual target
+            case PdDiagnostics::EprExitAction::REQUEST_TARGET: {
+                refreshActiveContract();
+                const char* type_str = "Fixed";
+                if (_epr_deferred_contract_type == RequestedContractType::PPS) type_str = "PPS";
+                else if (_epr_deferred_contract_type == RequestedContractType::AVS) type_str = "AVS";
+                LOG_INFO("EPR step 2/3 complete: at %lumV (SPR). Requesting target: %s %lumV @ %lumA",
+                         _active_contract.voltage_mv,
+                         type_str,
+                         _epr_deferred_voltage_mv, _epr_deferred_current_ma);
+                // Fire the user's actual request (EPR exit state prevents re-interception)
+                if (_epr_deferred_contract_type == RequestedContractType::PPS) {
+                    requestPpsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
+                } else if (_epr_deferred_contract_type == RequestedContractType::AVS) {
+                    requestAvsVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma, _epr_deferred_pdo_index);
+                } else {
+                    requestFixedVoltage(_epr_deferred_voltage_mv, _epr_deferred_current_ma);
+                }
+                break;
             }
-        }
-        // Step 3 complete: target request succeeded -> done
-        else if (_epr_exit_state == EprExitState::REQUESTING_TARGET &&
-                 _negotiation_state == NegotiationState::SUCCESS) {
-            refreshActiveContract();
-            LOG_INFO("EPR step 3/3 complete: safely transitioned to %lumV @ %lumA",
-                     _active_contract.voltage_mv, _active_contract.current_ma);
-            _epr_exit_state = EprExitState::NONE;
+
+            // Step 3 complete: target request succeeded -> done
+            case PdDiagnostics::EprExitAction::DONE:
+                refreshActiveContract();
+                LOG_INFO("EPR step 3/3 complete: safely transitioned to %lumV @ %lumA",
+                         _active_contract.voltage_mv, _active_contract.current_ma);
+                break;
+
+            case PdDiagnostics::EprExitAction::NONE:
+                break;  // negotiation still in flight for this step
         }
     }
 
@@ -728,8 +738,8 @@ bool PdManager::primeStartupContract() {
     }
 
     uint32_t startup_current_ma = settings.getCurrentLimit();
-    if (startup_current_ma < 500) {
-        startup_current_ma = 500;
+    if (startup_current_ma < AppConfig::STARTUP_REQUEST_MIN_MA) {
+        startup_current_ma = AppConfig::STARTUP_REQUEST_MIN_MA;
     }
     if (startup_current_ma > AppConfig::CURRENT_LIMIT_MAX_MA) {
         startup_current_ma = AppConfig::CURRENT_LIMIT_MAX_MA;

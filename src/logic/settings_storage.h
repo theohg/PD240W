@@ -89,6 +89,15 @@ struct UserSettings {
     uint32_t crc32;
 };
 
+// Pin the persisted layout. The CRC and loadFromBytes depend on the exact byte
+// layout (including compiler padding), and the host test suite must exercise
+// the same layout the ARM target writes to flash. These fire on any field
+// insertion/reorder done without a SETTINGS_VERSION bump, and on any
+// host/target ABI divergence. Verified identical on arm-none-eabi (Cortex-M0+)
+// and x86-64/arm64 hosts.
+static_assert(sizeof(UserSettings) == 44, "UserSettings layout changed - bump SETTINGS_VERSION and update this assert");
+static_assert(offsetof(UserSettings, crc32) == 40, "crc32 must stay the trailing field");
+
 namespace SettingsStorage {
 
 // Legacy on-flash layouts still understood for migration. Never edited — they
@@ -117,6 +126,9 @@ struct UserSettingsV5 {
     uint32_t crc32;
 };
 
+static_assert(sizeof(UserSettingsV5) == 44, "UserSettingsV5 is a frozen historical layout - never edit it");
+static_assert(offsetof(UserSettingsV5, crc32) == 40, "UserSettingsV5 is a frozen historical layout - never edit it");
+
 struct UserSettingsV4 {
     uint32_t magic;
     uint8_t version;
@@ -137,6 +149,9 @@ struct UserSettingsV4 {
     bool cc_mode_enabled;
     uint32_t crc32;
 };
+
+static_assert(sizeof(UserSettingsV4) == 36, "UserSettingsV4 is a frozen historical layout - never edit it");
+static_assert(offsetof(UserSettingsV4, crc32) == 32, "UserSettingsV4 is a frozen historical layout - never edit it");
 
 // CRC32 (reflected, poly 0xEDB88320) over every byte preceding the trailing
 // crc32 field. Templated so the legacy structs are validated with their own
@@ -176,6 +191,15 @@ inline CurrentLimitMode legacyCurrentLimitMode(bool cc_mode_enabled) {
     return cc_mode_enabled ? CurrentLimitMode::CC : CurrentLimitMode::OCP;
 }
 
+// Read a bool-typed field out of a raw legacy image by byte. A partially-corrupt
+// (but CRC-colliding) or fuzzed image may hold a value other than 0/1 in these
+// bytes, and forming a bool lvalue over such a byte is undefined behavior — so
+// the migration paths must not read `v5->some_bool` directly. Read the raw byte
+// and normalize to true/false instead.
+inline bool readLegacyBool(const uint8_t* base, size_t offset) {
+    return base[offset] != 0;
+}
+
 // Interpret a raw flash image and, on success, populate `out`. `flash_bytes`
 // must point to at least sizeof(UserSettings) readable bytes (the largest
 // candidate layout). Pure: no flash I/O, no logging, no globals.
@@ -211,22 +235,23 @@ inline LoadStatus loadFromBytes(const uint8_t* flash_bytes, UserSettings& out) {
         out.version = SETTINGS_VERSION;
         out.current_limit_ma = v5->current_limit_ma;
         out.last_pdo_index = v5->last_pdo_index;
-        out.load_switch_enabled = v5->load_switch_enabled;
-        out.buck_17v_enabled = v5->buck_17v_enabled;
+        out.load_switch_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, load_switch_enabled));
+        out.buck_17v_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, buck_17v_enabled));
         out.lcd_brightness = v5->lcd_brightness;
-        out.sounds_enabled = v5->sounds_enabled;
-        out.auto_pps_enabled = v5->auto_pps_enabled;
+        out.sounds_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, sounds_enabled));
+        out.auto_pps_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, auto_pps_enabled));
         out.auto_dim_minutes = v5->auto_dim_minutes;
         out.startup_melody = v5->startup_melody;
-        out.auto_output = v5->auto_output;
+        out.auto_output = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, auto_output));
         out.last_contract_type = v5->last_contract_type;
         out.last_requested_voltage_mv = v5->last_requested_voltage_mv;
         out.last_contract_min_voltage_mv = v5->last_contract_min_voltage_mv;
         out.last_contract_max_voltage_mv = v5->last_contract_max_voltage_mv;
         out.startup_negotiation = v5->startup_negotiation;
-        out.auto_avs_enabled = v5->auto_avs_enabled;
+        out.auto_avs_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV5, auto_avs_enabled));
         out.energy_display_mode = v5->energy_display_mode;
-        out.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(v5->cc_mode_enabled));
+        out.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(
+            readLegacyBool(flash_bytes, offsetof(UserSettingsV5, cc_mode_enabled))));
         out.crc32 = 0;  // recomputed on next save
         return LoadStatus::MIGRATED_V5;
     }
@@ -242,18 +267,19 @@ inline LoadStatus loadFromBytes(const uint8_t* flash_bytes, UserSettings& out) {
         out.version = SETTINGS_VERSION;
         out.current_limit_ma = v4->current_limit_ma;
         out.last_pdo_index = v4->last_pdo_index;
-        out.load_switch_enabled = v4->load_switch_enabled;
-        out.buck_17v_enabled = v4->buck_17v_enabled;
+        out.load_switch_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, load_switch_enabled));
+        out.buck_17v_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, buck_17v_enabled));
         out.lcd_brightness = v4->lcd_brightness;
-        out.sounds_enabled = v4->sounds_enabled;
-        out.auto_pps_enabled = v4->auto_pps_enabled;
+        out.sounds_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, sounds_enabled));
+        out.auto_pps_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, auto_pps_enabled));
         out.auto_dim_minutes = v4->auto_dim_minutes;
         out.startup_melody = v4->startup_melody;
-        out.auto_output = v4->auto_output;
+        out.auto_output = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, auto_output));
         out.startup_negotiation = v4->startup_negotiation;
-        out.auto_avs_enabled = v4->auto_avs_enabled;
+        out.auto_avs_enabled = readLegacyBool(flash_bytes, offsetof(UserSettingsV4, auto_avs_enabled));
         out.energy_display_mode = v4->energy_display_mode;
-        out.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(v4->cc_mode_enabled));
+        out.current_limit_mode = static_cast<uint8_t>(legacyCurrentLimitMode(
+            readLegacyBool(flash_bytes, offsetof(UserSettingsV4, cc_mode_enabled))));
 
         // v4 had no explicit startup-contract type; infer a legacy hint from the
         // old PDO index / PPS-AVS voltage fields.

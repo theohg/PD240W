@@ -52,6 +52,7 @@ namespace AppConfig {
     constexpr uint32_t CURRENT_LIMIT_NON_PD_MAX_MA = 3000;  // Max for non-PD chargers (USB BC1.2)
     constexpr uint32_t CURRENT_LIMIT_STEP_MA = 10;          // Base adjustment step [mA] (fine control)
     constexpr uint32_t CURRENT_LIMIT_DEFAULT_MA = 1000;     // Default current limit [mA]
+    constexpr uint32_t STARTUP_REQUEST_MIN_MA = 500;        // Floor for pre-boot contract request current [mA]
     constexpr uint32_t CURRENT_LIMIT_VELOCITY_DIV = 1;      // Velocity divider (1 = use full velocity scaling)
 
     // -------------------------------------------------------------------------

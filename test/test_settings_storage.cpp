@@ -327,3 +327,151 @@ TEST_CASE("clampEnergyDisplayMode: caps at 1", "[settings]") {
     CHECK(clampEnergyDisplayMode(1) == 1);
     CHECK(clampEnergyDisplayMode(9) == 1);
 }
+
+// ============================================================================
+// Robustness fuzzing — loadFromBytes over raw/mutated flash images
+// ============================================================================
+// loadFromBytes consumes raw flash bytes and reinterpret_casts them through
+// three POD layouts. These deterministic-PRNG loops feed it random and
+// bit-mutated images: under ASan/UBSan they prove no aliasing/OOB/misaligned
+// access, and the core safety property is asserted directly —
+//   loadStatusOk(status)  =>  the claimed version's CRC actually validates
+// so a corrupt image can never be mistaken for good settings.
+
+namespace {
+
+// xorshift32 — deterministic, reproducible (no time/entropy seeding). Seeded
+// nonzero per test so CI failures replay identically.
+uint32_t xorshift32(uint32_t& s) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return s;
+}
+
+// Independent re-implementation of loadFromBytes's accept condition: magic must
+// match and the CRC over the claimed version's layout must validate. Used as the
+// oracle the fuzzers check loadFromBytes against.
+bool crcValidFor(const uint8_t* bytes) {
+    const UserSettings* cur = reinterpret_cast<const UserSettings*>(bytes);
+    if (cur->magic != SETTINGS_MAGIC) return false;
+    if (cur->version == SETTINGS_VERSION) {
+        UserSettings v;
+        memcpy(&v, bytes, sizeof(v));
+        return calculateCrc(v) == v.crc32;
+    }
+    if (cur->version == 5) {
+        UserSettingsV5 v;
+        memcpy(&v, bytes, sizeof(v));
+        return calculateCrc(v) == v.crc32;
+    }
+    if (cur->version == 4) {
+        UserSettingsV4 v;
+        memcpy(&v, bytes, sizeof(v));  // v4 is 36 bytes, read from the 44-byte buffer
+        return calculateCrc(v) == v.crc32;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("fuzz: random flash images never crash and only load with valid CRC", "[settings][fuzz]") {
+    uint32_t rng = 0xC0FFEE01u;
+    alignas(UserSettings) uint8_t img[sizeof(UserSettings)];
+
+    int loaded = 0, rejected = 0;
+    for (int i = 0; i < 5000; i++) {
+        for (size_t b = 0; b < sizeof(img); b += 4) {
+            uint32_t r = xorshift32(rng);
+            memcpy(img + b, &r, 4);
+        }
+
+        UserSettings out;
+        memset(&out, 0, sizeof(out));
+        auto status = loadFromBytes(img, out);
+
+        // The safety invariant: never accept an image whose CRC doesn't validate.
+        if (loadStatusOk(status)) {
+            CHECK(crcValidFor(img));
+            loaded++;
+        } else {
+            rejected++;
+        }
+    }
+    // Sanity: random bytes essentially never forge a valid magic+CRC.
+    CHECK(rejected == 5000);
+    CHECK(loaded == 0);
+}
+
+TEST_CASE("fuzz: single-bit-flipped valid image is never accepted", "[settings][fuzz]") {
+    uint32_t rng = 0xBADC0DEu;
+
+    for (int i = 0; i < 4000; i++) {
+        UserSettings base = validImage();
+        alignas(UserSettings) uint8_t img[sizeof(UserSettings)];
+        memcpy(img, &base, sizeof(img));
+
+        // Flip exactly one bit anywhere in the image.
+        uint32_t bit = xorshift32(rng) % (sizeof(img) * 8);
+        img[bit / 8] ^= static_cast<uint8_t>(1u << (bit % 8));
+
+        UserSettings out;
+        memset(&out, 0, sizeof(out));
+        auto status = loadFromBytes(img, out);
+
+        // A CRC32 always changes under a single bit flip, so a flipped image must
+        // never be accepted, and the oracle must agree.
+        CHECK_FALSE(loadStatusOk(status));
+        CHECK_FALSE(crcValidFor(img));
+    }
+}
+
+TEST_CASE("fuzz: magic-valid images load exactly when their CRC validates", "[settings][fuzz]") {
+    // Force the magic so the migration/CRC branches are actually exercised, then
+    // randomize version + payload and, half the time, stamp the correct CRC.
+    uint32_t rng = 0x5EED1234u;
+    const uint8_t versions[] = {4, 5, 6, 7};  // 7 is an unknown version (never loads)
+
+    int accepted = 0;
+    for (int i = 0; i < 5000; i++) {
+        alignas(UserSettings) uint8_t img[sizeof(UserSettings)];
+        for (size_t b = 0; b < sizeof(img); b += 4) {
+            uint32_t r = xorshift32(rng);
+            memcpy(img + b, &r, 4);
+        }
+
+        uint32_t magic = SETTINGS_MAGIC;
+        memcpy(img + offsetof(UserSettings, magic), &magic, 4);
+        uint8_t ver = versions[xorshift32(rng) % 4];
+        img[offsetof(UserSettings, version)] = ver;
+
+        // Half the time, make it genuinely valid by stamping the right CRC at the
+        // right offset for that version's layout.
+        if (xorshift32(rng) & 1) {
+            if (ver == 6) {
+                UserSettings v; memcpy(&v, img, sizeof(v));
+                uint32_t c = calculateCrc(v);
+                memcpy(img + offsetof(UserSettings, crc32), &c, 4);
+            } else if (ver == 5) {
+                UserSettingsV5 v; memcpy(&v, img, sizeof(v));
+                uint32_t c = calculateCrc(v);
+                memcpy(img + offsetof(UserSettingsV5, crc32), &c, 4);
+            } else if (ver == 4) {
+                UserSettingsV4 v; memcpy(&v, img, sizeof(v));
+                uint32_t c = calculateCrc(v);
+                memcpy(img + offsetof(UserSettingsV4, crc32), &c, 4);
+            }
+        }
+
+        UserSettings out;
+        memset(&out, 0, sizeof(out));
+        auto status = loadFromBytes(img, out);
+
+        // With a valid magic and known/unknown version, acceptance is exactly
+        // "the CRC validates" — both directions.
+        CHECK(loadStatusOk(status) == crcValidFor(img));
+        if (loadStatusOk(status)) accepted++;
+    }
+    // The stamped-CRC path must have produced some genuine loads (harness check).
+    CHECK(accepted > 0);
+}

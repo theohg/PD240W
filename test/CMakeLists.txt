@@ -51,6 +51,7 @@ add_executable(pd240w_tests
     test_settings_storage.cpp
     test_thermal_monitor.cpp
     test_programmable_tuning.cpp
+    test_cc_regulation.cpp
 )
 
 # The tested logic headers assume a "native" (non-embedded) TPS26750 platform so

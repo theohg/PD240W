@@ -420,4 +420,70 @@ inline AvsSafeVoltageResult findAvsSafeVoltage(const TPS26750_SourceCapability* 
     return {true, aligned, pdos[best_index].max_current_ma, best_index};
 }
 
+// ============================================================================
+// EPR safe-exit sequencing FSM (pure transition table)
+// ============================================================================
+// The 3-step exit PdManager::update() runs to leave EPR without a voltage rise:
+//   STEPPING_DOWN -> REQUESTING_5V -> REQUESTING_TARGET -> NONE
+// The transitions (which step advances, and when the whole thing aborts) are
+// pure; only the actions they trigger touch hardware. Extracting the table here
+// makes the sequencing — historically a bug-nest — host-testable, while
+// PdManager keeps the hardware side (issuing PD requests, refreshing the active
+// contract, logging) by dispatching on the returned action.
+
+/// @brief The EPR exit stage. PdManager aliases its `EprExitState` member type to
+/// this (identical enumerators) so call sites are unchanged.
+enum class EprExitStage : uint8_t { NONE, STEPPING_DOWN, REQUESTING_5V, REQUESTING_TARGET };
+
+/// @brief The side effect PdManager must perform after a transition.
+enum class EprExitAction : uint8_t {
+    NONE,            ///< Still in flight (negotiation pending): do nothing.
+    ABORT_TIMEOUT,   ///< Whole sequence exceeded its timeout: abort.
+    ABORT_FAILED,    ///< A step failed/timed out at the negotiation level: abort.
+    REQUEST_5V,      ///< Step 1 (AVS step-down) done: request 5V Fixed to exit EPR.
+    REQUEST_TARGET,  ///< Step 2 (5V) done: fire the user's deferred target request.
+    DONE,            ///< Step 3 (target) done: sequence complete.
+};
+
+struct EprExitStep {
+    EprExitStage next;     ///< The stage to store back.
+    EprExitAction action;  ///< What PdManager should do this step.
+};
+
+/// @brief One transition of the EPR safe-exit FSM. Precedence mirrors
+/// PdManager::update(): a whole-sequence timeout aborts first, then a
+/// negotiation-level failure, then a successful step advances the sequence;
+/// otherwise the step is still in flight and nothing changes.
+///
+/// @param stage        Current exit stage.
+/// @param neg_success  The current negotiation reported SUCCESS.
+/// @param neg_failed   The current negotiation reported FAILED or TIMEOUT.
+/// @param timed_out    The overall EPR-exit deadline elapsed.
+inline EprExitStep eprExitStep(EprExitStage stage, bool neg_success,
+                               bool neg_failed, bool timed_out) {
+    if (stage == EprExitStage::NONE) {
+        return {EprExitStage::NONE, EprExitAction::NONE};
+    }
+    if (timed_out) {
+        return {EprExitStage::NONE, EprExitAction::ABORT_TIMEOUT};
+    }
+    if (neg_failed) {
+        return {EprExitStage::NONE, EprExitAction::ABORT_FAILED};
+    }
+    if (neg_success) {
+        switch (stage) {
+            case EprExitStage::STEPPING_DOWN:
+                return {EprExitStage::REQUESTING_5V, EprExitAction::REQUEST_5V};
+            case EprExitStage::REQUESTING_5V:
+                return {EprExitStage::REQUESTING_TARGET, EprExitAction::REQUEST_TARGET};
+            case EprExitStage::REQUESTING_TARGET:
+                return {EprExitStage::NONE, EprExitAction::DONE};
+            case EprExitStage::NONE:
+                break;  // unreachable (handled above)
+        }
+    }
+    // Negotiation still in progress for this step: hold.
+    return {stage, EprExitAction::NONE};
+}
+
 }  // namespace PdDiagnostics

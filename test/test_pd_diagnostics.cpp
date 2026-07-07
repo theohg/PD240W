@@ -422,3 +422,85 @@ TEST_CASE("findAvsSafeVoltage: picks lowest reachable floor, step-aligned", "[pd
         CHECK(r.pdo_index == -1);
     }
 }
+
+// ============================================================================
+// eprExitStep — the EPR safe-exit sequencing FSM
+// ============================================================================
+// Helpers to make the intent of each transition obvious.
+static EprExitStep waiting(EprExitStage s) { return eprExitStep(s, false, false, false); }
+static EprExitStep succeeded(EprExitStage s) { return eprExitStep(s, true, false, false); }
+static EprExitStep failed(EprExitStage s) { return eprExitStep(s, false, true, false); }
+static EprExitStep timedOut(EprExitStage s) { return eprExitStep(s, false, false, true); }
+
+TEST_CASE("eprExitStep: NONE is inert", "[pd_diag][epr_fsm]") {
+    // Not in a sequence: no transition, no action, regardless of inputs.
+    EprExitStep s = eprExitStep(EprExitStage::NONE, true, false, false);
+    CHECK(s.next == EprExitStage::NONE);
+    CHECK(s.action == EprExitAction::NONE);
+}
+
+TEST_CASE("eprExitStep: happy path advances one step per success", "[pd_diag][epr_fsm]") {
+    EprExitStep s1 = succeeded(EprExitStage::STEPPING_DOWN);
+    CHECK(s1.next == EprExitStage::REQUESTING_5V);
+    CHECK(s1.action == EprExitAction::REQUEST_5V);
+
+    EprExitStep s2 = succeeded(EprExitStage::REQUESTING_5V);
+    CHECK(s2.next == EprExitStage::REQUESTING_TARGET);
+    CHECK(s2.action == EprExitAction::REQUEST_TARGET);
+
+    EprExitStep s3 = succeeded(EprExitStage::REQUESTING_TARGET);
+    CHECK(s3.next == EprExitStage::NONE);
+    CHECK(s3.action == EprExitAction::DONE);
+}
+
+TEST_CASE("eprExitStep: in-flight negotiation holds the stage", "[pd_diag][epr_fsm]") {
+    for (EprExitStage st : {EprExitStage::STEPPING_DOWN, EprExitStage::REQUESTING_5V,
+                            EprExitStage::REQUESTING_TARGET}) {
+        EprExitStep s = waiting(st);
+        CHECK(s.next == st);                    // no change
+        CHECK(s.action == EprExitAction::NONE);
+    }
+}
+
+TEST_CASE("eprExitStep: negotiation failure aborts from any stage", "[pd_diag][epr_fsm]") {
+    for (EprExitStage st : {EprExitStage::STEPPING_DOWN, EprExitStage::REQUESTING_5V,
+                            EprExitStage::REQUESTING_TARGET}) {
+        EprExitStep s = failed(st);
+        CHECK(s.next == EprExitStage::NONE);
+        CHECK(s.action == EprExitAction::ABORT_FAILED);
+    }
+}
+
+TEST_CASE("eprExitStep: whole-sequence timeout aborts from any stage", "[pd_diag][epr_fsm]") {
+    for (EprExitStage st : {EprExitStage::STEPPING_DOWN, EprExitStage::REQUESTING_5V,
+                            EprExitStage::REQUESTING_TARGET}) {
+        EprExitStep s = timedOut(st);
+        CHECK(s.next == EprExitStage::NONE);
+        CHECK(s.action == EprExitAction::ABORT_TIMEOUT);
+    }
+}
+
+TEST_CASE("eprExitStep: timeout wins over a same-loop success", "[pd_diag][epr_fsm]") {
+    // Precedence must match PdManager::update(): the deadline check comes first.
+    EprExitStep s = eprExitStep(EprExitStage::STEPPING_DOWN, /*success*/ true,
+                                /*failed*/ false, /*timed_out*/ true);
+    CHECK(s.next == EprExitStage::NONE);
+    CHECK(s.action == EprExitAction::ABORT_TIMEOUT);
+}
+
+TEST_CASE("eprExitStep: failure wins over success", "[pd_diag][epr_fsm]") {
+    EprExitStep s = eprExitStep(EprExitStage::REQUESTING_5V, /*success*/ true,
+                                /*failed*/ true, /*timed_out*/ false);
+    CHECK(s.next == EprExitStage::NONE);
+    CHECK(s.action == EprExitAction::ABORT_FAILED);
+}
+
+TEST_CASE("eprExitStep: a full clean run ends at NONE/DONE", "[pd_diag][epr_fsm]") {
+    // Drive the FSM the way PdManager does: advance on each success.
+    EprExitStage stage = EprExitStage::STEPPING_DOWN;
+    stage = succeeded(stage).next;  // -> REQUESTING_5V
+    stage = succeeded(stage).next;  // -> REQUESTING_TARGET
+    EprExitStep last = succeeded(stage);
+    CHECK(last.next == EprExitStage::NONE);
+    CHECK(last.action == EprExitAction::DONE);
+}

@@ -277,7 +277,9 @@ private:
     // Step 1 (STEPPING_DOWN): AVS to min voltage (e.g. 15V) — reduces VBUS within EPR
     // Step 2 (REQUESTING_5V): Request 5V Fixed — cleanly exits EPR mode (no voltage rise)
     // Step 3 (REQUESTING_TARGET): Request user's actual SPR target (e.g. 20V) — standard SPR transition
-    enum class EprExitState { NONE, STEPPING_DOWN, REQUESTING_5V, REQUESTING_TARGET };
+    // The stage type + transition table are the host-tested PdDiagnostics FSM;
+    // aliased here (identical enumerators) so existing call sites are unchanged.
+    using EprExitState = PdDiagnostics::EprExitStage;
     EprExitState _epr_exit_state;
     uint32_t _epr_deferred_voltage_mv;          // User's real target voltage
     uint32_t _epr_deferred_current_ma;          // User's real target current

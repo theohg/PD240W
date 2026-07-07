@@ -2,6 +2,7 @@
 
 [![Latest Firmware](https://img.shields.io/github/v/release/theohg/PD240W?label=Latest%20Firmware&style=flat-square&color=orange)](https://github.com/theohg/PD240W/releases/latest)
 ![CI](https://github.com/theohg/PD240W/actions/workflows/ci.yml/badge.svg)
+[![Host Tests](https://github.com/theohg/PD240W/actions/workflows/test.yml/badge.svg)](https://github.com/theohg/PD240W/actions/workflows/test.yml)
 ![License](https://img.shields.io/github/license/theohg/PD240W)
 ![Pico SDK](https://img.shields.io/badge/Pico_SDK-2.3.0-blue)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)

@@ -2,12 +2,10 @@
 #include "config/app_config.h"
 #include "config/board_config.h"
 #include "hardware.h"
+#include "logic/cc_regulation.h"
 #include "logic/pd_manager.h"
 #include "logic/settings.h"
 #include "utils/logging.h"
-#include "utils/pd_voltage.h"
-
-#include <cmath>
 
 namespace CcController {
 
@@ -99,7 +97,6 @@ void update() {
     float measured_a = hw.powerMonitor.getCurrent();
     float measured_v = hw.powerMonitor.getBusVoltage();
     float target_a = _target_current_ma / 1000.0f;
-    float error_a = measured_a - target_a;  // positive = overcurrent
 
     // Determine user's max voltage (what they selected in the menu)
     int32_t user_max_mv;
@@ -124,28 +121,17 @@ void update() {
     // Use our last requested voltage as reference (not measured, which lags)
     int32_t ref_mv = _last_requested_mv > 0 ? _last_requested_mv : (int32_t)pdManager.getActiveContract().voltage_mv;
 
-    // CC is "regulating" only when it has actively lowered voltage below user target
-    _regulating = (_last_requested_mv > 0 && _last_requested_mv < user_max_mv);
+    // All the regulation arithmetic (R-estimate filter, feedforward + P blend,
+    // deadband, overcurrent-never-raises, clamp, align) lives in the pure,
+    // host-tested CcRegulation::computeCcStep. Store back its state every poll;
+    // only send when it asks and our own request rate-limit allows.
+    CcRegulation::CcStep step = CcRegulation::computeCcStep(
+        measured_v, measured_a, target_a, _r_estimate, _last_requested_mv,
+        ref_mv, user_max_mv, voltage_min_mv, step_size);
+    _r_estimate = step.r_estimate;
+    _regulating = step.regulating;
 
-    // Update resistance estimate from current measurement (R = V/I)
-    constexpr float MIN_CURRENT_FOR_R_EST = 0.05f;
-    if (measured_a > MIN_CURRENT_FOR_R_EST && measured_v > 0.5f) {
-        float r_new = measured_v / measured_a;
-        if (_r_estimate <= 0.0f) {
-            _r_estimate = r_new;
-        } else {
-            // Low-pass filter (alpha=0.2 for stability)
-            _r_estimate = _r_estimate * 0.8f + r_new * 0.2f;
-        }
-    } else if (measured_a < 0.01f) {
-        // No load: invalidate R estimate so we ramp back to user voltage
-        _r_estimate = 0.0f;
-    }
-
-    // Deadband: don't adjust if error is small enough AND already at user target voltage
-    // When undercurrent and below user max, keep trying to reach max voltage
-    constexpr float DEADBAND_A = 0.02f;
-    if (fabsf(error_a) <= DEADBAND_A && ref_mv >= user_max_mv) {
+    if (!step.request) {
         return;
     }
 
@@ -154,44 +140,7 @@ void update() {
         return;
     }
 
-    // Calculate target voltage
-    int32_t new_voltage_mv;
-
-    if (measured_a < 0.01f) {
-        // No load detected: jump directly to user target voltage
-        new_voltage_mv = user_max_mv;
-    } else if (_r_estimate > 0.1f) {
-        // Ohm's law feedforward: V_ideal = I_target * R_estimated
-        int32_t v_ideal_mv = (int32_t)(target_a * _r_estimate * 1000.0f);
-
-        // Blend feedforward with current reference for stability (50/50)
-        new_voltage_mv = (v_ideal_mv + ref_mv) / 2;
-
-        // Small proportional correction on top
-        constexpr float KP_MV_PER_A = 200.0f;
-        new_voltage_mv += (int32_t)(-error_a * KP_MV_PER_A);
-    } else {
-        // No valid R estimate: conservative proportional steps from reference
-        constexpr float KP_FALLBACK_MV_PER_A = 500.0f;
-        new_voltage_mv = ref_mv + (int32_t)(-error_a * KP_FALLBACK_MV_PER_A);
-    }
-
-    // Safety: if overcurrent, never increase voltage
-    if (error_a > 0 && new_voltage_mv > ref_mv) {
-        new_voltage_mv = ref_mv - (int32_t)step_size;
-    }
-
-    // Clamp to valid range
-    if (new_voltage_mv < voltage_min_mv) new_voltage_mv = voltage_min_mv;
-    if (new_voltage_mv > user_max_mv) new_voltage_mv = user_max_mv;
-
-    new_voltage_mv = static_cast<int32_t>(PdVoltage::alignDown(
-        static_cast<uint32_t>(new_voltage_mv), step_size));
-
-    // Skip if voltage hasn't changed from last request
-    if (new_voltage_mv == _last_requested_mv) {
-        return;
-    }
+    int32_t new_voltage_mv = step.request_mv;
 
     // Send PD voltage request, passing the stored APDO bounds so the driver
     // constrains its fallback window to the correct range.
