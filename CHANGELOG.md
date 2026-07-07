@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.0.4] - 2026-07-07
+
+### Bug Fixes
+
+- Waking the screen from auto-dim now restores the saved brightness instead of a stale menu value, and the encoder turn or button press that wakes the screen no longer also changes a menu selection or toggles the output.
+- A fault that changes type while already faulted (e.g. overcurrent then overtemperature) now redraws the screen instead of leaving the previous fault's details on display.
+- INA228 die-temperature readings are sign-corrected, fixing a spurious over-temperature fault when the board is cold.
+- Thermal status no longer sticks at FAULT after cooling back into an already-latched warning band.
+- A TPS26750 EEPROM flash can no longer be abandoned mid-write by a fault or menu timeout, preventing a half-programmed EEPROM.
+- The load switch now refuses to enable when the INA228 power monitor failed to initialize, instead of silently enabling an unmonitored output with no overcurrent protection.
+- Buzzer pitch is now correct below ~120 Hz, and the alarm tone can no longer latch on indefinitely.
+- Added I2C timeouts and a watchdog to prevent bus-hang lockups; PPS/AVS keep-alive now backs off after a failed request instead of hammering the bus every loop.
+- Fixed assorted display and LED glitches: LED stuck yellow after a fault clears, mis-clamped minimum brightness, and unreachable PDO-list rows after a mid-selection contract refresh.
+
+### CLI
+
+- `MEAS:ENERGY?` now reports energy in mWh; added `MEAS:CHARGE?` for delivered charge in mAh.
+- About-screen firmware version strings now show clean release tags.
+
+### Internal
+
+- Major testability refactor: extracted the pure logic (PD diagnostics, PPS/AVS tuning, constant-current regulation, settings flash codec, thermal FSM, EPR safe-exit sequencing) into host-testable headers with a Snitch/ASan/UBSan unit-test suite, CI, and a 90% coverage floor.
+- CI now builds our sources with `-Werror` so warning regressions fail the PR; deduplicated PPS/AVS keep-alive and PDO handling.
+
 ## [2.0.3] - 2026-07-04
 
 ### Features
